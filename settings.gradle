@@ -1,0 +1,3 @@
+rootProject.name = 'map-in-boot'
+
+include 'map-in-boot-core', 'map-in-boot-starter', 'map-in-boot-security'
