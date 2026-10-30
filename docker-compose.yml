@@ -10,6 +10,7 @@ services:
       - "127.0.0.1:${IDENTITY_PORT:-18081}:18081"
     environment:
       IDENTITY_PORT: "18081"
+      DEMO_TEST_PASSWORD: "${DEMO_TEST_PASSWORD}"
     networks:
       - demo-net
 
