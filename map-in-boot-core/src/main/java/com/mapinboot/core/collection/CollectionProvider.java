@@ -20,6 +20,7 @@ import java.util.Objects;
 import java.util.Set;
 
 // Collector 실행 및 수집 결과 집계
+// Collector 의존성 실행 및 수집 결과 격리 집계
 public class CollectionProvider {
 
     public CollectionReport execute(CollectionContext context, Collection<CollectorAdapter> adapters) {
@@ -27,6 +28,7 @@ public class CollectionProvider {
             throw new MapInBootException(ErrorCode.INVALID_CONFIG, "Collection 실행 입력이 올바르지 않습니다.");
         }
 
+        // Adapter ID 중복 검증 및 등록 순서 보존
         Map<String, CollectorAdapter> registered = register(adapters);
         Map<String, AnalysisStatus> statusByAdapter = new LinkedHashMap<>();
         List<Fact> facts = new ArrayList<>();
@@ -35,6 +37,7 @@ public class CollectionProvider {
         List<CollectorAdapter> pending = new ArrayList<>();
         Set<String> activeIds = new LinkedHashSet<>();
 
+        // 비활성 Adapter 제외 및 활성 의존성 대상 확정
         for (Map.Entry<String, CollectorAdapter> entry : registered.entrySet()) {
             try {
                 if (entry.getValue().enabled()) {
@@ -46,6 +49,7 @@ public class CollectionProvider {
             }
         }
 
+        // 선행 Collector 완료 상태 기반 실행 순서 결정
         while (!pending.isEmpty()) {
             boolean executed = false;
             Iterator<CollectorAdapter> iterator = pending.iterator();
@@ -81,12 +85,14 @@ public class CollectionProvider {
                         }
                     }
                 }
+                // 아직 완료되지 않은 선행 의존성 대기
                 if (waiting && !invalid) {
                     continue;
                 }
                 iterator.remove();
                 executed = true;
 
+                // 실패·비활성·누락 선행 의존성의 UNKNOWN 전환
                 if (invalid) {
                     fail(adapterId, ErrorCode.INVALID_CONFIG, "선행 Collector 의존성 미충족", statusByAdapter, diagnostics);
                     continue;
@@ -97,6 +103,7 @@ public class CollectionProvider {
             if (executed) {
                 continue;
             }
+            // 진행 불가 잔여 Adapter의 순환 의존성 처리
             for (CollectorAdapter adapter : pending) {
                 fail(adapter.id(), ErrorCode.INVALID_CONFIG, "순환 Collector 의존성", statusByAdapter, diagnostics);
             }
@@ -106,6 +113,7 @@ public class CollectionProvider {
         return new CollectionReport(facts, evidence, statusByAdapter, diagnostics);
     }
 
+    // Adapter ID 기반 등록 및 공개 계약 검증
     private Map<String, CollectorAdapter> register(Collection<CollectorAdapter> adapters) {
         Map<String, CollectorAdapter> registered = new LinkedHashMap<>();
 
@@ -124,6 +132,7 @@ public class CollectionProvider {
         return registered;
     }
 
+    // 개별 Collector 실패 격리 및 정상 결과 집계
     private void collect(
             CollectionContext context,
             CollectorAdapter adapter,
@@ -139,6 +148,7 @@ public class CollectionProvider {
                 fail(adapterId, ErrorCode.ADAPTER_FAILED, "Collector 결과가 올바르지 않습니다.", statusByAdapter, diagnostics);
                 return;
             }
+            // Fact·Evidence ID 충돌에 따른 READY 상태 하향 기준
             boolean hasConflict = addFacts(adapterId, facts, result.facts(), diagnostics, new LinkedHashSet<>());
             hasConflict |= addEvidence(adapterId, evidence, result.evidence(), diagnostics, new LinkedHashSet<>());
             diagnostics.addAll(result.diagnostics());
@@ -148,6 +158,7 @@ public class CollectionProvider {
         }
     }
 
+    // 실패 Adapter의 UNKNOWN 상태 및 Diagnostic 기록
     private void fail(
             String adapterId,
             ErrorCode errorCode,
@@ -159,10 +170,12 @@ public class CollectionProvider {
         diagnostics.add(new AdapterDiagnostic(adapterId, errorCode, "Adapter [" + adapterId + "] " + summary));
     }
 
+    // 충돌 발생 READY 결과의 PARTIAL 하향
     private AnalysisStatus conflictedStatus(AnalysisStatus status, boolean hasConflict) {
         return hasConflict && status == AnalysisStatus.READY ? AnalysisStatus.PARTIAL : status;
     }
 
+    // 동일 Fact 제외 및 상이한 동일 ID 충돌 격리
     private boolean addFacts(
             String adapterId,
             List<Fact> target,
@@ -189,6 +202,7 @@ public class CollectionProvider {
         return hasConflict;
     }
 
+    // 동일 Evidence 제외 및 상이한 동일 ID 충돌 격리
     private boolean addEvidence(
             String adapterId,
             List<Evidence> target,

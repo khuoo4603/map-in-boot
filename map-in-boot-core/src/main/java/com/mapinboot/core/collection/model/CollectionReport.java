@@ -7,6 +7,7 @@ import com.mapinboot.core.evidence.Fact;
 import java.util.List;
 import java.util.Map;
 
+// Collector 실행 결과의 Fact·Evidence·상태 집계
 public record CollectionReport(
         List<Fact> facts,
         List<Evidence> evidence,

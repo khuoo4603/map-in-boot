@@ -8,6 +8,7 @@ import com.mapinboot.core.evidence.Relation;
 import java.util.List;
 import java.util.Map;
 
+// CollectionReport 기반 분석 관계·근거·상태 집계
 public record AnalysisReport(
         CollectionReport collectionReport,
         List<Relation> relations,

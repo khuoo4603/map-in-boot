@@ -21,6 +21,7 @@ import java.util.Objects;
 import java.util.Set;
 
 // Analyzer 실행 및 분석 결과 집계
+// Analyzer 입력 검증 및 분석 결과 격리 집계
 public class AnalysisProvider {
 
     public AnalysisReport execute(AnalysisContext context, Collection<AnalysisAdapter> adapters) {
@@ -29,6 +30,7 @@ public class AnalysisProvider {
         }
 
         CollectionReport collectionReport = context.collectionReport();
+        // Adapter ID 중복 검증 및 등록 순서 보존
         Map<String, AnalysisAdapter> registered = register(adapters);
         Map<String, AnalysisStatus> statusByAdapter = new LinkedHashMap<>();
         List<Relation> relations = new ArrayList<>();
@@ -36,6 +38,7 @@ public class AnalysisProvider {
         List<AdapterDiagnostic> diagnostics = new ArrayList<>();
         Set<String> factTypes = new LinkedHashSet<>();
 
+        // Analyzer 필수 Fact.type 존재 여부 판단용 수집 유형 집합
         for (Fact fact : collectionReport.facts()) {
             factTypes.add(fact.type());
         }
@@ -53,13 +56,16 @@ public class AnalysisProvider {
                     fail(adapterId, ErrorCode.INVALID_CONFIG, "필수 Fact 유형 정보가 올바르지 않습니다.", statusByAdapter, diagnostics);
                     continue;
                 }
+                // Fact별 수집 출처 부재에 따른 보수적 전체 수집 상태 판단
                 AnalysisStatus collectionStatus = collectionStatus(collectionReport);
+                // PARTIAL·UNKNOWN 수집 결과의 필수 Fact 기반 분석 제한
                 if (!requiredFactTypes.isEmpty() && collectionStatus != null) {
                     statusByAdapter.put(adapterId, collectionStatus);
                     diagnostics.add(new AdapterDiagnostic(
                             adapterId, ErrorCode.INVALID_STATE, "Adapter [" + adapterId + "] 수집 상태 불완전"));
                     continue;
                 }
+                // Fact 존재와 완전한 수집 상태의 분리 검증
                 if (!factTypes.containsAll(requiredFactTypes)) {
                     AnalysisStatus status = collectionStatus == null ? AnalysisStatus.UNKNOWN : collectionStatus;
                     statusByAdapter.put(adapterId, status);
@@ -76,6 +82,7 @@ public class AnalysisProvider {
         return new AnalysisReport(collectionReport, relations, evidence, statusByAdapter, diagnostics);
     }
 
+    // Collector 상태 중 가장 보수적인 분석 가능 상태 반환
     private AnalysisStatus collectionStatus(CollectionReport collectionReport) {
         if (collectionReport.statusByAdapter().containsValue(AnalysisStatus.UNKNOWN)) {
             return AnalysisStatus.UNKNOWN;
@@ -86,6 +93,7 @@ public class AnalysisProvider {
         return null;
     }
 
+    // Adapter ID 기반 등록 및 공개 계약 검증
     private Map<String, AnalysisAdapter> register(Collection<AnalysisAdapter> adapters) {
         Map<String, AnalysisAdapter> registered = new LinkedHashMap<>();
 
@@ -104,6 +112,7 @@ public class AnalysisProvider {
         return registered;
     }
 
+    // 개별 Analyzer 실패 격리 및 Relation·Evidence 집계
     private void analyze(
             AnalysisContext context,
             AnalysisAdapter adapter,
@@ -119,6 +128,7 @@ public class AnalysisProvider {
                 fail(adapterId, ErrorCode.ADAPTER_FAILED, "Analyzer 결과가 올바르지 않습니다.", statusByAdapter, diagnostics);
                 return;
             }
+            // Collection Evidence와 additionalEvidence 통합 및 ID 충돌 상태 하향
             boolean hasConflict = addRelations(adapterId, relations, result.relations(), diagnostics, new LinkedHashSet<>());
             hasConflict |= addEvidence(adapterId, evidence, result.additionalEvidence(), diagnostics, new LinkedHashSet<>());
             diagnostics.addAll(result.diagnostics());
@@ -128,6 +138,7 @@ public class AnalysisProvider {
         }
     }
 
+    // 실패 Analyzer의 UNKNOWN 상태 및 Diagnostic 기록
     private void fail(
             String adapterId,
             ErrorCode errorCode,
@@ -139,10 +150,12 @@ public class AnalysisProvider {
         diagnostics.add(new AdapterDiagnostic(adapterId, errorCode, "Adapter [" + adapterId + "] " + summary));
     }
 
+    // 충돌 발생 READY 결과의 PARTIAL 하향
     private AnalysisStatus conflictedStatus(AnalysisStatus status, boolean hasConflict) {
         return hasConflict && status == AnalysisStatus.READY ? AnalysisStatus.PARTIAL : status;
     }
 
+    // 동일 Relation 제외 및 상이한 동일 ID 충돌 격리
     private boolean addRelations(
             String adapterId,
             List<Relation> target,
@@ -168,6 +181,7 @@ public class AnalysisProvider {
         return hasConflict;
     }
 
+    // 동일 Evidence 제외 및 상이한 동일 ID 충돌 격리
     private boolean addEvidence(
             String adapterId,
             List<Evidence> target,
