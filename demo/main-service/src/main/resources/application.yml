@@ -1,0 +1,12 @@
+server:
+  port: ${MAIN_PORT:18080}
+
+spring:
+  application:
+    name: main-service
+
+app:
+  services:
+    identity-url: ${IDENTITY_BASE_URL:http://localhost:18081}
+    account-url: ${ACCOUNT_BASE_URL:http://localhost:18082}
+

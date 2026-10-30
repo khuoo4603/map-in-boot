@@ -1,0 +1,7 @@
+server:
+  port: ${ACCOUNT_PORT:18082}
+
+spring:
+  application:
+    name: account-service
+

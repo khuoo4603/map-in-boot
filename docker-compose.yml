@@ -1,0 +1,48 @@
+name: mapinboot-gemini
+
+services:
+  identity-service:
+    container_name: mapinboot-gemini-identity
+    build:
+      context: ./demo/identity-service
+      dockerfile: Dockerfile
+    ports:
+      - "127.0.0.1:${IDENTITY_PORT:-18081}:18081"
+    environment:
+      IDENTITY_PORT: "18081"
+    networks:
+      - demo-net
+
+  account-service:
+    container_name: mapinboot-gemini-account
+    build:
+      context: ./demo/account-service
+      dockerfile: Dockerfile
+    ports:
+      - "127.0.0.1:${ACCOUNT_PORT:-18082}:18082"
+    environment:
+      ACCOUNT_PORT: "18082"
+    networks:
+      - demo-net
+
+  main-service:
+    container_name: mapinboot-gemini-main
+    build:
+      context: ./demo/main-service
+      dockerfile: Dockerfile
+    ports:
+      - "127.0.0.1:${MAIN_PORT:-18080}:18080"
+    environment:
+      MAIN_PORT: "18080"
+      IDENTITY_BASE_URL: "http://identity-service:18081"
+      ACCOUNT_BASE_URL: "http://account-service:18082"
+    depends_on:
+      - identity-service
+      - account-service
+    networks:
+      - demo-net
+
+networks:
+  demo-net:
+    name: mapinboot-gemini-net
+
