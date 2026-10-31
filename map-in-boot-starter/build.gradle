@@ -1,3 +1,4 @@
 dependencies {
     api project(':map-in-boot-core')
+    api 'org.springframework.boot:spring-boot-autoconfigure:4.0.9'
 }
