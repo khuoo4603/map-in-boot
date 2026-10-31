@@ -12,6 +12,9 @@ import com.mapinboot.starter.collector.ServletRegistrationCollectorAdapter;
 import com.mapinboot.starter.snapshot.LocalSnapshotStore;
 import com.mapinboot.starter.snapshot.SnapshotAssembler;
 import com.mapinboot.starter.snapshot.SnapshotJsonCodec;
+import com.mapinboot.starter.web.api.SnapshotController;
+import com.mapinboot.starter.web.api.StatusController;
+import com.mapinboot.starter.web.access.WebAccessInterceptor;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.concurrent.ExecutorService;
@@ -26,6 +29,8 @@ import org.springframework.boot.context.properties.EnableConfigurationProperties
 import org.springframework.context.ApplicationContext;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.web.servlet.config.annotation.InterceptorRegistry;
+import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
 
 // Starter Runtime 자동 구성
 @AutoConfiguration
@@ -125,6 +130,43 @@ public class MapInBootAutoConfiguration {
         @ConditionalOnMissingBean(EndpointMappingCollectorAdapter.class)
         EndpointMappingCollectorAdapter endpointMappingCollectorAdapter() {
             return new EndpointMappingCollectorAdapter();
+        }
+    }
+
+    @Configuration(proxyBeanMethods = false)
+    @ConditionalOnWebApplication(type = ConditionalOnWebApplication.Type.SERVLET)
+    @ConditionalOnClass(name = "org.springframework.web.servlet.mvc.method.annotation.RequestMappingHandlerMapping")
+    static class MvcWebConfiguration {
+
+        @Bean
+        @ConditionalOnMissingBean
+        @ConditionalOnProperty(prefix = "mapinboot", name = "enabled", havingValue = "true", matchIfMissing = true)
+        @ConditionalOnProperty(prefix = "mapinboot.web", name = "enabled", havingValue = "true")
+        SnapshotController snapshotController(MapInBootBootstrap bootstrap, MapInBootProperties properties) {
+            return new SnapshotController(bootstrap, properties);
+        }
+
+        @Bean
+        @ConditionalOnMissingBean
+        @ConditionalOnProperty(prefix = "mapinboot", name = "enabled", havingValue = "true", matchIfMissing = true)
+        @ConditionalOnProperty(prefix = "mapinboot.web", name = "enabled", havingValue = "true")
+        StatusController statusController(MapInBootBootstrap bootstrap, MapInBootProperties properties) {
+            return new StatusController(bootstrap, properties);
+        }
+
+        @Bean
+        WebAccessInterceptor webAccessInterceptor(MapInBootProperties properties) {
+            return new WebAccessInterceptor(properties);
+        }
+
+        @Bean
+        WebMvcConfigurer mapInBootWebMvcConfigurer(WebAccessInterceptor interceptor) {
+            return new WebMvcConfigurer() {
+                @Override
+                public void addInterceptors(InterceptorRegistry registry) {
+                    registry.addInterceptor(interceptor).addPathPatterns("/mapinboot/**");
+                }
+            };
         }
     }
 }

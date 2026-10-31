@@ -345,6 +345,7 @@ class MapInBootBootstrapTest {
             MapInBootBootstrap bootstrap = context.getBean(MapInBootBootstrap.class);
             context.publishEvent(readyEvent(context));
             await(() -> bootstrap.snapshot() != null || bootstrap.failure() != null);
+            await(() -> "PARTIAL".equals(bootstrap.executionPhase()) || bootstrap.failure() != null);
 
             assertNull(bootstrap.failure());
             assertNotNull(bootstrap.collectionReport());
@@ -355,6 +356,7 @@ class MapInBootBootstrapTest {
                     bootstrap.analysisReport().statusByAdapter().get("analyzer"));
             assertNotNull(bootstrap.snapshot());
             assertNull(bootstrap.persistedSnapshot());
+            assertEquals("PARTIAL", bootstrap.executionPhase());
         }
     }
 
@@ -392,6 +394,8 @@ class MapInBootBootstrapTest {
             assertInstanceOf(MapInBootException.class, bootstrap.failure());
             assertEquals(ErrorCode.SNAPSHOT_WRITE_FAILED,
                     ((MapInBootException) bootstrap.failure()).getErrorCode());
+            assertEquals("FAILED", bootstrap.executionPhase());
+            assertEquals(ErrorCode.SNAPSHOT_WRITE_FAILED.getCode(), bootstrap.failureCode());
             assertNotNull(bootstrap.snapshot());
             assertNull(bootstrap.persistedSnapshot());
             assertEquals("existing", Files.readString(file));

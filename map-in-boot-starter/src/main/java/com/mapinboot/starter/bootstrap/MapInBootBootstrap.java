@@ -50,6 +50,9 @@ public class MapInBootBootstrap implements ApplicationListener<ApplicationReadyE
     private final AtomicReference<Snapshot> snapshot = new AtomicReference<>();
     private final AtomicReference<Snapshot> persistedSnapshot = new AtomicReference<>();
     private final AtomicReference<Throwable> failure = new AtomicReference<>();
+    private final AtomicBoolean currentExecutionComplete = new AtomicBoolean();
+    private final AtomicBoolean persistenceComplete = new AtomicBoolean();
+    private final AtomicBoolean persistenceSkipped = new AtomicBoolean();
 
     public MapInBootBootstrap(
             ApplicationContext applicationContext,
@@ -136,13 +139,17 @@ public class MapInBootBootstrap implements ApplicationListener<ApplicationReadyE
             analysisReport.set(analyzed);
             Snapshot assembled = snapshotAssembler.assemble(
                     analyzed, serviceId, instanceId, applicationVersion());
+            boolean complete = isComplete(collected, analyzed);
+            currentExecutionComplete.set(complete);
             snapshotJsonCodec.encode(assembled);
             snapshot.set(assembled);
             if (snapshotStore != null) {
                 Optional<Snapshot> persisted = snapshotStore.save(
-                        assembled, isComplete(collected, analyzed));
+                        assembled, complete);
+                persistenceSkipped.set(persisted.isEmpty());
                 persisted.ifPresent(persistedSnapshot::set);
             }
+            persistenceComplete.set(true);
 
             if (collectorAdapters.isEmpty() || analysisAdapters.isEmpty()) {
                 log.warn("Map in Boot 분석에 필요한 Adapter가 등록되지 않았습니다.");
@@ -301,20 +308,58 @@ public class MapInBootBootstrap implements ApplicationListener<ApplicationReadyE
         }
     }
 
-    CollectionReport collectionReport() {
+    public CollectionReport collectionReport() {
         return collectionReport.get();
     }
 
-    AnalysisReport analysisReport() {
+    public AnalysisReport analysisReport() {
         return analysisReport.get();
     }
 
-    Snapshot snapshot() {
+    public Snapshot snapshot() {
         return snapshot.get();
     }
 
-    Snapshot persistedSnapshot() {
+    public Snapshot persistedSnapshot() {
         return persistedSnapshot.get();
+    }
+
+    public String executionPhase() {
+        if (failure.get() != null) {
+            return "FAILED";
+        }
+        CollectionReport collected = collectionReport.get();
+        AnalysisReport analyzed = analysisReport.get();
+        if (collected == null) {
+            return started.get() ? "RUNNING" : "NOT_STARTED";
+        }
+        if (analyzed == null) {
+            return "COLLECTING";
+        }
+        if (snapshot.get() == null) {
+            return "ANALYZING";
+        }
+        if (!persistenceComplete.get()) {
+            return "ANALYZING";
+        }
+        if (hasIncompleteStatus(collected) || hasIncompleteStatus(analyzed)) {
+            return "PARTIAL";
+        }
+        if (!currentExecutionComplete.get() || persistenceSkipped.get()) {
+            return "PARTIAL";
+        }
+        return "COMPLETED";
+    }
+
+    public String failureCode() {
+        Throwable currentFailure = failure.get();
+        if (currentFailure == null) {
+            return null;
+        }
+        if (currentFailure instanceof MapInBootException exception && exception.getErrorCode() != null) {
+            return exception.getErrorCode().getCode();
+        }
+        return ErrorCode.ADAPTER_FAILED.getCode();
     }
 
     Throwable failure() {

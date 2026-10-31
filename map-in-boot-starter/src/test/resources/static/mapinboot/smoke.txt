@@ -1,0 +1,1 @@
+sdk-static-test
