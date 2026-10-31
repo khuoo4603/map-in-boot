@@ -4,10 +4,13 @@ import com.mapinboot.core.analysis.AnalysisAdapter;
 import com.mapinboot.core.analysis.AnalysisProvider;
 import com.mapinboot.core.collection.CollectionProvider;
 import com.mapinboot.core.collection.CollectorAdapter;
+import com.mapinboot.core.finding.FindingEvaluator;
 import com.mapinboot.starter.bootstrap.MapInBootBootstrap;
 import com.mapinboot.starter.collector.EndpointMappingCollectorAdapter;
 import com.mapinboot.starter.collector.ServletFilterCollectorAdapter;
 import com.mapinboot.starter.collector.ServletRegistrationCollectorAdapter;
+import com.mapinboot.starter.snapshot.SnapshotAssembler;
+import com.mapinboot.starter.snapshot.SnapshotJsonCodec;
 import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -60,6 +63,18 @@ public class MapInBootAutoConfiguration {
             return new AnalysisProvider();
         }
 
+        @Bean
+        @ConditionalOnMissingBean
+        SnapshotAssembler snapshotAssembler(List<FindingEvaluator> findingEvaluators) {
+            return new SnapshotAssembler(findingEvaluators, "1");
+        }
+
+        @Bean
+        @ConditionalOnMissingBean
+        SnapshotJsonCodec snapshotJsonCodec() {
+            return new SnapshotJsonCodec();
+        }
+
         @Bean(name = "mapInBootExecutor", destroyMethod = "shutdown", defaultCandidate = false)
         @ConditionalOnMissingBean(name = "mapInBootExecutor")
         ExecutorService mapInBootExecutor() {
@@ -78,10 +93,13 @@ public class MapInBootAutoConfiguration {
                 AnalysisProvider analysisProvider,
                 List<CollectorAdapter> collectorAdapters,
                 List<AnalysisAdapter> analysisAdapters,
-                @Qualifier("mapInBootExecutor") ExecutorService executor
+                @Qualifier("mapInBootExecutor") ExecutorService executor,
+                SnapshotAssembler snapshotAssembler,
+                SnapshotJsonCodec snapshotJsonCodec
         ) {
             return new MapInBootBootstrap(
-                    applicationContext, collectionProvider, analysisProvider, collectorAdapters, analysisAdapters, executor);
+                    applicationContext, collectionProvider, analysisProvider, collectorAdapters, analysisAdapters, executor,
+                    snapshotAssembler, snapshotJsonCodec);
         }
     }
 

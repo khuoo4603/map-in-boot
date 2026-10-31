@@ -18,6 +18,7 @@ import com.mapinboot.core.common.type.EdgeType;
 import com.mapinboot.core.evidence.Evidence;
 import com.mapinboot.core.evidence.Fact;
 import com.mapinboot.core.evidence.Relation;
+import com.mapinboot.core.finding.FindingEvaluator;
 import com.mapinboot.starter.autoconfigure.MapInBootAutoConfiguration;
 import com.mapinboot.starter.autoconfigure.MapInBootProperties;
 import java.time.Duration;
@@ -30,6 +31,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.context.event.ApplicationReadyEvent;
+import org.springframework.boot.info.BuildProperties;
 import org.springframework.context.annotation.AnnotationConfigApplicationContext;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -96,13 +98,15 @@ class MapInBootBootstrapTest {
             context.publishEvent(event);
             context.publishEvent(event);
 
-            await(() -> bootstrap.analysisReport() != null || bootstrap.failure() != null);
+            await(() -> bootstrap.snapshot() != null || bootstrap.failure() != null);
 
             assertNull(bootstrap.failure());
             assertNotNull(bootstrap.collectionReport());
             assertNotNull(bootstrap.analysisReport());
+            assertNotNull(bootstrap.snapshot());
             assertTrue(bootstrap.collectionReport().facts().isEmpty());
             assertTrue(bootstrap.analysisReport().relations().isEmpty());
+            assertTrue(bootstrap.snapshot().findings().isEmpty());
         }
     }
 
@@ -110,6 +114,38 @@ class MapInBootBootstrapTest {
     void bootstrapUsesConfiguredNameBeforeMainApplicationClass() {
         assertServiceId(Map.of("spring.application.name", "configured-service"), "configured-service");
         assertServiceId(Map.of("spring.application.name", ""), TestApplication.class.getName());
+    }
+
+    @Test
+    void bootstrapUsesApplicationVersionThenBuildPropertiesThenUnknown() {
+        try (AnnotationConfigApplicationContext configured = context(
+                Map.of("spring.application.name", "test-service", "spring.application.version", "configured-version"),
+                AdapterConfiguration.class, BuildPropertiesConfiguration.class)) {
+            MapInBootBootstrap bootstrap = configured.getBean(MapInBootBootstrap.class);
+            configured.publishEvent(readyEvent(configured));
+            await(() -> bootstrap.snapshot() != null || bootstrap.failure() != null);
+            assertNull(bootstrap.failure());
+            assertEquals("configured-version", bootstrap.snapshot().applicationVersion());
+        }
+
+        try (AnnotationConfigApplicationContext buildInfo = context(
+                Map.of("spring.application.name", "test-service"), AdapterConfiguration.class,
+                BuildPropertiesConfiguration.class)) {
+            MapInBootBootstrap bootstrap = buildInfo.getBean(MapInBootBootstrap.class);
+            buildInfo.publishEvent(readyEvent(buildInfo));
+            await(() -> bootstrap.snapshot() != null || bootstrap.failure() != null);
+            assertNull(bootstrap.failure());
+            assertEquals("build-version", bootstrap.snapshot().applicationVersion());
+        }
+
+        try (AnnotationConfigApplicationContext unknown = context(
+                Map.of("spring.application.name", "test-service"), AdapterConfiguration.class)) {
+            MapInBootBootstrap bootstrap = unknown.getBean(MapInBootBootstrap.class);
+            unknown.publishEvent(readyEvent(unknown));
+            await(() -> bootstrap.snapshot() != null || bootstrap.failure() != null);
+            assertNull(bootstrap.failure());
+            assertEquals("UNKNOWN", bootstrap.snapshot().applicationVersion());
+        }
     }
 
     @Test
@@ -141,7 +177,7 @@ class MapInBootBootstrapTest {
             context.publishEvent(readyEvent(otherContext));
             context.publishEvent(readyEvent(context));
             context.publishEvent(readyEvent(context));
-            await(() -> bootstrap.analysisReport() != null || bootstrap.failure() != null);
+            await(() -> bootstrap.snapshot() != null || bootstrap.failure() != null);
 
             assertNull(bootstrap.failure());
             assertEquals(1, collector.calls());
@@ -153,6 +189,9 @@ class MapInBootBootstrapTest {
             assertEquals(1, bootstrap.analysisReport().relations().size());
             assertEquals(AnalysisStatus.PARTIAL,
                     bootstrap.analysisReport().statusByAdapter().get("analyzer"));
+            assertNotNull(bootstrap.snapshot());
+            assertEquals(AnalysisStatus.PARTIAL,
+                    bootstrap.snapshot().analysisStatus().get("analyzer"));
         }
 
         try (AnnotationConfigApplicationContext context = context(Map.of(), FailingProviderConfiguration.class)) {
@@ -164,6 +203,23 @@ class MapInBootBootstrapTest {
             assertInstanceOf(MapInBootException.class, bootstrap.failure());
             assertNull(bootstrap.collectionReport());
             assertNull(bootstrap.analysisReport());
+            assertNull(bootstrap.snapshot());
+        }
+    }
+
+    @Test
+    void bootstrapPreservesReportsWhenFindingEvaluationFails() {
+        try (AnnotationConfigApplicationContext context = context(
+                Map.of("spring.application.name", "test-service"), FailingFindingConfiguration.class)) {
+            MapInBootBootstrap bootstrap = context.getBean(MapInBootBootstrap.class);
+
+            context.publishEvent(readyEvent(context));
+            await(() -> bootstrap.failure() != null);
+
+            assertInstanceOf(MapInBootException.class, bootstrap.failure());
+            assertNotNull(bootstrap.collectionReport());
+            assertNotNull(bootstrap.analysisReport());
+            assertNull(bootstrap.snapshot());
         }
     }
 
@@ -190,7 +246,7 @@ class MapInBootBootstrapTest {
             TestAnalyzer analyzer = context.getBean(TestAnalyzer.class);
 
             context.publishEvent(readyEvent(context));
-            await(() -> bootstrap.analysisReport() != null || bootstrap.failure() != null);
+            await(() -> bootstrap.snapshot() != null || bootstrap.failure() != null);
 
             assertNull(bootstrap.failure());
             assertEquals(expectedServiceId, collector.serviceId());
@@ -261,6 +317,26 @@ class MapInBootBootstrapTest {
         }
     }
 
+    @Configuration(proxyBeanMethods = false)
+    static class FailingFindingConfiguration {
+        @Bean
+        FindingEvaluator findingEvaluator() {
+            return ignored -> {
+                throw new IllegalStateException("Finding evaluation failure");
+            };
+        }
+    }
+
+    @Configuration(proxyBeanMethods = false)
+    static class BuildPropertiesConfiguration {
+        @Bean
+        BuildProperties buildProperties() {
+            java.util.Properties properties = new java.util.Properties();
+            properties.setProperty("version", "build-version");
+            return new BuildProperties(properties);
+        }
+    }
+
     static class TestCollector extends AbstractCollectorAdapter {
         private final AtomicInteger calls = new AtomicInteger();
         private final AtomicReference<String> serviceId = new AtomicReference<>();
@@ -309,7 +385,7 @@ class MapInBootBootstrapTest {
             calls.incrementAndGet();
             serviceId.set(context.serviceId());
             Relation relation = new Relation(
-                    "relation", "endpoint", "handler", EdgeType.FLOWS_TO,
+                    "relation", "endpoint", "TestHandler#handle", EdgeType.FLOWS_TO,
                     Map.of("flowKind", "HANDLER"), Confidence.CONFIRMED, List.of("evidence"));
             return new AnalysisResult(id(), List.of(relation), List.of(), AnalysisStatus.PARTIAL, List.of());
         }

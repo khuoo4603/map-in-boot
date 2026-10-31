@@ -1,8 +1,19 @@
 dependencies {
     api project(':map-in-boot-core')
     api 'org.springframework.boot:spring-boot-autoconfigure:4.0.9'
+    implementation 'tools.jackson.core:jackson-databind:3.1.7'
     compileOnly 'org.springframework.boot:spring-boot-starter-webmvc:4.0.9'
 
     testImplementation 'org.springframework.boot:spring-boot-starter-webmvc:4.0.9'
     testImplementation 'org.springframework.boot:spring-boot-starter-webmvc-test:4.0.9'
+}
+
+processResources {
+    filesMatching('META-INF/map-in-boot-version.properties') {
+        expand(sdkVersion: project.version.toString())
+    }
+}
+
+test {
+    systemProperty 'mapinboot.project.version', project.version.toString()
 }
