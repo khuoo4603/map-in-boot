@@ -5,6 +5,7 @@ import com.nimbusds.jose.JWSHeader;
 import com.nimbusds.jose.crypto.RSASSASigner;
 import com.nimbusds.jwt.JWTClaimsSet;
 import com.nimbusds.jwt.SignedJWT;
+import com.mapinboot.demo.account.repository.InMemorySavingsSubscriptionRepository;
 import java.io.FileOutputStream;
 import java.nio.file.Path;
 import java.security.KeyPair;
@@ -26,10 +27,12 @@ import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 import org.springframework.web.context.WebApplicationContext;
+import org.springframework.http.MediaType;
 
 import static org.hamcrest.Matchers.containsInAnyOrder;
 import static org.hamcrest.Matchers.hasSize;
 import static org.springframework.security.test.web.servlet.setup.SecurityMockMvcConfigurers.springSecurity;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -51,6 +54,9 @@ class AccountAuthIntegrationTest {
 
     @Autowired
     private WebApplicationContext context;
+
+    @Autowired
+    private InMemorySavingsSubscriptionRepository subscriptionRepository;
 
     private MockMvc mockMvc;
 
@@ -75,6 +81,7 @@ class AccountAuthIntegrationTest {
 
     @BeforeEach
     void setUp() {
+        subscriptionRepository.initFixtures();
         this.mockMvc = MockMvcBuilders
                 .webAppContextSetup(context)
                 .apply(springSecurity())
@@ -232,6 +239,197 @@ class AccountAuthIntegrationTest {
     void missingLoanProductReturns404() throws Exception {
         mockMvc.perform(get("/api/public/loans/products/UNKNOWN"))
                 .andExpect(status().isNotFound());
+    }
+
+    @Test
+    @DisplayName("고객별 예적금 가입 목록을 본인 기준으로 분리")
+    void customerSeesOnlyOwnSavings() throws Exception {
+        String customerAToken = createToken("USER001", List.of("ROLE_CUSTOMER"), "demo-identity", "demo-services", Instant.now().plusSeconds(3600), testPrivateKey);
+        String customerBToken = createToken("USER002", List.of("ROLE_CUSTOMER"), "demo-identity", "demo-services", Instant.now().plusSeconds(3600), testPrivateKey);
+
+        mockMvc.perform(get("/api/my/savings")
+                        .header("Authorization", "Bearer " + customerAToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$", hasSize(1)))
+                .andExpect(jsonPath("$[*].subscriptionId", containsInAnyOrder("SAV001")));
+
+        mockMvc.perform(get("/api/my/savings")
+                        .header("Authorization", "Bearer " + customerBToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$", hasSize(1)))
+                .andExpect(jsonPath("$[*].subscriptionId", containsInAnyOrder("SAV002")));
+    }
+
+    @Test
+    @DisplayName("본인 예적금 가입 상세 조회")
+    void customerSeesOwnSavingsDetail() throws Exception {
+        String token = createToken("USER001", List.of("ROLE_CUSTOMER"), "demo-identity", "demo-services", Instant.now().plusSeconds(3600), testPrivateKey);
+
+        mockMvc.perform(get("/api/my/savings/SAV001")
+                        .header("Authorization", "Bearer " + token))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.subscriptionId").value("SAV001"))
+                .andExpect(jsonPath("$.productId").value("DEP-12M"))
+                .andExpect(jsonPath("$.productName").isNotEmpty())
+                .andExpect(jsonPath("$.principal").value(5000000))
+                .andExpect(jsonPath("$.joinedAt").isNotEmpty())
+                .andExpect(jsonPath("$.maturityDate").isNotEmpty())
+                .andExpect(jsonPath("$.status").value("ACTIVE"));
+    }
+
+    @Test
+    @DisplayName("타인 예적금 가입 상세 조회 시 403 반환")
+    void customerCannotSeeOtherSavingsDetail() throws Exception {
+        String token = createToken("USER001", List.of("ROLE_CUSTOMER"), "demo-identity", "demo-services", Instant.now().plusSeconds(3600), testPrivateKey);
+
+        mockMvc.perform(get("/api/my/savings/SAV002")
+                        .header("Authorization", "Bearer " + token))
+                .andExpect(status().isForbidden());
+    }
+
+    @Test
+    @DisplayName("존재하지 않는 예적금 가입 상세 조회 시 404 반환")
+    void missingSavingsDetailReturns404() throws Exception {
+        String token = createToken("USER001", List.of("ROLE_CUSTOMER"), "demo-identity", "demo-services", Instant.now().plusSeconds(3600), testPrivateKey);
+
+        mockMvc.perform(get("/api/my/savings/UNKNOWN")
+                        .header("Authorization", "Bearer " + token))
+                .andExpect(status().isNotFound());
+    }
+
+    @Test
+    @DisplayName("인증 헤더 없이 예적금 가입 목록 요청 시 401 반환")
+    void unauthenticatedSavingsListReturns401() throws Exception {
+        mockMvc.perform(get("/api/my/savings"))
+                .andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    @DisplayName("직원 토큰으로 예적금 가입 요청 시 403 반환")
+    void staffCannotCreateSavings() throws Exception {
+        String token = createToken("STAFF001", List.of("ROLE_STAFF"), "demo-identity", "demo-services", Instant.now().plusSeconds(3600), testPrivateKey);
+
+        mockMvc.perform(post("/api/my/savings")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"productId\":\"DEP-12M\",\"principal\":500000}"))
+                .andExpect(status().isForbidden());
+    }
+
+    @Test
+    @DisplayName("활성 상품 예적금 가입 후 본인 소유로 저장")
+    void customerCreatesSavingsOwnedByTokenSubject() throws Exception {
+        String token = createToken("USER001", List.of("ROLE_CUSTOMER"), "demo-identity", "demo-services", Instant.now().plusSeconds(3600), testPrivateKey);
+
+        mockMvc.perform(post("/api/my/savings")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"productId\":\"DEP-12M\",\"principal\":500000,\"ownerId\":\"USER002\"}"))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.subscriptionId").value("SAVNEW1"))
+                .andExpect(jsonPath("$.ownerId").value("USER001"))
+                .andExpect(jsonPath("$.productId").value("DEP-12M"))
+                .andExpect(jsonPath("$.principal").value(500000))
+                .andExpect(jsonPath("$.joinedAt").isNotEmpty())
+                .andExpect(jsonPath("$.maturityDate").isNotEmpty())
+                .andExpect(jsonPath("$.status").value("ACTIVE"));
+
+        mockMvc.perform(get("/api/my/savings")
+                        .header("Authorization", "Bearer " + token))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$", hasSize(2)))
+                .andExpect(jsonPath("$[*].subscriptionId", containsInAnyOrder("SAV001", "SAVNEW1")));
+
+        mockMvc.perform(get("/api/my/savings/SAVNEW1")
+                        .header("Authorization", "Bearer " + token))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.subscriptionId").value("SAVNEW1"))
+                .andExpect(jsonPath("$.productName").isNotEmpty())
+                .andExpect(jsonPath("$.status").value("ACTIVE"));
+    }
+
+    @Test
+    @DisplayName("예적금 가입 식별자는 동일 JVM에서 중복 생성되지 않음")
+    void savingsSubscriptionIdsAreUnique() throws Exception {
+        String token = createToken("USER001", List.of("ROLE_CUSTOMER"), "demo-identity", "demo-services", Instant.now().plusSeconds(3600), testPrivateKey);
+
+        mockMvc.perform(post("/api/my/savings")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"productId\":\"DEP-12M\",\"principal\":500000}"))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.subscriptionId").value("SAVNEW1"));
+
+        mockMvc.perform(post("/api/my/savings")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"productId\":\"SAV-12M\",\"principal\":600000}"))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.subscriptionId").value("SAVNEW2"));
+    }
+
+    @Test
+    @DisplayName("비활성 상품 예적금 가입 시 409 반환")
+    void inactiveProductCannotBeSubscribed() throws Exception {
+        String token = createToken("USER001", List.of("ROLE_CUSTOMER"), "demo-identity", "demo-services", Instant.now().plusSeconds(3600), testPrivateKey);
+
+        mockMvc.perform(post("/api/my/savings")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"productId\":\"SAV-CLOSED\",\"principal\":500000}"))
+                .andExpect(status().isConflict());
+    }
+
+    @Test
+    @DisplayName("존재하지 않는 상품 예적금 가입 시 404 반환")
+    void missingProductCannotBeSubscribed() throws Exception {
+        String token = createToken("USER001", List.of("ROLE_CUSTOMER"), "demo-identity", "demo-services", Instant.now().plusSeconds(3600), testPrivateKey);
+
+        mockMvc.perform(post("/api/my/savings")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"productId\":\"UNKNOWN\",\"principal\":500000}"))
+                .andExpect(status().isNotFound());
+    }
+
+    @Test
+    @DisplayName("예적금 가입 금액이 양수가 아니면 400 반환")
+    void invalidSavingsPrincipalReturns400() throws Exception {
+        String token = createToken("USER001", List.of("ROLE_CUSTOMER"), "demo-identity", "demo-services", Instant.now().plusSeconds(3600), testPrivateKey);
+
+        mockMvc.perform(post("/api/my/savings")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"productId\":\"DEP-12M\",\"principal\":0}"))
+                .andExpect(status().isBadRequest());
+
+        mockMvc.perform(post("/api/my/savings")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"productId\":\"DEP-12M\",\"principal\":-1}"))
+                .andExpect(status().isBadRequest());
+
+        mockMvc.perform(post("/api/my/savings")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"productId\":\"DEP-12M\",\"principal\":500000.5}"))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.principal").value(500000.5));
+
+        mockMvc.perform(post("/api/my/savings")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"productId\":\"DEP-12M\"}"))
+                .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    @DisplayName("인증 헤더 없이 예적금 가입 요청 시 401 반환")
+    void unauthenticatedSavingsCreationReturns401() throws Exception {
+        mockMvc.perform(post("/api/my/savings")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"productId\":\"DEP-12M\",\"principal\":500000}"))
+                .andExpect(status().isUnauthorized());
     }
 
     @Test
