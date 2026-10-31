@@ -1,3 +1,8 @@
 dependencies {
     api project(':map-in-boot-core')
+    api 'org.springframework.boot:spring-boot-autoconfigure:4.0.9'
+    compileOnly 'org.springframework.boot:spring-boot-starter-webmvc:4.0.9'
+
+    testImplementation 'org.springframework.boot:spring-boot-starter-webmvc:4.0.9'
+    testImplementation 'org.springframework.boot:spring-boot-starter-webmvc-test:4.0.9'
 }
