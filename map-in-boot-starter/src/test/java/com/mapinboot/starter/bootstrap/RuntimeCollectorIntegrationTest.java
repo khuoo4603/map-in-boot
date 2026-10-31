@@ -36,16 +36,19 @@ import java.io.IOException;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
+import java.nio.file.Path;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.SpringBootConfiguration;
 import org.springframework.boot.WebApplicationType;
 import org.springframework.boot.autoconfigure.EnableAutoConfiguration;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.test.context.FilteredClassLoader;
 import org.springframework.boot.web.servlet.FilterRegistrationBean;
 import org.springframework.boot.web.servlet.ServletRegistrationBean;
@@ -69,6 +72,9 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class RuntimeCollectorIntegrationTest {
+    @TempDir
+    Path tempDirectory;
+
     @Test
     void runtimeCollectorsPreserveActualMvcServletAndFilterRegistrations() {
         try (ConfigurableApplicationContext context = webContext(Map.of())) {
@@ -273,6 +279,34 @@ class RuntimeCollectorIntegrationTest {
             assertNotNull(context.getBean(ServletFilterCollectorAdapter.class));
             assertFalse(context.getBean(MapInBootProperties.class).getWeb().isEnabled());
         }
+
+        Path starterOnlyDirectory = tempDirectory.resolve("starter-only");
+        Map<String, Object> starterOnlyProperties = Map.of(
+                "test.analyzer", "false",
+                "mapinboot.snapshot.directory", starterOnlyDirectory.toString());
+        String starterOnlySnapshotId;
+        try (ConfigurableApplicationContext starterOnly = context(
+                RuntimeHost.class, WebApplicationType.SERVLET, starterOnlyProperties)) {
+            MapInBootBootstrap bootstrap = starterOnly.getBean(MapInBootBootstrap.class);
+            await(() -> bootstrap.persistedSnapshot() != null || bootstrap.failure() != null);
+
+            assertNull(bootstrap.failure());
+            assertNotNull(bootstrap.collectionReport());
+            assertNotNull(bootstrap.analysisReport());
+            assertTrue(bootstrap.analysisReport().statusByAdapter().isEmpty());
+            assertNotNull(bootstrap.snapshot());
+            assertNotNull(bootstrap.persistedSnapshot());
+            starterOnlySnapshotId = bootstrap.persistedSnapshot().snapshotId();
+        }
+
+        try (ConfigurableApplicationContext restarted = context(
+                RuntimeHost.class, WebApplicationType.SERVLET, starterOnlyProperties)) {
+            MapInBootBootstrap bootstrap = restarted.getBean(MapInBootBootstrap.class);
+            await(() -> bootstrap.persistedSnapshot() != null || bootstrap.failure() != null);
+
+            assertNull(bootstrap.failure());
+            assertEquals(starterOnlySnapshotId, bootstrap.persistedSnapshot().snapshotId());
+        }
     }
 
     @Test
@@ -305,6 +339,7 @@ class RuntimeCollectorIntegrationTest {
                     Map.entry("spring.application.name", "servlet-only-host"),
                     Map.entry("server.port", "0"),
                     Map.entry("spring.main.banner-mode", "off"),
+                    Map.entry("mapinboot.snapshot.directory", tempDirectory.resolve("servlet-only").toString()),
                     Map.entry("logging.level.root", "OFF")));
 
             try (ConfigurableApplicationContext context = application.run()) {
@@ -401,6 +436,7 @@ class RuntimeCollectorIntegrationTest {
                 Map.entry("spring.application.name", "runtime-host"),
                 Map.entry("server.port", "0"),
                 Map.entry("spring.main.banner-mode", "off"),
+                Map.entry("mapinboot.snapshot.directory", tempDirectory.resolve("runtime-" + System.nanoTime()).toString()),
                 Map.entry("logging.level.root", "OFF")), properties));
         return application.run();
     }
@@ -474,6 +510,7 @@ class RuntimeCollectorIntegrationTest {
         }
 
         @Bean
+        @ConditionalOnProperty(prefix = "test", name = "analyzer", havingValue = "true", matchIfMissing = true)
         CountingAnalyzer countingAnalyzer() {
             return new CountingAnalyzer();
         }

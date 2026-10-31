@@ -21,11 +21,17 @@ import com.mapinboot.core.evidence.Relation;
 import com.mapinboot.core.finding.FindingEvaluator;
 import com.mapinboot.starter.autoconfigure.MapInBootAutoConfiguration;
 import com.mapinboot.starter.autoconfigure.MapInBootProperties;
+import com.mapinboot.starter.snapshot.LocalSnapshotStore;
 import java.time.Duration;
+import java.time.Instant;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.List;
+import java.util.HashMap;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executor;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
@@ -36,20 +42,26 @@ import org.springframework.context.annotation.AnnotationConfigApplicationContext
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.core.env.MapPropertySource;
+import org.junit.jupiter.api.io.TempDir;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class MapInBootBootstrapTest {
+    @TempDir
+    Path tempDirectory;
+
     @Test
     void disabledConfigurationDoesNotCreateBootstrapOrExecutor() {
         try (AnnotationConfigApplicationContext context = context(Map.of("mapinboot.enabled", "false"))) {
             assertFalse(context.containsBean("mapInBootBootstrap"));
             assertFalse(context.containsBean("mapInBootExecutor"));
+            assertFalse(context.containsBean("localSnapshotStore"));
             assertNotNull(context.getBean(MapInBootProperties.class));
         }
     }
@@ -65,9 +77,9 @@ class MapInBootBootstrapTest {
 
     @Test
     void propertiesBindDefaultsAndRetentionBoundaries() {
-        try (AnnotationConfigApplicationContext defaultContext = context(Map.of());
-             AnnotationConfigApplicationContext minimumContext = context(Map.of("mapinboot.snapshot.retention-days", "1"));
-             AnnotationConfigApplicationContext maximumContext = context(Map.of("mapinboot.snapshot.retention-days", "90"))) {
+        try (AnnotationConfigApplicationContext defaultContext = contextWithoutTempDirectory(Map.of());
+             AnnotationConfigApplicationContext minimumContext = contextWithoutTempDirectory(Map.of("mapinboot.snapshot.retention-days", "1"));
+             AnnotationConfigApplicationContext maximumContext = contextWithoutTempDirectory(Map.of("mapinboot.snapshot.retention-days", "90"))) {
             assertTrue(defaultContext.getBean(MapInBootProperties.class).isEnabled());
             assertFalse(defaultContext.getBean(MapInBootProperties.class).getWeb().isEnabled());
             assertEquals("MAP_IN_BOOT_ADMIN", defaultContext.getBean(MapInBootProperties.class).getWeb().getRequiredRole());
@@ -223,15 +235,250 @@ class MapInBootBootstrapTest {
         }
     }
 
+    @Test
+    void bootstrapPersistsSnapshotAndRestoresItBeforeNextAnalysis() throws Exception {
+        Path directory = tempDirectory.resolve("snapshots");
+        String serviceName = "persisted-service";
+        String snapshotId;
+
+        try (AnnotationConfigApplicationContext first = context(Map.of(
+                "spring.application.name", serviceName,
+                "mapinboot.snapshot.directory", directory.toString()), ReadyAdapterConfiguration.class)) {
+            MapInBootBootstrap bootstrap = first.getBean(MapInBootBootstrap.class);
+            assertNotNull(first.getBean(LocalSnapshotStore.class));
+
+            first.publishEvent(readyEvent(first));
+            await(() -> bootstrap.persistedSnapshot() != null || bootstrap.failure() != null);
+
+            assertNull(bootstrap.failure());
+            assertNotNull(bootstrap.snapshot());
+            assertNotNull(bootstrap.persistedSnapshot());
+            snapshotId = bootstrap.persistedSnapshot().snapshotId();
+            assertEquals(1, fileCount(directory));
+        }
+
+        try (AnnotationConfigApplicationContext second = context(Map.of(
+                "spring.application.name", serviceName,
+                "mapinboot.snapshot.directory", directory.toString()), ReadyAdapterConfiguration.class)) {
+            MapInBootBootstrap bootstrap = second.getBean(MapInBootBootstrap.class);
+            Instant restoredCapturedAt = second.getBean(LocalSnapshotStore.class)
+                    .loadLatest(serviceName).orElseThrow().capturedAt();
+            assertNull(bootstrap.persistedSnapshot());
+
+            second.publishEvent(readyEvent(second));
+            await(() -> bootstrap.snapshot() != null || bootstrap.failure() != null);
+            await(() -> bootstrap.failure() == null && bootstrap.snapshot() != null
+                    && bootstrap.persistedSnapshot() != null
+                    && bootstrap.persistedSnapshot().capturedAt().isAfter(restoredCapturedAt));
+
+            assertNull(bootstrap.failure());
+            assertEquals(snapshotId, bootstrap.persistedSnapshot().snapshotId());
+            assertNotEquals(snapshotId, bootstrap.snapshot().snapshotId());
+            assertEquals(bootstrap.persistedSnapshot().graphFingerprint(), bootstrap.snapshot().graphFingerprint());
+        }
+    }
+
+    @Test
+    void partialAnalysisKeepsPreviousPersistedSnapshot() throws Exception {
+        Path directory = tempDirectory.resolve("partial-snapshots");
+        String serviceName = "partial-service";
+        String snapshotId;
+
+        try (AnnotationConfigApplicationContext first = context(Map.of(
+                "spring.application.name", serviceName,
+                "mapinboot.snapshot.directory", directory.toString()), ReadyAdapterConfiguration.class)) {
+            MapInBootBootstrap bootstrap = first.getBean(MapInBootBootstrap.class);
+            first.publishEvent(readyEvent(first));
+            await(() -> bootstrap.persistedSnapshot() != null || bootstrap.failure() != null);
+            assertNull(bootstrap.failure());
+            snapshotId = bootstrap.persistedSnapshot().snapshotId();
+        }
+
+        try (AnnotationConfigApplicationContext second = context(Map.of(
+                "spring.application.name", serviceName,
+                "mapinboot.snapshot.directory", directory.toString()), AdapterConfiguration.class)) {
+            MapInBootBootstrap bootstrap = second.getBean(MapInBootBootstrap.class);
+            second.publishEvent(readyEvent(second));
+            await(() -> bootstrap.snapshot() != null || bootstrap.failure() != null);
+
+            assertNull(bootstrap.failure());
+            assertEquals(snapshotId, bootstrap.persistedSnapshot().snapshotId());
+            assertEquals(1, fileCount(directory));
+        }
+    }
+
+    @Test
+    void firstPartialSnapshotIsNotPromotedToCompleteAfterRestart() throws Exception {
+        Path directory = tempDirectory.resolve("first-partial-snapshots");
+        String serviceName = "first-partial-service";
+
+        try (AnnotationConfigApplicationContext first = context(Map.of(
+                "spring.application.name", serviceName,
+                "mapinboot.snapshot.directory", directory.toString()), AdapterConfiguration.class)) {
+            MapInBootBootstrap bootstrap = first.getBean(MapInBootBootstrap.class);
+            first.publishEvent(readyEvent(first));
+            await(() -> bootstrap.persistedSnapshot() != null || bootstrap.failure() != null);
+            assertNull(bootstrap.failure());
+            assertNotNull(bootstrap.persistedSnapshot());
+            assertEquals(AnalysisStatus.PARTIAL,
+                    bootstrap.persistedSnapshot().analysisStatus().get("analyzer"));
+        }
+
+        try (AnnotationConfigApplicationContext second = context(Map.of(
+                "spring.application.name", serviceName,
+                "mapinboot.snapshot.directory", directory.toString()), AdapterConfiguration.class)) {
+            MapInBootBootstrap bootstrap = second.getBean(MapInBootBootstrap.class);
+            second.publishEvent(readyEvent(second));
+            await(() -> bootstrap.snapshot() != null || bootstrap.failure() != null);
+
+            assertNull(bootstrap.failure());
+            assertNotNull(bootstrap.persistedSnapshot());
+            assertEquals(AnalysisStatus.PARTIAL,
+                    bootstrap.persistedSnapshot().analysisStatus().get("analyzer"));
+        }
+    }
+
+    @Test
+    void readyAdaptersWithoutRequiredEndpointStructureAreNotPersistedAsComplete() {
+        try (AnnotationConfigApplicationContext context = context(Map.of(
+                "spring.application.name", "missing-structure-service"), MissingStructureConfiguration.class)) {
+            MapInBootBootstrap bootstrap = context.getBean(MapInBootBootstrap.class);
+            context.publishEvent(readyEvent(context));
+            await(() -> bootstrap.snapshot() != null || bootstrap.failure() != null);
+
+            assertNull(bootstrap.failure());
+            assertNotNull(bootstrap.collectionReport());
+            assertEquals(AnalysisStatus.READY,
+                    bootstrap.collectionReport().statusByAdapter().get("starter-endpoint-mapping"));
+            assertNotNull(bootstrap.analysisReport());
+            assertEquals(AnalysisStatus.READY,
+                    bootstrap.analysisReport().statusByAdapter().get("analyzer"));
+            assertNotNull(bootstrap.snapshot());
+            assertNull(bootstrap.persistedSnapshot());
+        }
+    }
+
+    @Test
+    void restoreRunsOnExecutorAndDoesNotBlockReadyEventThread() {
+        AtomicReference<Runnable> task = new AtomicReference<>();
+        Executor deferredExecutor = task::set;
+        try (AnnotationConfigApplicationContext context = context(
+                Map.of(), deferredExecutor, SlowSnapshotStoreConfiguration.class, AdapterConfiguration.class)) {
+            MapInBootBootstrap bootstrap = context.getBean(MapInBootBootstrap.class);
+            long start = System.nanoTime();
+
+            context.publishEvent(readyEvent(context));
+
+            long elapsedMillis = Duration.ofNanos(System.nanoTime() - start).toMillis();
+            assertTrue(elapsedMillis < 500, "ApplicationReadyEvent 처리에서 복원 작업을 동기 실행하지 않아야 합니다.");
+            assertNotNull(task.get());
+            assertNull(bootstrap.collectionReport());
+        }
+    }
+
+    @Test
+    void snapshotWriteFailureKeepsCurrentAnalysisSeparateFromPersistedSnapshot() throws Exception {
+        Path file = tempDirectory.resolve("snapshot-file");
+        Files.writeString(file, "existing");
+
+        try (AnnotationConfigApplicationContext context = context(Map.of(
+                "spring.application.name", "write-failure-service",
+                "mapinboot.snapshot.directory", file.toString()), ReadyAdapterConfiguration.class)) {
+            MapInBootBootstrap bootstrap = context.getBean(MapInBootBootstrap.class);
+            context.publishEvent(readyEvent(context));
+            await(() -> bootstrap.failure() instanceof MapInBootException exception
+                    && exception.getErrorCode() == ErrorCode.SNAPSHOT_WRITE_FAILED);
+
+            assertInstanceOf(MapInBootException.class, bootstrap.failure());
+            assertEquals(ErrorCode.SNAPSHOT_WRITE_FAILED,
+                    ((MapInBootException) bootstrap.failure()).getErrorCode());
+            assertNotNull(bootstrap.snapshot());
+            assertNull(bootstrap.persistedSnapshot());
+            assertEquals("existing", Files.readString(file));
+        }
+    }
+
     private AnnotationConfigApplicationContext context(Map<String, Object> properties, Class<?>... configurations) {
+        return context(properties, true, configurations);
+    }
+
+    private AnnotationConfigApplicationContext contextWithoutTempDirectory(
+            Map<String, Object> properties, Class<?>... configurations) {
+        return context(properties, false, configurations);
+    }
+
+    private AnnotationConfigApplicationContext context(
+            Map<String, Object> properties, boolean temporaryDirectory, Class<?>... configurations) {
+        return context(properties, null, temporaryDirectory, configurations);
+    }
+
+    private AnnotationConfigApplicationContext context(
+            Map<String, Object> properties, Executor executor, Class<?>... configurations) {
+        return context(properties, executor, true, configurations);
+    }
+
+    private AnnotationConfigApplicationContext context(
+            Map<String, Object> properties, Executor executor, boolean temporaryDirectory, Class<?>... configurations) {
         AnnotationConfigApplicationContext context = new AnnotationConfigApplicationContext();
-        context.getEnvironment().getPropertySources().addFirst(new MapPropertySource("test", properties));
+        Map<String, Object> contextProperties = new HashMap<>(properties);
+        if (temporaryDirectory) {
+            contextProperties.putIfAbsent("mapinboot.snapshot.directory",
+                    tempDirectory.resolve("context-" + System.nanoTime()).toString());
+        }
+        context.getEnvironment().getPropertySources().addFirst(new MapPropertySource("test", contextProperties));
         if (configurations.length > 0) {
             context.register(configurations);
+        }
+        if (executor != null) {
+            context.registerBean("mapInBootExecutor", ExecutorService.class,
+                    () -> new DelegatingExecutorService(executor));
         }
         context.register(MapInBootAutoConfiguration.class);
         context.refresh();
         return context;
+    }
+
+    private static final class DelegatingExecutorService extends java.util.concurrent.AbstractExecutorService {
+        private final Executor delegate;
+
+        private DelegatingExecutorService(Executor delegate) {
+            this.delegate = delegate;
+        }
+
+        @Override
+        public void shutdown() {
+        }
+
+        @Override
+        public List<Runnable> shutdownNow() {
+            return List.of();
+        }
+
+        @Override
+        public boolean isShutdown() {
+            return false;
+        }
+
+        @Override
+        public boolean isTerminated() {
+            return false;
+        }
+
+        @Override
+        public boolean awaitTermination(long timeout, java.util.concurrent.TimeUnit unit) {
+            return false;
+        }
+
+        @Override
+        public void execute(Runnable command) {
+            delegate.execute(command);
+        }
+    }
+
+    private long fileCount(Path directory) throws java.io.IOException {
+        try (java.util.stream.Stream<Path> paths = Files.list(directory)) {
+            return paths.count();
+        }
     }
 
     private void assertInvalidProperties(Map<String, Object> properties) {
@@ -302,6 +549,32 @@ class MapInBootBootstrapTest {
     }
 
     @Configuration(proxyBeanMethods = false)
+    static class ReadyAdapterConfiguration {
+        @Bean
+        ReadyCollector readyCollector() {
+            return new ReadyCollector();
+        }
+
+        @Bean
+        ReadyAnalyzer readyAnalyzer() {
+            return new ReadyAnalyzer();
+        }
+    }
+
+    @Configuration(proxyBeanMethods = false)
+    static class MissingStructureConfiguration {
+        @Bean
+        MissingStructureCollector missingStructureCollector() {
+            return new MissingStructureCollector();
+        }
+
+        @Bean
+        EmptyReadyAnalyzer emptyReadyAnalyzer() {
+            return new EmptyReadyAnalyzer();
+        }
+    }
+
+    @Configuration(proxyBeanMethods = false)
     static class FailingProviderConfiguration {
         @Bean
         CollectionProvider collectionProvider() {
@@ -337,6 +610,30 @@ class MapInBootBootstrapTest {
         }
     }
 
+    @Configuration(proxyBeanMethods = false)
+    static class SlowSnapshotStoreConfiguration {
+        @Bean
+        LocalSnapshotStore localSnapshotStore() {
+            return new SlowSnapshotStore();
+        }
+    }
+
+    static class SlowSnapshotStore extends LocalSnapshotStore {
+        SlowSnapshotStore() {
+            super(Path.of("slow-snapshot-store"), 7, new com.mapinboot.starter.snapshot.SnapshotJsonCodec());
+        }
+
+        @Override
+        public java.util.Optional<com.mapinboot.core.snapshot.Snapshot> loadLatest(String serviceId) {
+            try {
+                Thread.sleep(750);
+            } catch (InterruptedException exception) {
+                Thread.currentThread().interrupt();
+            }
+            return java.util.Optional.empty();
+        }
+    }
+
     static class TestCollector extends AbstractCollectorAdapter {
         private final AtomicInteger calls = new AtomicInteger();
         private final AtomicReference<String> serviceId = new AtomicReference<>();
@@ -364,6 +661,26 @@ class MapInBootBootstrapTest {
 
         String serviceId() {
             return serviceId.get();
+        }
+    }
+
+    static class ReadyCollector extends TestCollector {
+        @Override
+        public CollectionResult collect(CollectionContext context) {
+            CollectionResult result = super.collect(context);
+            return new CollectionResult(result.adapterId(), result.facts(), result.evidence(), AnalysisStatus.READY,
+                    result.diagnostics());
+        }
+    }
+
+    static class MissingStructureCollector extends AbstractCollectorAdapter {
+        MissingStructureCollector() {
+            super("starter-endpoint-mapping", "필수 Endpoint 구조 없는 테스트 수집기", Set.of("ENDPOINT_MAPPING"));
+        }
+
+        @Override
+        public CollectionResult collect(CollectionContext context) {
+            return new CollectionResult(id(), List.of(), List.of(), AnalysisStatus.READY, List.of());
         }
     }
 
@@ -396,6 +713,26 @@ class MapInBootBootstrapTest {
 
         String serviceId() {
             return serviceId.get();
+        }
+    }
+
+    static class ReadyAnalyzer extends TestAnalyzer {
+        @Override
+        public AnalysisResult analyze(AnalysisContext context) {
+            AnalysisResult result = super.analyze(context);
+            return new AnalysisResult(result.adapterId(), result.relations(), result.additionalEvidence(), AnalysisStatus.READY,
+                    result.diagnostics());
+        }
+    }
+
+    static class EmptyReadyAnalyzer extends AbstractAnalysisAdapter {
+        EmptyReadyAnalyzer() {
+            super("analyzer", "빈 구조 테스트 분석기", Set.of());
+        }
+
+        @Override
+        public AnalysisResult analyze(AnalysisContext context) {
+            return new AnalysisResult(id(), List.of(), List.of(), AnalysisStatus.READY, List.of());
         }
     }
 

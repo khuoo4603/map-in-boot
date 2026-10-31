@@ -9,8 +9,10 @@ import com.mapinboot.starter.bootstrap.MapInBootBootstrap;
 import com.mapinboot.starter.collector.EndpointMappingCollectorAdapter;
 import com.mapinboot.starter.collector.ServletFilterCollectorAdapter;
 import com.mapinboot.starter.collector.ServletRegistrationCollectorAdapter;
+import com.mapinboot.starter.snapshot.LocalSnapshotStore;
 import com.mapinboot.starter.snapshot.SnapshotAssembler;
 import com.mapinboot.starter.snapshot.SnapshotJsonCodec;
+import java.nio.file.Path;
 import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -75,6 +77,15 @@ public class MapInBootAutoConfiguration {
             return new SnapshotJsonCodec();
         }
 
+        @Bean
+        @ConditionalOnMissingBean
+        LocalSnapshotStore localSnapshotStore(MapInBootProperties properties, SnapshotJsonCodec snapshotJsonCodec) {
+            return new LocalSnapshotStore(
+                    Path.of(properties.getSnapshot().getDirectory()),
+                    properties.getSnapshot().getRetentionDays(),
+                    snapshotJsonCodec);
+        }
+
         @Bean(name = "mapInBootExecutor", destroyMethod = "shutdown", defaultCandidate = false)
         @ConditionalOnMissingBean(name = "mapInBootExecutor")
         ExecutorService mapInBootExecutor() {
@@ -95,11 +106,12 @@ public class MapInBootAutoConfiguration {
                 List<AnalysisAdapter> analysisAdapters,
                 @Qualifier("mapInBootExecutor") ExecutorService executor,
                 SnapshotAssembler snapshotAssembler,
-                SnapshotJsonCodec snapshotJsonCodec
+                SnapshotJsonCodec snapshotJsonCodec,
+                LocalSnapshotStore localSnapshotStore
         ) {
             return new MapInBootBootstrap(
                     applicationContext, collectionProvider, analysisProvider, collectorAdapters, analysisAdapters, executor,
-                    snapshotAssembler, snapshotJsonCodec);
+                    snapshotAssembler, snapshotJsonCodec, localSnapshotStore);
         }
     }
 
