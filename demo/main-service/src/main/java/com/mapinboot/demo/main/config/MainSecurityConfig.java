@@ -14,6 +14,7 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.core.annotation.Order;
 import org.springframework.core.convert.converter.Converter;
+import org.springframework.http.HttpMethod;
 import org.springframework.security.authentication.AbstractAuthenticationToken;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
@@ -71,6 +72,7 @@ public class MainSecurityConfig {
             .authorizeHttpRequests(auth -> auth
                 // Demo 정적 리소스 및 오류 페이지 접근 허용
                 .requestMatchers("/demo/**", "/error", "/favicon.ico").permitAll()
+                .requestMatchers(HttpMethod.GET, "/api/public/notices").permitAll()
                 // 기타 모든 요청 기본 인증 요구
                 .anyRequest().authenticated()
             )

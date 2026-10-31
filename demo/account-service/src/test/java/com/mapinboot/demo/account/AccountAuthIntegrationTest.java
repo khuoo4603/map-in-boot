@@ -27,6 +27,7 @@ import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 import org.springframework.web.context.WebApplicationContext;
 
+import static org.hamcrest.Matchers.containsInAnyOrder;
 import static org.hamcrest.Matchers.hasSize;
 import static org.springframework.security.test.web.servlet.setup.SecurityMockMvcConfigurers.springSecurity;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
@@ -122,6 +123,115 @@ class AccountAuthIntegrationTest {
                 .andExpect(jsonPath("$[0].accountId").value("ACC002"))
                 .andExpect(jsonPath("$[0].ownerId").value("USER002"))
                 .andExpect(jsonPath("$[0].balance").value(2800000));
+    }
+
+    @Test
+    @DisplayName("고객 A가 본인 계좌 거래내역 3건 조회")
+    void customerASeesOwnTransactions() throws Exception {
+        String token = createToken("USER001", List.of("ROLE_CUSTOMER"), "demo-identity", "demo-services", Instant.now().plusSeconds(3600), testPrivateKey);
+
+        mockMvc.perform(get("/api/my/accounts/ACC001/transactions")
+                        .header("Authorization", "Bearer " + token))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$", hasSize(3)))
+                .andExpect(jsonPath("$[*].transactionId", containsInAnyOrder("TX001", "TX002", "TX003")));
+    }
+
+    @Test
+    @DisplayName("고객 B가 고객 A 계좌 거래내역 조회 시 403 반환")
+    void customerBCannotSeeCustomerATransactions() throws Exception {
+        String token = createToken("USER002", List.of("ROLE_CUSTOMER"), "demo-identity", "demo-services", Instant.now().plusSeconds(3600), testPrivateKey);
+
+        mockMvc.perform(get("/api/my/accounts/ACC001/transactions")
+                        .header("Authorization", "Bearer " + token))
+                .andExpect(status().isForbidden());
+    }
+
+    @Test
+    @DisplayName("고객 A가 고객 B 계좌 거래내역 조회 시 403 반환")
+    void customerACannotSeeCustomerBTransactions() throws Exception {
+        String token = createToken("USER001", List.of("ROLE_CUSTOMER"), "demo-identity", "demo-services", Instant.now().plusSeconds(3600), testPrivateKey);
+
+        mockMvc.perform(get("/api/my/accounts/ACC002/transactions")
+                        .header("Authorization", "Bearer " + token))
+                .andExpect(status().isForbidden());
+    }
+
+    @Test
+    @DisplayName("인증 헤더 없이 거래내역 요청 시 401 반환")
+    void unauthenticatedTransactionRequestReturns401() throws Exception {
+        mockMvc.perform(get("/api/my/accounts/ACC001/transactions"))
+                .andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    @DisplayName("직원 토큰으로 거래내역 요청 시 403 반환")
+    void staffCannotSeeTransactions() throws Exception {
+        String token = createToken("STAFF001", List.of("ROLE_STAFF"), "demo-identity", "demo-services", Instant.now().plusSeconds(3600), testPrivateKey);
+
+        mockMvc.perform(get("/api/my/accounts/ACC001/transactions")
+                        .header("Authorization", "Bearer " + token))
+                .andExpect(status().isForbidden());
+    }
+
+    @Test
+    @DisplayName("존재하지 않는 계좌 거래내역 요청 시 404 반환")
+    void missingAccountTransactionsReturns404() throws Exception {
+        String token = createToken("USER001", List.of("ROLE_CUSTOMER"), "demo-identity", "demo-services", Instant.now().plusSeconds(3600), testPrivateKey);
+
+        mockMvc.perform(get("/api/my/accounts/UNKNOWN/transactions")
+                        .header("Authorization", "Bearer " + token))
+                .andExpect(status().isNotFound());
+    }
+
+    @Test
+    @DisplayName("익명 예금·적금 상품 목록은 활성 상품만 반환")
+    void anonymousSeesActiveSavingsProducts() throws Exception {
+        mockMvc.perform(get("/api/public/savings/products"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$", hasSize(2)))
+                .andExpect(jsonPath("$[*].productId", containsInAnyOrder("DEP-12M", "SAV-12M")));
+    }
+
+    @Test
+    @DisplayName("예금·적금 상품 상세에서 비활성 상태 확인")
+    void savingsProductDetailShowsInactiveState() throws Exception {
+        mockMvc.perform(get("/api/public/savings/products/SAV-CLOSED"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.productId").value("SAV-CLOSED"))
+                .andExpect(jsonPath("$.active").value(false));
+    }
+
+    @Test
+    @DisplayName("존재하지 않는 예금·적금 상품 상세 요청 시 404 반환")
+    void missingSavingsProductReturns404() throws Exception {
+        mockMvc.perform(get("/api/public/savings/products/UNKNOWN"))
+                .andExpect(status().isNotFound());
+    }
+
+    @Test
+    @DisplayName("익명 대출상품 목록은 판매 중 상품 반환")
+    void anonymousSeesLoanProducts() throws Exception {
+        mockMvc.perform(get("/api/public/loans/products"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$", hasSize(2)))
+                .andExpect(jsonPath("$[*].productId", containsInAnyOrder("LOAN-BASIC", "LOAN-HOUSE")));
+    }
+
+    @Test
+    @DisplayName("대출상품 상세 조회 성공")
+    void loanProductDetailReturnsProduct() throws Exception {
+        mockMvc.perform(get("/api/public/loans/products/LOAN-BASIC"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.productId").value("LOAN-BASIC"))
+                .andExpect(jsonPath("$.active").value(true));
+    }
+
+    @Test
+    @DisplayName("존재하지 않는 대출상품 상세 요청 시 404 반환")
+    void missingLoanProductReturns404() throws Exception {
+        mockMvc.perform(get("/api/public/loans/products/UNKNOWN"))
+                .andExpect(status().isNotFound());
     }
 
     @Test
