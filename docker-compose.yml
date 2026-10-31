@@ -1,0 +1,110 @@
+name: ${COMPOSE_PROJECT_NAME:-mapinboot-demo}
+
+services:
+  jwt-init:
+    image: alpine:3.20
+    container_name: ${COMPOSE_PROJECT_NAME:-mapinboot-demo}-jwt-init
+    command: >
+      sh -c "
+      set -eu;
+      apk add --no-cache openssl >/dev/null 2>&1;
+      if [ ! -s /keys-private/jwt-private.pem ] || [ ! -s /keys-public/jwt-public.pem ]; then
+        echo 'Generating RSA 2048 JWT key pair...';
+        openssl genpkey -algorithm RSA -out /keys-private/jwt-private.pem -pkeyopt rsa_keygen_bits:2048;
+        openssl rsa -pubout -in /keys-private/jwt-private.pem -out /keys-public/jwt-public.pem;
+        chmod 600 /keys-private/jwt-private.pem;
+        chmod 644 /keys-public/jwt-public.pem;
+        if [ ! -s /keys-private/jwt-private.pem ] || [ ! -s /keys-public/jwt-public.pem ]; then
+          echo 'JWT key generation failed or empty key files.';
+          exit 1;
+        fi;
+        echo 'JWT key pair generated successfully.';
+      else
+        echo 'JWT key pair already exists, reusing existing keys.';
+      fi
+      "
+    volumes:
+      - jwt-private-keys:/keys-private
+      - jwt-public-keys:/keys-public
+    networks:
+      - demo-net
+
+  identity-service:
+    container_name: ${COMPOSE_PROJECT_NAME:-mapinboot-demo}-identity
+    build:
+      context: .
+      dockerfile: demo/identity-service/Dockerfile
+    entrypoint: ["sh", "-c", "mkdir -p /keys && ln -sf /keys-private/* /keys/ 2>/dev/null; ln -sf /keys-public/* /keys/ 2>/dev/null; exec java -jar app.jar"]
+    ports:
+      - "127.0.0.1:${IDENTITY_PORT:-18081}:18081"
+    environment:
+      IDENTITY_PORT: "18081"
+      DEMO_TEST_PASSWORD: "${DEMO_TEST_PASSWORD}"
+      JWT_PRIVATE_KEY_PATH: "/keys/jwt-private.pem"
+      JWT_PUBLIC_KEY_PATH: "/keys/jwt-public.pem"
+      JWT_ISSUER: "${JWT_ISSUER:-demo-identity}"
+      JWT_AUDIENCE: "${JWT_AUDIENCE:-demo-services}"
+    volumes:
+      - jwt-private-keys:/keys-private:ro
+      - jwt-public-keys:/keys-public:ro
+    depends_on:
+      jwt-init:
+        condition: service_completed_successfully
+    networks:
+      - demo-net
+
+  account-service:
+    container_name: ${COMPOSE_PROJECT_NAME:-mapinboot-demo}-account
+    build:
+      context: .
+      dockerfile: demo/account-service/Dockerfile
+    entrypoint: ["sh", "-c", "mkdir -p /keys && ln -sf /keys-public/* /keys/ 2>/dev/null; exec java -jar app.jar"]
+    ports:
+      - "127.0.0.1:${ACCOUNT_PORT:-18082}:18082"
+    environment:
+      ACCOUNT_PORT: "18082"
+      JWT_PUBLIC_KEY_PATH: "/keys/jwt-public.pem"
+      JWT_ISSUER: "${JWT_ISSUER:-demo-identity}"
+      JWT_AUDIENCE: "${JWT_AUDIENCE:-demo-services}"
+    volumes:
+      - jwt-public-keys:/keys-public:ro
+    depends_on:
+      jwt-init:
+        condition: service_completed_successfully
+    networks:
+      - demo-net
+
+  main-service:
+    container_name: ${COMPOSE_PROJECT_NAME:-mapinboot-demo}-main
+    build:
+      context: .
+      dockerfile: demo/main-service/Dockerfile
+    entrypoint: ["sh", "-c", "mkdir -p /keys && ln -sf /keys-public/* /keys/ 2>/dev/null; exec java -jar app.jar"]
+    ports:
+      - "127.0.0.1:${MAIN_PORT:-18080}:18080"
+    environment:
+      MAIN_PORT: "18080"
+      IDENTITY_BASE_URL: "http://identity-service:18081"
+      ACCOUNT_BASE_URL: "http://account-service:18082"
+      JWT_PUBLIC_KEY_PATH: "/keys/jwt-public.pem"
+      JWT_ISSUER: "${JWT_ISSUER:-demo-identity}"
+      JWT_AUDIENCE: "${JWT_AUDIENCE:-demo-services}"
+    volumes:
+      - jwt-public-keys:/keys-public:ro
+    depends_on:
+      jwt-init:
+        condition: service_completed_successfully
+      identity-service:
+        condition: service_started
+      account-service:
+        condition: service_started
+    networks:
+      - demo-net
+
+volumes:
+  jwt-private-keys:
+  jwt-public-keys:
+
+networks:
+  demo-net:
+    name: ${COMPOSE_PROJECT_NAME:-mapinboot-demo}-net

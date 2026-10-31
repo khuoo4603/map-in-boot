@@ -44,3 +44,11 @@ bin/
 .DS_Store
 
 .instructions/
+
+### Environment & Secrets ###
+.env
+*.env
+*.pem
+*.key
+*.p12
+*.jks
