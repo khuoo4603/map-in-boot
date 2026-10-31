@@ -5,3 +5,10 @@ spring:
   application:
     name: account-service
 
+demo:
+  jwt:
+    public-key-path: ${JWT_PUBLIC_KEY_PATH:}
+    issuer: ${JWT_ISSUER:demo-identity}
+    audience: ${JWT_AUDIENCE:demo-services}
+
+

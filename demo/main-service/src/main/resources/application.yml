@@ -5,6 +5,13 @@ spring:
   application:
     name: main-service
 
+demo:
+  jwt:
+    public-key-path: ${JWT_PUBLIC_KEY_PATH:}
+    issuer: ${JWT_ISSUER:demo-identity}
+    audience: ${JWT_AUDIENCE:demo-services}
+
+
 app:
   services:
     identity-url: ${IDENTITY_BASE_URL:http://localhost:18081}

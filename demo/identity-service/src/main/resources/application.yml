@@ -5,3 +5,12 @@ spring:
   application:
     name: identity-service
 
+demo:
+  jwt:
+    private-key-path: ${JWT_PRIVATE_KEY_PATH:}
+    public-key-path: ${JWT_PUBLIC_KEY_PATH:}
+    issuer: ${JWT_ISSUER:demo-identity}
+    audience: ${JWT_AUDIENCE:demo-services}
+    access-token-expiration-seconds: 3600
+
+
