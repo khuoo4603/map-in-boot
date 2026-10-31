@@ -12,5 +12,7 @@ demo:
     issuer: ${JWT_ISSUER:demo-identity}
     audience: ${JWT_AUDIENCE:demo-services}
     access-token-expiration-seconds: 3600
+  identity:
+    demo-otp: "123456"
 
 

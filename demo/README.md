@@ -43,3 +43,28 @@ docker compose --env-file ../.env down
 ## 6. 참고 사항
 - JWT 서명용 RSA 키(2048비트)는 Compose 실행 시 `jwt-init` 컨테이너를 통해 Docker Named Volume에 자동 생성 및 보관됩니다.
 - 생성된 키는 Compose 재시작 시에도 유지되며, 로컬 보안 테스트 전용으로 동작합니다.
+
+## 7. Identity Session 로그인 사용 방법
+Identity의 기존 `/api/auth/login` 요청 본문과 `accessToken`, `expiresIn`, `user` 응답 계약은 유지됩니다. 브라우저에서 Session 인증을 함께 사용하려면 로그인 전에 CSRF Token을 발급받아야 합니다.
+
+1. `GET http://localhost:18081/api/auth/csrf` 요청에 `credentials: "include"`를 설정합니다. 응답 JSON의 `token`과 브라우저에 저장된 `XSRF-TOKEN` Cookie를 확인합니다.
+2. 기존과 같은 JSON으로 `POST http://localhost:18081/api/auth/login`을 호출하되, `credentials: "include"`와 `X-XSRF-TOKEN` Header를 함께 전달합니다.
+3. 로그인 이후 Session 인증 요청과 `POST /api/auth/logout`, `POST /api/identity/verify`에도 `credentials: "include"`와 동일한 CSRF Header를 전달합니다.
+
+```javascript
+const csrf = await fetch("http://localhost:18081/api/auth/csrf", {
+  credentials: "include"
+}).then(response => response.json());
+
+await fetch("http://localhost:18081/api/auth/login", {
+  method: "POST",
+  credentials: "include",
+  headers: {
+    "Content-Type": "application/json",
+    "X-XSRF-TOKEN": csrf.token
+  },
+  body: JSON.stringify({ username, password })
+});
+```
+
+`XSRF-TOKEN`은 Header 전달을 위해 `HttpOnly`가 아니며, 인증용 `MIB_IDENTITY_SESSION` Cookie는 `HttpOnly`로 발급됩니다. `Authorization: Bearer <JWT>` 요청은 기존 JWT 계약을 그대로 사용하며 Session Cookie를 새로 생성하지 않습니다.
