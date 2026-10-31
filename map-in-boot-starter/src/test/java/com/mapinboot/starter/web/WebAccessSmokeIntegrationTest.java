@@ -17,8 +17,10 @@ import com.mapinboot.starter.snapshot.LocalSnapshotStore;
 import com.mapinboot.starter.snapshot.SnapshotAssembler;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.Base64;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -30,6 +32,13 @@ import org.springframework.boot.autoconfigure.EnableAutoConfiguration;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.context.ConfigurableApplicationContext;
 import org.springframework.context.annotation.Bean;
+import org.springframework.security.config.Customizer;
+import org.springframework.security.config.annotation.web.builders.HttpSecurity;
+import org.springframework.security.core.userdetails.User;
+import org.springframework.security.provisioning.InMemoryUserDetailsManager;
+import org.springframework.security.core.userdetails.UserDetailsService;
+import org.springframework.security.web.SecurityFilterChain;
+import org.springframework.security.web.FilterChainProxy;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.context.WebApplicationContext;
@@ -168,6 +177,40 @@ class WebAccessSmokeIntegrationTest {
         }
     }
 
+    @Test
+    void actualSecurityFilterChainProvidesPrincipalAndRoleToSdkAccessGuard() throws Exception {
+        try (ConfigurableApplicationContext context = start(
+                SecurityHost.class,
+                Map.of("mapinboot.web.enabled", "true", "mapinboot.snapshot.directory",
+                        tempDirectory.resolve("security-snapshots").toString()))) {
+            MapInBootBootstrap bootstrap = context.getBean(MapInBootBootstrap.class);
+            await(() -> bootstrap.persistedSnapshot() != null || bootstrap.failureCode() != null);
+            MockMvc mvc = MockMvcBuilders.webAppContextSetup((WebApplicationContext) context)
+                    .addFilters(context.getBean(FilterChainProxy.class))
+                    .build();
+
+            mvc.perform(get("/mapinboot/api/status"))
+                    .andExpect(status().isUnauthorized());
+            mvc.perform(get("/mapinboot/api/status").with(basic("viewer", "password")))
+                    .andExpect(status().isForbidden());
+            mvc.perform(get("/mapinboot/api/status").with(basic("admin", "password")))
+                    .andExpect(status().isOk());
+            mvc.perform(get("/mapinboot/smoke.txt").with(basic("admin", "password")))
+                    .andExpect(status().isOk());
+            mvc.perform(post("/mapinboot/api/snapshot").with(basic("admin", "password")))
+                    .andExpect(status().isMethodNotAllowed());
+        }
+    }
+
+    private RequestPostProcessor basic(String username, String password) {
+        String credentials = Base64.getEncoder().encodeToString(
+                (username + ":" + password).getBytes(StandardCharsets.UTF_8));
+        return request -> {
+            request.addHeader("Authorization", "Basic " + credentials);
+            return request;
+        };
+    }
+
     private ConfigurableApplicationContext start(Class<?> source, Map<String, Object> properties) {
         SpringApplication application = new SpringApplication(source);
         application.setWebApplicationType(WebApplicationType.SERVLET);
@@ -254,6 +297,40 @@ class WebAccessSmokeIntegrationTest {
         static class HostController {
             @GetMapping("/partial")
             String partial() {
+                return "ok";
+            }
+        }
+    }
+
+    @SpringBootApplication(scanBasePackages = "com.mapinboot.testhost")
+    @EnableAutoConfiguration
+    static class SecurityHost {
+        @Bean
+        SecurityFilterChain securityFilterChain(HttpSecurity http) throws Exception {
+            return http
+                    .csrf(csrf -> csrf.disable())
+                    .authorizeHttpRequests(authorize -> authorize.anyRequest().permitAll())
+                    .httpBasic(Customizer.withDefaults())
+                    .build();
+        }
+
+        @Bean
+        UserDetailsService userDetailsService() {
+            return new InMemoryUserDetailsManager(
+                    User.withUsername("admin")
+                            .password("{noop}password")
+                            .roles("MAP_IN_BOOT_ADMIN")
+                            .build(),
+                    User.withUsername("viewer")
+                            .password("{noop}password")
+                            .roles("MAP_IN_BOOT_VIEWER")
+                            .build());
+        }
+
+        @RestController
+        static class HostController {
+            @GetMapping("/host")
+            String host() {
                 return "ok";
             }
         }
