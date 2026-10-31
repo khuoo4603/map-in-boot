@@ -14,6 +14,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
@@ -53,6 +54,9 @@ class IdentityAuthIntegrationTest {
 
     @Autowired
     private InMemoryIdentityStateRepository identityStateRepository;
+
+    @Value("${DEMO_CORS_ALLOWED_ORIGINS:http://localhost:8080}")
+    private String corsAllowedOrigins;
 
     private MockMvc mockMvc;
 
@@ -209,13 +213,25 @@ class IdentityAuthIntegrationTest {
     @Test
     @DisplayName("허용 Origin의 credentialed CORS preflight 응답")
     void allowedCorsPreflight() throws Exception {
+        String allowedOrigin = corsAllowedOrigins.split(",")[0].trim();
         mockMvc.perform(options("/api/auth/login")
-                        .header(HttpHeaders.ORIGIN, "http://localhost:18080")
+                        .header(HttpHeaders.ORIGIN, allowedOrigin)
                         .header(HttpHeaders.ACCESS_CONTROL_REQUEST_METHOD, "POST")
                         .header(HttpHeaders.ACCESS_CONTROL_REQUEST_HEADERS, "content-type,x-xsrf-token"))
                 .andExpect(status().isOk())
-                .andExpect(header().string(HttpHeaders.ACCESS_CONTROL_ALLOW_ORIGIN, "http://localhost:18080"))
+                .andExpect(header().string(HttpHeaders.ACCESS_CONTROL_ALLOW_ORIGIN, allowedOrigin))
                 .andExpect(header().string(HttpHeaders.ACCESS_CONTROL_ALLOW_CREDENTIALS, "true"));
+    }
+
+    @Test
+    @DisplayName("미허용 Origin의 credentialed CORS preflight 거부")
+    void disallowedCorsPreflight() throws Exception {
+        mockMvc.perform(options("/api/auth/login")
+                        .header(HttpHeaders.ORIGIN, "https://example.com")
+                        .header(HttpHeaders.ACCESS_CONTROL_REQUEST_METHOD, "POST")
+                        .header(HttpHeaders.ACCESS_CONTROL_REQUEST_HEADERS, "content-type,x-xsrf-token"))
+                .andExpect(status().isForbidden())
+                .andExpect(header().doesNotExist(HttpHeaders.ACCESS_CONTROL_ALLOW_ORIGIN));
     }
 
     @Test

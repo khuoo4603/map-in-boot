@@ -14,5 +14,5 @@ RUN sh ./gradlew :demo:account-service:bootJar -x test --no-daemon
 FROM eclipse-temurin:17-jre
 WORKDIR /app
 COPY --from=builder /workspace/demo/account-service/build/libs/account-service-*.jar app.jar
-EXPOSE 18082
+EXPOSE 8082
 ENTRYPOINT ["java", "-jar", "app.jar"]

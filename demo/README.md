@@ -3,9 +3,9 @@
 가상 금융 서비스 시나리오를 바탕으로 Spring Security 보안 정책과 권한 제어를 실증·검증하는 로컬 테스트 환경입니다.
 
 ## 1. 서비스 구성
-- **Main Service (18080)**: 웹 포털 UI 진입점 및 공개 리소스 제공
-- **Identity Service (18081)**: 사용자 인증, BCrypt 비밀번호 검증 및 RS256 비대칭 서명 JWT 발급
-- **Account Service (18082)**: 공개키 기반 JWT 검증 및 고객별 본인 계좌 조회 인가 처리
+- **Main Service (8080)**: 웹 포털 UI 진입점 및 공개 리소스 제공
+- **Identity Service (8081)**: 사용자 인증, BCrypt 비밀번호 검증 및 RS256 비대칭 서명 JWT 발급
+- **Account Service (8082)**: 공개키 기반 JWT 검증 및 고객별 본인 계좌 조회 인가 처리
 
 ## 2. 사전 요구사항
 - Git
@@ -28,7 +28,9 @@ docker compose --env-file ../.env up --build -d
 ```
 
 ## 4. 접속 주소 및 테스트 계정
-- **웹 포털 주소**: `http://localhost:18080/demo/`
+- **웹 포털 주소**: `http://localhost:8080/demo/`
+- **Identity API 주소**: `http://localhost:8081`
+- **Account API 주소**: `http://localhost:8082`
 - **테스트 계정 목록**:
   - 고객: `customer.a` (USER001), `customer.b` (USER002)
   - 직원: `staff.a` (STAFF001), `staff.b` (STAFF002)
@@ -47,16 +49,16 @@ docker compose --env-file ../.env down
 ## 7. Identity Session 로그인 사용 방법
 Identity의 기존 `/api/auth/login` 요청 본문과 `accessToken`, `expiresIn`, `user` 응답 계약은 유지됩니다. 브라우저에서 Session 인증을 함께 사용하려면 로그인 전에 CSRF Token을 발급받아야 합니다.
 
-1. `GET http://localhost:18081/api/auth/csrf` 요청에 `credentials: "include"`를 설정합니다. 응답 JSON의 `token`과 브라우저에 저장된 `XSRF-TOKEN` Cookie를 확인합니다.
-2. 기존과 같은 JSON으로 `POST http://localhost:18081/api/auth/login`을 호출하되, `credentials: "include"`와 `X-XSRF-TOKEN` Header를 함께 전달합니다.
+1. `GET http://localhost:8081/api/auth/csrf` 요청에 `credentials: "include"`를 설정합니다. 응답 JSON의 `token`과 브라우저에 저장된 `XSRF-TOKEN` Cookie를 확인합니다.
+2. 기존과 같은 JSON으로 `POST http://localhost:8081/api/auth/login`을 호출하되, `credentials: "include"`와 `X-XSRF-TOKEN` Header를 함께 전달합니다.
 3. 로그인 이후 Session 인증 요청과 `POST /api/auth/logout`, `POST /api/identity/verify`에도 `credentials: "include"`와 동일한 CSRF Header를 전달합니다.
 
 ```javascript
-const csrf = await fetch("http://localhost:18081/api/auth/csrf", {
+const csrf = await fetch("http://localhost:8081/api/auth/csrf", {
   credentials: "include"
 }).then(response => response.json());
 
-await fetch("http://localhost:18081/api/auth/login", {
+await fetch("http://localhost:8081/api/auth/login", {
   method: "POST",
   credentials: "include",
   headers: {
@@ -68,3 +70,17 @@ await fetch("http://localhost:18081/api/auth/login", {
 ```
 
 `XSRF-TOKEN`은 Header 전달을 위해 `HttpOnly`가 아니며, 인증용 `MIB_IDENTITY_SESSION` Cookie는 `HttpOnly`로 발급됩니다. `Authorization: Bearer <JWT>` 요청은 기존 JWT 계약을 그대로 사용하며 Session Cookie를 새로 생성하지 않습니다.
+
+## 8. 포트 및 CORS 설정
+
+- 기본 호스트·컨테이너 포트: Main `8080`, Identity `8081`, Account `8082`
+- Compose 내부 서비스 주소: `identity-service:8081`, `account-service:8082`
+- 외부 `.env`의 `MAIN_PORT`, `IDENTITY_PORT`, `ACCOUNT_PORT`는 호스트 공개 포트만 Override
+- 외부 `.env`의 `DEMO_CORS_ALLOWED_ORIGINS`는 브라우저 Main Origin을 쉼표로 구분하여 명시
+- 컨테이너 내부 포트와 서비스 간 호출 주소는 호스트 포트 Override와 무관하게 유지
+
+Repository 외부 `.env`에 로컬 실행 값을 입력한 뒤 다음 명령으로 적용합니다.
+
+```bash
+docker compose --env-file ../.env up --build -d
+```

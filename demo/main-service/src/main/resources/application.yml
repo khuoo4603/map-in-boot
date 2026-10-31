@@ -1,5 +1,5 @@
 server:
-  port: ${MAIN_PORT:18080}
+  port: ${MAIN_PORT:8080}
 
 spring:
   application:
@@ -14,6 +14,6 @@ demo:
 
 app:
   services:
-    identity-url: ${IDENTITY_BASE_URL:http://localhost:18081}
-    account-url: ${ACCOUNT_BASE_URL:http://localhost:18082}
+    identity-url: ${IDENTITY_BASE_URL:http://localhost:8081}
+    account-url: ${ACCOUNT_BASE_URL:http://localhost:8082}
 
