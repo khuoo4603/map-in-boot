@@ -14,6 +14,7 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.core.annotation.Order;
 import org.springframework.core.convert.converter.Converter;
+import org.springframework.http.HttpMethod;
 import org.springframework.security.authentication.AbstractAuthenticationToken;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
@@ -45,14 +46,17 @@ public class MainSecurityConfig {
     private final String publicKeyPath;
     private final String issuer;
     private final String audience;
+    private final String corsAllowedOrigins;
 
     public MainSecurityConfig(
             @Value("${demo.jwt.public-key-path:}") String publicKeyPath,
             @Value("${demo.jwt.issuer:demo-identity}") String issuer,
-            @Value("${demo.jwt.audience:demo-services}") String audience) {
+            @Value("${demo.jwt.audience:demo-services}") String audience,
+            @Value("${DEMO_CORS_ALLOWED_ORIGINS:}") String corsAllowedOrigins) {
         this.publicKeyPath = publicKeyPath;
         this.issuer = issuer;
         this.audience = audience;
+        this.corsAllowedOrigins = corsAllowedOrigins;
     }
 
     /**
@@ -68,6 +72,7 @@ public class MainSecurityConfig {
             .authorizeHttpRequests(auth -> auth
                 // Demo 정적 리소스 및 오류 페이지 접근 허용
                 .requestMatchers("/demo/**", "/error", "/favicon.ico").permitAll()
+                .requestMatchers(HttpMethod.GET, "/api/public/notices").permitAll()
                 // 기타 모든 요청 기본 인증 요구
                 .anyRequest().authenticated()
             )
@@ -137,10 +142,7 @@ public class MainSecurityConfig {
     @Bean
     public CorsConfigurationSource corsConfigurationSource() {
         CorsConfiguration configuration = new CorsConfiguration();
-        configuration.setAllowedOrigins(List.of(
-            "http://localhost:18080",
-            "http://127.0.0.1:18080"
-        ));
+        configuration.setAllowedOrigins(resolveCorsAllowedOrigins());
         configuration.setAllowedMethods(List.of("GET", "POST", "PUT", "DELETE", "OPTIONS"));
         configuration.setAllowedHeaders(List.of("Authorization", "Content-Type", "X-Requested-With"));
         configuration.setAllowCredentials(true);
@@ -148,5 +150,26 @@ public class MainSecurityConfig {
         UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();
         source.registerCorsConfiguration("/**", configuration);
         return source;
+    }
+
+    private List<String> resolveCorsAllowedOrigins() {
+        if (corsAllowedOrigins == null || corsAllowedOrigins.isBlank()) {
+            return List.of("http://localhost:8080", "http://127.0.0.1:8080");
+        }
+
+        List<String> origins = new ArrayList<>();
+        for (String origin : corsAllowedOrigins.split(",")) {
+            String trimmedOrigin = origin.trim();
+            if (trimmedOrigin.isEmpty()) {
+                continue;
+            }
+            if (trimmedOrigin.contains("*")) {
+                throw new IllegalArgumentException("CORS 와일드카드 Origin 미지원");
+            }
+            origins.add(trimmedOrigin);
+        }
+        return origins.isEmpty()
+                ? List.of("http://localhost:8080", "http://127.0.0.1:8080")
+                : origins;
     }
 }

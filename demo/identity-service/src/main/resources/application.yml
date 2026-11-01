@@ -1,5 +1,5 @@
 server:
-  port: ${IDENTITY_PORT:18081}
+  port: ${IDENTITY_PORT:8081}
 
 spring:
   application:

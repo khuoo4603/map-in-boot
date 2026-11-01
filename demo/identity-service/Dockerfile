@@ -14,5 +14,5 @@ RUN sh ./gradlew :demo:identity-service:bootJar -x test --no-daemon
 FROM eclipse-temurin:17-jre
 WORKDIR /app
 COPY --from=builder /workspace/demo/identity-service/build/libs/identity-service-*.jar app.jar
-EXPOSE 18081
+EXPOSE 8081
 ENTRYPOINT ["java", "-jar", "app.jar"]

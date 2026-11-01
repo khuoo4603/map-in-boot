@@ -9,6 +9,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicLong;
 import org.springframework.stereotype.Repository;
 
 /**
@@ -18,6 +19,7 @@ import org.springframework.stereotype.Repository;
 public class InMemorySavingsSubscriptionRepository {
 
     private final Map<String, DemoSavingsSubscription> subscriptionsById = new ConcurrentHashMap<>();
+    private final AtomicLong nextGeneratedId = new AtomicLong(1);
 
     /**
      * 초기 예적금 가입 내역 Fixture 생성 및 적재
@@ -25,6 +27,7 @@ public class InMemorySavingsSubscriptionRepository {
     @PostConstruct
     public void initFixtures() {
         subscriptionsById.clear();
+        nextGeneratedId.set(1);
 
         save(new DemoSavingsSubscription(
                 "SAV001",
@@ -50,6 +53,13 @@ public class InMemorySavingsSubscriptionRepository {
      */
     public void save(DemoSavingsSubscription subscription) {
         subscriptionsById.put(subscription.getSubscriptionId(), subscription);
+    }
+
+    /**
+     * 신규 가입 식별자 생성
+     */
+    public String nextSubscriptionId() {
+        return "SAVNEW" + nextGeneratedId.getAndIncrement();
     }
 
     /**
