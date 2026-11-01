@@ -8,6 +8,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicLong;
 import org.springframework.stereotype.Repository;
 
 /**
@@ -17,6 +18,7 @@ import org.springframework.stereotype.Repository;
 public class InMemorySavingsProductRepository {
 
     private final Map<String, DemoSavingsProduct> productsById = new ConcurrentHashMap<>();
+    private final AtomicLong nextGeneratedId = new AtomicLong(1);
 
     /**
      * 초기 예금·적금 상품 Fixture 생성 및 적재
@@ -24,6 +26,7 @@ public class InMemorySavingsProductRepository {
     @PostConstruct
     public void initFixtures() {
         productsById.clear();
+        nextGeneratedId.set(1);
 
         save(new DemoSavingsProduct("DEP-12M", "정기예금 12개월", "DEPOSIT", 12, new BigDecimal("3.50"), true));
         save(new DemoSavingsProduct("SAV-12M", "정기적금 12개월", "INSTALLMENT", 12, new BigDecimal("4.00"), true));
@@ -35,6 +38,15 @@ public class InMemorySavingsProductRepository {
      */
     public void save(DemoSavingsProduct product) {
         productsById.put(product.getProductId(), product);
+    }
+
+    /** 신규 예적금 상품 식별자 생성 */
+    public String nextProductId() {
+        String productId;
+        do {
+            productId = "PRDNEW" + nextGeneratedId.getAndIncrement();
+        } while (productsById.containsKey(productId));
+        return productId;
     }
 
     /**

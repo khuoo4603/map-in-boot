@@ -91,6 +91,17 @@ public class AccountSecurityConfig {
                     "/api/staff/assigned-customers/*/savings",
                     "/api/staff/assigned-customers/*/loans"
                 ).hasAuthority("ROLE_STAFF")
+                .requestMatchers(
+                    HttpMethod.GET,
+                    "/api/admin/savings/products",
+                    "/api/admin/savings/subscriptions",
+                    "/api/admin/loans/summary",
+                    "/api/admin/assignments"
+                ).hasAuthority("ROLE_BANK_ADMIN")
+                .requestMatchers(HttpMethod.POST, "/api/admin/savings/products")
+                    .hasAuthority("ROLE_BANK_ADMIN")
+                .requestMatchers(HttpMethod.PATCH, "/api/admin/savings/products/*")
+                    .hasAuthority("ROLE_BANK_ADMIN")
                 .requestMatchers("/api/my/**").hasAuthority("ROLE_CUSTOMER")
                 .requestMatchers("/api/**").authenticated()
                 .anyRequest().authenticated()
@@ -162,7 +173,7 @@ public class AccountSecurityConfig {
     public CorsConfigurationSource corsConfigurationSource() {
         CorsConfiguration configuration = new CorsConfiguration();
         configuration.setAllowedOrigins(resolveCorsAllowedOrigins());
-        configuration.setAllowedMethods(List.of("GET", "POST", "PUT", "DELETE", "OPTIONS"));
+        configuration.setAllowedMethods(List.of("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"));
         configuration.setAllowedHeaders(List.of("Authorization", "Content-Type", "X-Requested-With"));
         configuration.setAllowCredentials(true);
 
