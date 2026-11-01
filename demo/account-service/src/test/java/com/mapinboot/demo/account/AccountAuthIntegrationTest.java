@@ -8,6 +8,7 @@ import com.nimbusds.jwt.SignedJWT;
 import com.mapinboot.demo.account.model.DemoLoanProduct;
 import com.mapinboot.demo.account.repository.InMemoryLoanApplicationRepository;
 import com.mapinboot.demo.account.repository.InMemoryLoanProductRepository;
+import com.mapinboot.demo.account.repository.InMemorySavingsProductRepository;
 import com.mapinboot.demo.account.repository.InMemorySavingsSubscriptionRepository;
 import java.io.FileOutputStream;
 import java.nio.file.Path;
@@ -33,12 +34,16 @@ import org.springframework.web.context.WebApplicationContext;
 import org.springframework.http.MediaType;
 
 import static org.hamcrest.Matchers.containsInAnyOrder;
+import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.hasSize;
 import static org.hamcrest.Matchers.nullValue;
 import static org.springframework.security.test.web.servlet.setup.SecurityMockMvcConfigurers.springSecurity;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.options;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -69,6 +74,9 @@ class AccountAuthIntegrationTest {
     @Autowired
     private InMemoryLoanProductRepository loanProductRepository;
 
+    @Autowired
+    private InMemorySavingsProductRepository savingsProductRepository;
+
     private MockMvc mockMvc;
 
     @DynamicPropertySource
@@ -92,6 +100,7 @@ class AccountAuthIntegrationTest {
 
     @BeforeEach
     void setUp() {
+        savingsProductRepository.initFixtures();
         subscriptionRepository.initFixtures();
         loanApplicationRepository.initFixtures();
         this.mockMvc = MockMvcBuilders
@@ -647,6 +656,367 @@ class AccountAuthIntegrationTest {
 
         mockMvc.perform(get("/api/loans/applications/my/LNAPP002")
                         .header("Authorization", "Bearer " + customerAToken))
+                .andExpect(status().isForbidden());
+    }
+
+    @Test
+    @DisplayName("직원 JWT의 sub 기준 담당 고객 목록을 분리")
+    void staffSeesOnlyAssignedCustomers() throws Exception {
+        String staffAToken = createToken("STAFF001", List.of("ROLE_STAFF"), "demo-identity", "demo-services", Instant.now().plusSeconds(3600), testPrivateKey);
+        String staffBToken = createToken("STAFF002", List.of("ROLE_STAFF"), "demo-identity", "demo-services", Instant.now().plusSeconds(3600), testPrivateKey);
+
+        mockMvc.perform(get("/api/staff/assigned-customers")
+                        .header("Authorization", "Bearer " + staffAToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$", hasSize(1)))
+                .andExpect(jsonPath("$[0].customerId").value("CUST001"))
+                .andExpect(jsonPath("$[0].displayName").value("고객 A"))
+                .andExpect(jsonPath("$[0].status").value("ACTIVE"));
+
+        mockMvc.perform(get("/api/staff/assigned-customers")
+                        .header("Authorization", "Bearer " + staffBToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$", hasSize(1)))
+                .andExpect(jsonPath("$[0].customerId").value("CUST002"));
+    }
+
+    @Test
+    @DisplayName("직원은 담당 고객의 예적금과 대출 신청 요약만 조회")
+    void staffSeesAssignedSavingsAndLoans() throws Exception {
+        String staffAToken = createToken("STAFF001", List.of("ROLE_STAFF"), "demo-identity", "demo-services", Instant.now().plusSeconds(3600), testPrivateKey);
+        String staffBToken = createToken("STAFF002", List.of("ROLE_STAFF"), "demo-identity", "demo-services", Instant.now().plusSeconds(3600), testPrivateKey);
+
+        mockMvc.perform(get("/api/staff/assigned-customers/CUST001/savings")
+                        .header("Authorization", "Bearer " + staffAToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.subscriptions", hasSize(1)))
+                .andExpect(jsonPath("$.subscriptions[0].subscriptionId").value("SAV001"))
+                .andExpect(jsonPath("$.subscriptions[0].productName").value("정기예금 12개월"))
+                .andExpect(jsonPath("$.subscriptions[0].status").value("ACTIVE"))
+                .andExpect(jsonPath("$.subscriptions[0].principal").value(5000000));
+
+        mockMvc.perform(get("/api/staff/assigned-customers/CUST001/loans")
+                        .header("Authorization", "Bearer " + staffAToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$", hasSize(1)))
+                .andExpect(jsonPath("$[0].applicationId").value("LNAPP001"))
+                .andExpect(jsonPath("$[0].productId").value("LOAN-BASIC"))
+                .andExpect(jsonPath("$[0].amount").value(20000000))
+                .andExpect(jsonPath("$[0].status").value("REVIEW"));
+
+        mockMvc.perform(get("/api/staff/assigned-customers/CUST002/savings")
+                        .header("Authorization", "Bearer " + staffBToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.subscriptions[0].subscriptionId").value("SAV002"));
+
+        mockMvc.perform(get("/api/staff/assigned-customers/CUST002/loans")
+                        .header("Authorization", "Bearer " + staffBToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[0].applicationId").value("LNAPP002"));
+    }
+
+    @Test
+    @DisplayName("미담당 고객과 조작된 직원 Header는 금융 조회를 거부")
+    void staffCannotReadUnassignedCustomerData() throws Exception {
+        String staffAToken = createToken("STAFF001", List.of("ROLE_STAFF"), "demo-identity", "demo-services", Instant.now().plusSeconds(3600), testPrivateKey);
+        String staffBToken = createToken("STAFF002", List.of("ROLE_STAFF"), "demo-identity", "demo-services", Instant.now().plusSeconds(3600), testPrivateKey);
+
+        mockMvc.perform(get("/api/staff/assigned-customers/CUST002/savings")
+                        .header("Authorization", "Bearer " + staffAToken))
+                .andExpect(status().isForbidden());
+
+        mockMvc.perform(get("/api/staff/assigned-customers/CUST002/loans")
+                        .header("Authorization", "Bearer " + staffAToken)
+                        .header("X-Staff-Id", "STAFF002"))
+                .andExpect(status().isForbidden());
+
+        mockMvc.perform(get("/api/staff/assigned-customers/CUST001/savings")
+                        .header("Authorization", "Bearer " + staffBToken))
+                .andExpect(status().isForbidden());
+
+        mockMvc.perform(get("/api/staff/assigned-customers/UNKNOWN/savings")
+                        .header("Authorization", "Bearer " + staffAToken))
+                .andExpect(status().isNotFound());
+    }
+
+    @Test
+    @DisplayName("직원 API는 직원 Role과 인증을 검증")
+    void staffApisRequireStaffAuthentication() throws Exception {
+        String customerToken = createToken("USER001", List.of("ROLE_CUSTOMER"), "demo-identity", "demo-services", Instant.now().plusSeconds(3600), testPrivateKey);
+        String adminToken = createToken("ADMIN001", List.of("ROLE_BANK_ADMIN"), "demo-identity", "demo-services", Instant.now().plusSeconds(3600), testPrivateKey);
+        String developerToken = createToken("DEV001", List.of("MAP_IN_BOOT_ADMIN"), "demo-identity", "demo-services", Instant.now().plusSeconds(3600), testPrivateKey);
+
+        mockMvc.perform(get("/api/staff/assigned-customers"))
+                .andExpect(status().isUnauthorized());
+
+        mockMvc.perform(get("/api/staff/assigned-customers")
+                        .header("Authorization", "Bearer " + customerToken))
+                .andExpect(status().isForbidden());
+
+        mockMvc.perform(get("/api/staff/assigned-customers/CUST001/savings")
+                        .header("Authorization", "Bearer " + customerToken))
+                .andExpect(status().isForbidden());
+
+        mockMvc.perform(get("/api/staff/assigned-customers/CUST001/loans")
+                        .header("Authorization", "Bearer " + adminToken))
+                .andExpect(status().isForbidden());
+
+        mockMvc.perform(get("/api/staff/assigned-customers")
+                        .header("Authorization", "Bearer " + developerToken))
+                .andExpect(status().isForbidden());
+    }
+
+    @Test
+    @DisplayName("은행 관리자는 활성·비활성 예적금 상품 전체 조회")
+    void bankAdminListsAllSavingsProducts() throws Exception {
+        String token = createToken("ADMIN001", List.of("ROLE_BANK_ADMIN"), "demo-identity", "demo-services", Instant.now().plusSeconds(3600), testPrivateKey);
+
+        mockMvc.perform(get("/api/admin/savings/products")
+                        .header("Authorization", "Bearer " + token))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$", hasSize(3)))
+                .andExpect(jsonPath("$[*].productId", containsInAnyOrder("DEP-12M", "SAV-12M", "SAV-CLOSED")))
+                .andExpect(jsonPath("$[*].active", containsInAnyOrder(true, true, false)));
+    }
+
+    @Test
+    @DisplayName("은행 관리자는 신규 상품을 저장하고 고유 ID를 발급")
+    void bankAdminCreatesSavingsProduct() throws Exception {
+        String token = createToken("ADMIN001", List.of("ROLE_BANK_ADMIN"), "demo-identity", "demo-services", Instant.now().plusSeconds(3600), testPrivateKey);
+        String request = "{\"name\":\"신규 정기예금\",\"kind\":\"DEPOSIT\",\"termMonths\":12,\"displayRate\":3.50}";
+
+        mockMvc.perform(post("/api/admin/savings/products")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(request))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.productId").value("PRDNEW1"))
+                .andExpect(jsonPath("$.active").value(true));
+
+        mockMvc.perform(post("/api/admin/savings/products")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(request))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.productId").value("PRDNEW2"));
+
+        mockMvc.perform(get("/api/admin/savings/products")
+                        .header("Authorization", "Bearer " + token))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[*].productId", containsInAnyOrder("DEP-12M", "SAV-12M", "SAV-CLOSED", "PRDNEW1", "PRDNEW2")));
+
+        mockMvc.perform(get("/api/public/savings/products"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[*].productId", containsInAnyOrder("DEP-12M", "SAV-12M", "PRDNEW1", "PRDNEW2")));
+
+        mockMvc.perform(get("/api/public/savings/products/PRDNEW1"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.name").value("신규 정기예금"))
+                .andExpect(jsonPath("$.active").value(true));
+
+        mockMvc.perform(post("/api/admin/savings/products")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"name\":\" \",\"kind\":\"DEPOSIT\",\"termMonths\":12,\"displayRate\":3.50}"))
+                .andExpect(status().isBadRequest());
+
+        mockMvc.perform(post("/api/admin/savings/products")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"name\":\"잘못된 상품\",\"kind\":\"SAVINGS\",\"termMonths\":12,\"displayRate\":3.50}"))
+                .andExpect(status().isBadRequest());
+
+        mockMvc.perform(post("/api/admin/savings/products")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"name\":\"잘못된 상품\",\"kind\":\"DEPOSIT\",\"termMonths\":0,\"displayRate\":3.50}"))
+                .andExpect(status().isBadRequest());
+
+        mockMvc.perform(post("/api/admin/savings/products")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"name\":\"잘못된 상품\",\"kind\":\"DEPOSIT\",\"termMonths\":12,\"displayRate\":-1}"))
+                .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    @DisplayName("상품 판매 중단·재개가 고객 신규 가입에 반영")
+    void bankAdminUpdatesProductAndCustomerSubscriptionAvailability() throws Exception {
+        String adminToken = createToken("ADMIN001", List.of("ROLE_BANK_ADMIN"), "demo-identity", "demo-services", Instant.now().plusSeconds(3600), testPrivateKey);
+        String customerToken = createToken("USER001", List.of("ROLE_CUSTOMER"), "demo-identity", "demo-services", Instant.now().plusSeconds(3600), testPrivateKey);
+        String createRequest = "{\"name\":\"운영 테스트 상품\",\"kind\":\"DEPOSIT\",\"termMonths\":12,\"displayRate\":3.50}";
+
+        mockMvc.perform(post("/api/admin/savings/products")
+                        .header("Authorization", "Bearer " + adminToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(createRequest))
+                .andExpect(status().isCreated());
+
+        mockMvc.perform(options("/api/admin/savings/products/PRDNEW1")
+                        .header("Origin", "http://localhost:8080")
+                        .header("Access-Control-Request-Method", "PATCH")
+                        .header("Access-Control-Request-Headers", "authorization,content-type"))
+                .andExpect(status().isOk())
+                .andExpect(header().string("Access-Control-Allow-Methods", containsString("PATCH")));
+
+        mockMvc.perform(options("/api/admin/savings/products/PRDNEW1")
+                        .header("Origin", "http://evil.example")
+                        .header("Access-Control-Request-Method", "PATCH")
+                        .header("Access-Control-Request-Headers", "authorization,content-type"))
+                .andExpect(status().isForbidden());
+
+        mockMvc.perform(patch("/api/admin/savings/products/PRDNEW1")
+                        .header("Authorization", "Bearer " + adminToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"active\":false}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.productId").value("PRDNEW1"))
+                .andExpect(jsonPath("$.active").value(false))
+                .andExpect(jsonPath("$.updatedAt").isNotEmpty());
+
+        mockMvc.perform(get("/api/public/savings/products/PRDNEW1"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.active").value(false));
+
+        mockMvc.perform(post("/api/my/savings")
+                        .header("Authorization", "Bearer " + customerToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"productId\":\"PRDNEW1\",\"principal\":1000000}"))
+                .andExpect(status().isConflict());
+
+        mockMvc.perform(patch("/api/admin/savings/products/PRDNEW1")
+                        .header("Authorization", "Bearer " + adminToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"name\":\" \",\"active\":true}"))
+                .andExpect(status().isBadRequest());
+
+        mockMvc.perform(get("/api/public/savings/products/PRDNEW1"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.active").value(false));
+
+        mockMvc.perform(patch("/api/admin/savings/products/PRDNEW1")
+                        .header("Authorization", "Bearer " + adminToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"active\":true}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.active").value(true));
+
+        mockMvc.perform(post("/api/my/savings")
+                        .header("Authorization", "Bearer " + customerToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"productId\":\"PRDNEW1\",\"principal\":1000000}"))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.productId").value("PRDNEW1"));
+
+        mockMvc.perform(get("/api/admin/savings/subscriptions?productId=PRDNEW1&status=ACTIVE")
+                        .header("Authorization", "Bearer " + adminToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.items", hasSize(1)))
+                .andExpect(jsonPath("$.items[0].subscriptionId").value("SAVNEW1"))
+                .andExpect(jsonPath("$.totalCount").value(1));
+
+        mockMvc.perform(get("/api/my/savings")
+                        .header("Authorization", "Bearer " + customerToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[*].subscriptionId", containsInAnyOrder("SAV001", "SAVNEW1")));
+
+        mockMvc.perform(patch("/api/admin/savings/products/UNKNOWN")
+                        .header("Authorization", "Bearer " + adminToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"active\":false}"))
+                .andExpect(status().isNotFound());
+    }
+
+    @Test
+    @DisplayName("은행 관리자는 예적금 가입 현황을 상품·상태로 필터링")
+    void bankAdminFiltersSavingsSubscriptions() throws Exception {
+        String token = createToken("ADMIN001", List.of("ROLE_BANK_ADMIN"), "demo-identity", "demo-services", Instant.now().plusSeconds(3600), testPrivateKey);
+
+        mockMvc.perform(get("/api/admin/savings/subscriptions")
+                        .header("Authorization", "Bearer " + token))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.items", hasSize(2)))
+                .andExpect(jsonPath("$.items[*].subscriptionId", containsInAnyOrder("SAV001", "SAV002")))
+                .andExpect(jsonPath("$.totalCount").value(2));
+
+        mockMvc.perform(get("/api/admin/savings/subscriptions?productId=DEP-12M&status=ACTIVE")
+                        .header("Authorization", "Bearer " + token))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.items", hasSize(1)))
+                .andExpect(jsonPath("$.items[0].subscriptionId").value("SAV001"))
+                .andExpect(jsonPath("$.totalCount").value(1));
+
+        mockMvc.perform(get("/api/admin/savings/subscriptions?productId=UNKNOWN")
+                        .header("Authorization", "Bearer " + token))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.items", hasSize(0)))
+                .andExpect(jsonPath("$.totalCount").value(0));
+    }
+
+    @Test
+    @DisplayName("은행 관리자는 대출 신청 상태별 실제 집계를 조회")
+    void bankAdminSummarizesLoanApplications() throws Exception {
+        String adminToken = createToken("ADMIN001", List.of("ROLE_BANK_ADMIN"), "demo-identity", "demo-services", Instant.now().plusSeconds(3600), testPrivateKey);
+        String customerToken = createToken("USER001", List.of("ROLE_CUSTOMER"), "demo-identity", "demo-services", Instant.now().plusSeconds(3600), testPrivateKey, true);
+
+        mockMvc.perform(get("/api/admin/loans/summary")
+                        .header("Authorization", "Bearer " + adminToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.totalCount").value(2))
+                .andExpect(jsonPath("$.statusCounts.REVIEW").value(1))
+                .andExpect(jsonPath("$.statusCounts.SUBMITTED").value(1));
+
+        mockMvc.perform(post("/api/secured/loans/applications")
+                        .header("Authorization", "Bearer " + customerToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"productId\":\"LOAN-BASIC\",\"amount\":1000000}"))
+                .andExpect(status().isCreated());
+
+        mockMvc.perform(get("/api/admin/loans/summary")
+                        .header("Authorization", "Bearer " + adminToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.totalCount").value(3))
+                .andExpect(jsonPath("$.statusCounts.REVIEW").value(1))
+                .andExpect(jsonPath("$.statusCounts.SUBMITTED").value(2));
+    }
+
+    @Test
+    @DisplayName("은행 관리자는 직원 담당 고객 배정 현황을 조회")
+    void bankAdminListsStaffAssignments() throws Exception {
+        String token = createToken("ADMIN001", List.of("ROLE_BANK_ADMIN"), "demo-identity", "demo-services", Instant.now().plusSeconds(3600), testPrivateKey);
+
+        mockMvc.perform(get("/api/admin/assignments")
+                        .header("Authorization", "Bearer " + token))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$", hasSize(2)))
+                .andExpect(jsonPath("$[*].staffId", containsInAnyOrder("STAFF001", "STAFF002")))
+                .andExpect(jsonPath("$[*].customerId", containsInAnyOrder("CUST001", "CUST002")))
+                .andExpect(jsonPath("$[*].assigned", containsInAnyOrder(true, true)))
+                .andExpect(jsonPath("$[*].scope", containsInAnyOrder("BRANCH_ASSIGNED", "BRANCH_ASSIGNED")));
+    }
+
+    @Test
+    @DisplayName("관리자 API는 은행 관리자 Role만 허용")
+    void adminApisRequireBankAdminRole() throws Exception {
+        String customerToken = createToken("USER001", List.of("ROLE_CUSTOMER"), "demo-identity", "demo-services", Instant.now().plusSeconds(3600), testPrivateKey);
+        String staffToken = createToken("STAFF001", List.of("ROLE_STAFF"), "demo-identity", "demo-services", Instant.now().plusSeconds(3600), testPrivateKey);
+        String developerToken = createToken("DEV001", List.of("MAP_IN_BOOT_ADMIN"), "demo-identity", "demo-services", Instant.now().plusSeconds(3600), testPrivateKey);
+
+        mockMvc.perform(get("/api/admin/savings/products"))
+                .andExpect(status().isUnauthorized());
+
+        mockMvc.perform(get("/api/admin/savings/products")
+                        .header("Authorization", "Bearer " + customerToken))
+                .andExpect(status().isForbidden());
+
+        mockMvc.perform(get("/api/admin/savings/products")
+                        .header("Authorization", "Bearer " + staffToken))
+                .andExpect(status().isForbidden());
+
+        mockMvc.perform(patch("/api/admin/savings/products/DEP-12M")
+                        .header("Authorization", "Bearer " + developerToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"active\":false}"))
                 .andExpect(status().isForbidden());
     }
 
