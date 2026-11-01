@@ -651,6 +651,113 @@ class AccountAuthIntegrationTest {
     }
 
     @Test
+    @DisplayName("직원 JWT의 sub 기준 담당 고객 목록을 분리")
+    void staffSeesOnlyAssignedCustomers() throws Exception {
+        String staffAToken = createToken("STAFF001", List.of("ROLE_STAFF"), "demo-identity", "demo-services", Instant.now().plusSeconds(3600), testPrivateKey);
+        String staffBToken = createToken("STAFF002", List.of("ROLE_STAFF"), "demo-identity", "demo-services", Instant.now().plusSeconds(3600), testPrivateKey);
+
+        mockMvc.perform(get("/api/staff/assigned-customers")
+                        .header("Authorization", "Bearer " + staffAToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$", hasSize(1)))
+                .andExpect(jsonPath("$[0].customerId").value("CUST001"))
+                .andExpect(jsonPath("$[0].displayName").value("고객 A"))
+                .andExpect(jsonPath("$[0].status").value("ACTIVE"));
+
+        mockMvc.perform(get("/api/staff/assigned-customers")
+                        .header("Authorization", "Bearer " + staffBToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$", hasSize(1)))
+                .andExpect(jsonPath("$[0].customerId").value("CUST002"));
+    }
+
+    @Test
+    @DisplayName("직원은 담당 고객의 예적금과 대출 신청 요약만 조회")
+    void staffSeesAssignedSavingsAndLoans() throws Exception {
+        String staffAToken = createToken("STAFF001", List.of("ROLE_STAFF"), "demo-identity", "demo-services", Instant.now().plusSeconds(3600), testPrivateKey);
+        String staffBToken = createToken("STAFF002", List.of("ROLE_STAFF"), "demo-identity", "demo-services", Instant.now().plusSeconds(3600), testPrivateKey);
+
+        mockMvc.perform(get("/api/staff/assigned-customers/CUST001/savings")
+                        .header("Authorization", "Bearer " + staffAToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.subscriptions", hasSize(1)))
+                .andExpect(jsonPath("$.subscriptions[0].subscriptionId").value("SAV001"))
+                .andExpect(jsonPath("$.subscriptions[0].productName").value("정기예금 12개월"))
+                .andExpect(jsonPath("$.subscriptions[0].status").value("ACTIVE"))
+                .andExpect(jsonPath("$.subscriptions[0].principal").value(5000000));
+
+        mockMvc.perform(get("/api/staff/assigned-customers/CUST001/loans")
+                        .header("Authorization", "Bearer " + staffAToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$", hasSize(1)))
+                .andExpect(jsonPath("$[0].applicationId").value("LNAPP001"))
+                .andExpect(jsonPath("$[0].productId").value("LOAN-BASIC"))
+                .andExpect(jsonPath("$[0].amount").value(20000000))
+                .andExpect(jsonPath("$[0].status").value("REVIEW"));
+
+        mockMvc.perform(get("/api/staff/assigned-customers/CUST002/savings")
+                        .header("Authorization", "Bearer " + staffBToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.subscriptions[0].subscriptionId").value("SAV002"));
+
+        mockMvc.perform(get("/api/staff/assigned-customers/CUST002/loans")
+                        .header("Authorization", "Bearer " + staffBToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[0].applicationId").value("LNAPP002"));
+    }
+
+    @Test
+    @DisplayName("미담당 고객과 조작된 직원 Header는 금융 조회를 거부")
+    void staffCannotReadUnassignedCustomerData() throws Exception {
+        String staffAToken = createToken("STAFF001", List.of("ROLE_STAFF"), "demo-identity", "demo-services", Instant.now().plusSeconds(3600), testPrivateKey);
+        String staffBToken = createToken("STAFF002", List.of("ROLE_STAFF"), "demo-identity", "demo-services", Instant.now().plusSeconds(3600), testPrivateKey);
+
+        mockMvc.perform(get("/api/staff/assigned-customers/CUST002/savings")
+                        .header("Authorization", "Bearer " + staffAToken))
+                .andExpect(status().isForbidden());
+
+        mockMvc.perform(get("/api/staff/assigned-customers/CUST002/loans")
+                        .header("Authorization", "Bearer " + staffAToken)
+                        .header("X-Staff-Id", "STAFF002"))
+                .andExpect(status().isForbidden());
+
+        mockMvc.perform(get("/api/staff/assigned-customers/CUST001/savings")
+                        .header("Authorization", "Bearer " + staffBToken))
+                .andExpect(status().isForbidden());
+
+        mockMvc.perform(get("/api/staff/assigned-customers/UNKNOWN/savings")
+                        .header("Authorization", "Bearer " + staffAToken))
+                .andExpect(status().isNotFound());
+    }
+
+    @Test
+    @DisplayName("직원 API는 직원 Role과 인증을 검증")
+    void staffApisRequireStaffAuthentication() throws Exception {
+        String customerToken = createToken("USER001", List.of("ROLE_CUSTOMER"), "demo-identity", "demo-services", Instant.now().plusSeconds(3600), testPrivateKey);
+        String adminToken = createToken("ADMIN001", List.of("ROLE_BANK_ADMIN"), "demo-identity", "demo-services", Instant.now().plusSeconds(3600), testPrivateKey);
+        String developerToken = createToken("DEV001", List.of("MAP_IN_BOOT_ADMIN"), "demo-identity", "demo-services", Instant.now().plusSeconds(3600), testPrivateKey);
+
+        mockMvc.perform(get("/api/staff/assigned-customers"))
+                .andExpect(status().isUnauthorized());
+
+        mockMvc.perform(get("/api/staff/assigned-customers")
+                        .header("Authorization", "Bearer " + customerToken))
+                .andExpect(status().isForbidden());
+
+        mockMvc.perform(get("/api/staff/assigned-customers/CUST001/savings")
+                        .header("Authorization", "Bearer " + customerToken))
+                .andExpect(status().isForbidden());
+
+        mockMvc.perform(get("/api/staff/assigned-customers/CUST001/loans")
+                        .header("Authorization", "Bearer " + adminToken))
+                .andExpect(status().isForbidden());
+
+        mockMvc.perform(get("/api/staff/assigned-customers")
+                        .header("Authorization", "Bearer " + developerToken))
+                .andExpect(status().isForbidden());
+    }
+
+    @Test
     @DisplayName("본인확인 Claim 누락과 Boolean이 아닌 값은 미완료로 처리")
     void invalidIdentityClaimsAreRejected() throws Exception {
         String missingClaimToken = createTokenWithoutIdentityClaim("USER001", List.of("ROLE_CUSTOMER"), "demo-identity", "demo-services", Instant.now().plusSeconds(3600), testPrivateKey);
