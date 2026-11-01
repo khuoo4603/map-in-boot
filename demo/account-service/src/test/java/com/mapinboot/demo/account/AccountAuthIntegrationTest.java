@@ -5,6 +5,9 @@ import com.nimbusds.jose.JWSHeader;
 import com.nimbusds.jose.crypto.RSASSASigner;
 import com.nimbusds.jwt.JWTClaimsSet;
 import com.nimbusds.jwt.SignedJWT;
+import com.mapinboot.demo.account.model.DemoLoanProduct;
+import com.mapinboot.demo.account.repository.InMemoryLoanApplicationRepository;
+import com.mapinboot.demo.account.repository.InMemoryLoanProductRepository;
 import com.mapinboot.demo.account.repository.InMemorySavingsSubscriptionRepository;
 import java.io.FileOutputStream;
 import java.nio.file.Path;
@@ -31,9 +34,11 @@ import org.springframework.http.MediaType;
 
 import static org.hamcrest.Matchers.containsInAnyOrder;
 import static org.hamcrest.Matchers.hasSize;
+import static org.hamcrest.Matchers.nullValue;
 import static org.springframework.security.test.web.servlet.setup.SecurityMockMvcConfigurers.springSecurity;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -57,6 +62,12 @@ class AccountAuthIntegrationTest {
 
     @Autowired
     private InMemorySavingsSubscriptionRepository subscriptionRepository;
+
+    @Autowired
+    private InMemoryLoanApplicationRepository loanApplicationRepository;
+
+    @Autowired
+    private InMemoryLoanProductRepository loanProductRepository;
 
     private MockMvc mockMvc;
 
@@ -82,6 +93,7 @@ class AccountAuthIntegrationTest {
     @BeforeEach
     void setUp() {
         subscriptionRepository.initFixtures();
+        loanApplicationRepository.initFixtures();
         this.mockMvc = MockMvcBuilders
                 .webAppContextSetup(context)
                 .apply(springSecurity())
@@ -89,6 +101,10 @@ class AccountAuthIntegrationTest {
     }
 
     private String createToken(String userId, List<String> roles, String issuer, String audience, Instant expiresAt, RSAPrivateKey signerKey) throws Exception {
+        return createToken(userId, roles, issuer, audience, expiresAt, signerKey, false);
+    }
+
+    private String createToken(String userId, List<String> roles, String issuer, String audience, Instant expiresAt, RSAPrivateKey signerKey, boolean identityVerified) throws Exception {
         JWTClaimsSet claims = new JWTClaimsSet.Builder()
                 .subject(userId)
                 .issuer(issuer)
@@ -96,7 +112,38 @@ class AccountAuthIntegrationTest {
                 .issueTime(new Date())
                 .expirationTime(Date.from(expiresAt))
                 .claim("roles", roles)
-                .claim("identity_verified", false)
+                .claim("identity_verified", identityVerified)
+                .build();
+
+        SignedJWT signedJWT = new SignedJWT(new JWSHeader(JWSAlgorithm.RS256), claims);
+        signedJWT.sign(new RSASSASigner(signerKey));
+        return signedJWT.serialize();
+    }
+
+    private String createTokenWithoutIdentityClaim(String userId, List<String> roles, String issuer, String audience, Instant expiresAt, RSAPrivateKey signerKey) throws Exception {
+        JWTClaimsSet claims = new JWTClaimsSet.Builder()
+                .subject(userId)
+                .issuer(issuer)
+                .audience(List.of(audience))
+                .issueTime(new Date())
+                .expirationTime(Date.from(expiresAt))
+                .claim("roles", roles)
+                .build();
+
+        SignedJWT signedJWT = new SignedJWT(new JWSHeader(JWSAlgorithm.RS256), claims);
+        signedJWT.sign(new RSASSASigner(signerKey));
+        return signedJWT.serialize();
+    }
+
+    private String createTokenWithIdentityClaim(String userId, List<String> roles, String issuer, String audience, Instant expiresAt, RSAPrivateKey signerKey, Object identityClaim) throws Exception {
+        JWTClaimsSet claims = new JWTClaimsSet.Builder()
+                .subject(userId)
+                .issuer(issuer)
+                .audience(List.of(audience))
+                .issueTime(new Date())
+                .expirationTime(Date.from(expiresAt))
+                .claim("roles", roles)
+                .claim("identity_verified", identityClaim)
                 .build();
 
         SignedJWT signedJWT = new SignedJWT(new JWSHeader(JWSAlgorithm.RS256), claims);
@@ -430,6 +477,227 @@ class AccountAuthIntegrationTest {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"productId\":\"DEP-12M\",\"principal\":500000}"))
                 .andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    @DisplayName("본인확인 미완료 대출 신청은 403과 오류 코드를 반환하고 저장하지 않음")
+    void unverifiedLoanApplicationIsRejectedWithoutSaving() throws Exception {
+        String token = createToken("USER001", List.of("ROLE_CUSTOMER"), "demo-identity", "demo-services", Instant.now().plusSeconds(3600), testPrivateKey);
+        int applicationCount = loanApplicationRepository.findAll().size();
+
+        mockMvc.perform(post("/api/secured/loans/applications")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"productId\":\"LOAN-BASIC\",\"amount\":1000000,\"applicantId\":\"USER002\",\"purpose\":\"LIVING_COST\"}"))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.success").value(false))
+                .andExpect(jsonPath("$.data").value(nullValue()))
+                .andExpect(jsonPath("$.error.code").value("IDENTITY_VERIFICATION_REQUIRED"));
+
+        org.assertj.core.api.Assertions.assertThat(loanApplicationRepository.findAll()).hasSize(applicationCount);
+    }
+
+    @Test
+    @DisplayName("본인확인 완료 고객의 대출 신청은 JWT 주체를 소유자로 저장")
+    void verifiedCustomerCreatesLoanApplicationOwnedByTokenSubject() throws Exception {
+        String token = createToken("USER001", List.of("ROLE_CUSTOMER"), "demo-identity", "demo-services", Instant.now().plusSeconds(3600), testPrivateKey, true);
+
+        mockMvc.perform(post("/api/secured/loans/applications")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"productId\":\"LOAN-BASIC\",\"amount\":1000000,\"applicantId\":\"USER002\",\"purpose\":\"LIVING_COST\"}"))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.applicationId").value("LNAPPNEW1"))
+                .andExpect(jsonPath("$.applicantId").value("USER001"))
+                .andExpect(jsonPath("$.status").value("SUBMITTED"));
+
+        mockMvc.perform(get("/api/loans/applications/my")
+                        .header("Authorization", "Bearer " + token))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$", hasSize(2)))
+                .andExpect(jsonPath("$[*].applicationId", containsInAnyOrder("LNAPP001", "LNAPPNEW1")));
+
+        mockMvc.perform(get("/api/loans/applications/my/LNAPPNEW1")
+                        .header("Authorization", "Bearer " + token))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.applicationId").value("LNAPPNEW1"))
+                .andExpect(jsonPath("$.applicantId").value("USER001"))
+                .andExpect(jsonPath("$.productId").value("LOAN-BASIC"))
+                .andExpect(jsonPath("$.amount").value(1000000))
+                .andExpect(jsonPath("$.status").value("SUBMITTED"))
+                .andExpect(jsonPath("$.createdAt").isNotEmpty());
+    }
+
+    @Test
+    @DisplayName("대출 신청 식별자는 Fixture와 충돌하지 않고 순차 요청에서 고유함")
+    void loanApplicationIdsAreUnique() throws Exception {
+        String token = createToken("USER001", List.of("ROLE_CUSTOMER"), "demo-identity", "demo-services", Instant.now().plusSeconds(3600), testPrivateKey, true);
+
+        mockMvc.perform(post("/api/secured/loans/applications")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"productId\":\"LOAN-BASIC\",\"amount\":1000000}"))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.applicationId").value("LNAPPNEW1"));
+
+        mockMvc.perform(post("/api/secured/loans/applications")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"productId\":\"LOAN-HOUSE\",\"amount\":10000000}"))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.applicationId").value("LNAPPNEW2"));
+    }
+
+    @Test
+    @DisplayName("대출 신청 상품과 금액을 계약 범위에 맞게 검증")
+    void loanApplicationValidatesProductAndAmount() throws Exception {
+        String token = createToken("USER001", List.of("ROLE_CUSTOMER"), "demo-identity", "demo-services", Instant.now().plusSeconds(3600), testPrivateKey, true);
+
+        mockMvc.perform(post("/api/secured/loans/applications")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"productId\":\"UNKNOWN\",\"amount\":1000000}"))
+                .andExpect(status().isNotFound());
+
+        mockMvc.perform(post("/api/secured/loans/applications")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"productId\":\"LOAN-BASIC\",\"amount\":0}"))
+                .andExpect(status().isBadRequest());
+
+        mockMvc.perform(post("/api/secured/loans/applications")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"productId\":\"LOAN-BASIC\",\"amount\":999999}"))
+                .andExpect(status().isBadRequest());
+
+        mockMvc.perform(post("/api/secured/loans/applications")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"productId\":\"LOAN-BASIC\",\"amount\":50000001}"))
+                .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    @DisplayName("비활성 대출상품 신청은 409 반환")
+    void inactiveLoanProductCannotBeApplied() throws Exception {
+        loanProductRepository.save(new DemoLoanProduct(
+                "LOAN-CLOSED", "중단 대출", new java.math.BigDecimal("1000000"), new java.math.BigDecimal("5000000"), false));
+        String token = createToken("USER001", List.of("ROLE_CUSTOMER"), "demo-identity", "demo-services", Instant.now().plusSeconds(3600), testPrivateKey, true);
+
+        mockMvc.perform(post("/api/secured/loans/applications")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"productId\":\"LOAN-CLOSED\",\"amount\":1000000}"))
+                .andExpect(status().isConflict());
+    }
+
+    @Test
+    @DisplayName("본인확인 미완료 고객도 본인 대출 목록은 조회 가능")
+    void unverifiedCustomerCanListOwnLoanApplications() throws Exception {
+        String token = createToken("USER001", List.of("ROLE_CUSTOMER"), "demo-identity", "demo-services", Instant.now().plusSeconds(3600), testPrivateKey);
+
+        mockMvc.perform(get("/api/loans/applications/my")
+                        .header("Authorization", "Bearer " + token))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$", hasSize(1)))
+                .andExpect(jsonPath("$[0].applicationId").value("LNAPP001"));
+    }
+
+    @Test
+    @DisplayName("대출 상세는 소유자 확인 후 본인확인 상태를 검사")
+    void loanDetailChecksOwnerBeforeIdentityVerification() throws Exception {
+        String unverifiedCustomerAToken = createToken("USER001", List.of("ROLE_CUSTOMER"), "demo-identity", "demo-services", Instant.now().plusSeconds(3600), testPrivateKey);
+        String unverifiedCustomerBToken = createToken("USER002", List.of("ROLE_CUSTOMER"), "demo-identity", "demo-services", Instant.now().plusSeconds(3600), testPrivateKey);
+        String verifiedCustomerAToken = createToken("USER001", List.of("ROLE_CUSTOMER"), "demo-identity", "demo-services", Instant.now().plusSeconds(3600), testPrivateKey, true);
+
+        mockMvc.perform(get("/api/loans/applications/my/LNAPP001")
+                        .header("Authorization", "Bearer " + verifiedCustomerAToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.applicationId").value("LNAPP001"))
+                .andExpect(jsonPath("$.applicantId").value("USER001"))
+                .andExpect(jsonPath("$.status").value("REVIEW"));
+
+        mockMvc.perform(get("/api/loans/applications/my/LNAPP001")
+                        .header("Authorization", "Bearer " + unverifiedCustomerAToken))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.error.code").value("IDENTITY_VERIFICATION_REQUIRED"));
+
+        mockMvc.perform(get("/api/loans/applications/my/LNAPP001")
+                        .header("Authorization", "Bearer " + unverifiedCustomerBToken))
+                .andExpect(status().isForbidden())
+                .andExpect(content().string(""));
+    }
+
+    @Test
+    @DisplayName("고객별 대출 목록과 상세 소유권 분리")
+    void customersSeeOnlyTheirOwnLoanApplications() throws Exception {
+        String customerAToken = createToken("USER001", List.of("ROLE_CUSTOMER"), "demo-identity", "demo-services", Instant.now().plusSeconds(3600), testPrivateKey, true);
+        String customerBToken = createToken("USER002", List.of("ROLE_CUSTOMER"), "demo-identity", "demo-services", Instant.now().plusSeconds(3600), testPrivateKey, true);
+
+        mockMvc.perform(get("/api/loans/applications/my")
+                        .header("Authorization", "Bearer " + customerAToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[*].applicationId", containsInAnyOrder("LNAPP001")));
+
+        mockMvc.perform(get("/api/loans/applications/my")
+                        .header("Authorization", "Bearer " + customerBToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[*].applicationId", containsInAnyOrder("LNAPP002")));
+
+        mockMvc.perform(get("/api/loans/applications/my/LNAPP002")
+                        .header("Authorization", "Bearer " + customerAToken))
+                .andExpect(status().isForbidden());
+    }
+
+    @Test
+    @DisplayName("본인확인 Claim 누락과 Boolean이 아닌 값은 미완료로 처리")
+    void invalidIdentityClaimsAreRejected() throws Exception {
+        String missingClaimToken = createTokenWithoutIdentityClaim("USER001", List.of("ROLE_CUSTOMER"), "demo-identity", "demo-services", Instant.now().plusSeconds(3600), testPrivateKey);
+        String nonBooleanClaimToken = createTokenWithIdentityClaim("USER001", List.of("ROLE_CUSTOMER"), "demo-identity", "demo-services", Instant.now().plusSeconds(3600), testPrivateKey, "true");
+
+        mockMvc.perform(post("/api/secured/loans/applications")
+                        .header("Authorization", "Bearer " + missingClaimToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"productId\":\"LOAN-BASIC\",\"amount\":1000000}"))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.error.code").value("IDENTITY_VERIFICATION_REQUIRED"));
+
+        mockMvc.perform(post("/api/secured/loans/applications")
+                        .header("Authorization", "Bearer " + nonBooleanClaimToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"productId\":\"LOAN-BASIC\",\"amount\":1000000}"))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.error.code").value("IDENTITY_VERIFICATION_REQUIRED"));
+    }
+
+    @Test
+    @DisplayName("대출 API의 인증 및 고객 Role을 검증")
+    void loanApisRequireCustomerAuthentication() throws Exception {
+        mockMvc.perform(get("/api/loans/applications/my"))
+                .andExpect(status().isUnauthorized());
+
+        String staffToken = createToken("STAFF001", List.of("ROLE_STAFF"), "demo-identity", "demo-services", Instant.now().plusSeconds(3600), testPrivateKey, true);
+
+        mockMvc.perform(get("/api/loans/applications/my")
+                        .header("Authorization", "Bearer " + staffToken))
+                .andExpect(status().isForbidden());
+
+        mockMvc.perform(post("/api/secured/loans/applications")
+                        .header("Authorization", "Bearer " + staffToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"productId\":\"LOAN-BASIC\",\"amount\":1000000}"))
+                .andExpect(status().isForbidden());
+    }
+
+    @Test
+    @DisplayName("존재하지 않는 대출 신청 상세는 404 반환")
+    void missingLoanApplicationDetailReturns404() throws Exception {
+        String token = createToken("USER001", List.of("ROLE_CUSTOMER"), "demo-identity", "demo-services", Instant.now().plusSeconds(3600), testPrivateKey, true);
+
+        mockMvc.perform(get("/api/loans/applications/my/UNKNOWN")
+                        .header("Authorization", "Bearer " + token))
+                .andExpect(status().isNotFound());
     }
 
     @Test

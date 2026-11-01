@@ -9,6 +9,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicLong;
 import org.springframework.stereotype.Repository;
 
 /**
@@ -18,6 +19,7 @@ import org.springframework.stereotype.Repository;
 public class InMemoryLoanApplicationRepository {
 
     private final Map<String, DemoLoanApplication> applicationsById = new ConcurrentHashMap<>();
+    private final AtomicLong nextGeneratedId = new AtomicLong(1);
 
     /**
      * 초기 대출 신청 Fixture 생성 및 적재
@@ -25,6 +27,7 @@ public class InMemoryLoanApplicationRepository {
     @PostConstruct
     public void initFixtures() {
         applicationsById.clear();
+        nextGeneratedId.set(1);
 
         save(new DemoLoanApplication(
                 "LNAPP001",
@@ -48,6 +51,11 @@ public class InMemoryLoanApplicationRepository {
      */
     public void save(DemoLoanApplication application) {
         applicationsById.put(application.getApplicationId(), application);
+    }
+
+    /** 신규 대출 신청 식별자 생성 */
+    public String nextApplicationId() {
+        return "LNAPPNEW" + nextGeneratedId.getAndIncrement();
     }
 
     /**
