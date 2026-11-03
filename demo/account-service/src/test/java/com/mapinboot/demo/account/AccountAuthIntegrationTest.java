@@ -189,6 +189,55 @@ class AccountAuthIntegrationTest {
     }
 
     @Test
+    @DisplayName("N05/V05 계좌 상세 Owner 검증 차이와 인증 경계 확인")
+    void accountDetailNormalAndVulnerablePathsDifferByOwnerCheck() throws Exception {
+        String customerToken = createToken("USER001", List.of("ROLE_CUSTOMER"), "demo-identity", "demo-services", Instant.now().plusSeconds(3600), testPrivateKey);
+        String staffToken = createToken("STAFF001", List.of("ROLE_STAFF"), "demo-identity", "demo-services", Instant.now().plusSeconds(3600), testPrivateKey);
+
+        mockMvc.perform(get("/api/secured/accounts/ACC001")
+                        .header("Authorization", "Bearer " + customerToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.accountId").value("ACC001"))
+                .andExpect(jsonPath("$.ownerId").value("USER001"))
+                .andExpect(jsonPath("$.balance").value(1250000));
+        mockMvc.perform(get("/api/accounts/ACC001")
+                        .header("Authorization", "Bearer " + customerToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.accountId").value("ACC001"))
+                .andExpect(jsonPath("$.ownerId").value("USER001"))
+                .andExpect(jsonPath("$.balance").value(1250000));
+
+        mockMvc.perform(get("/api/secured/accounts/ACC002")
+                        .header("Authorization", "Bearer " + customerToken))
+                .andExpect(status().isForbidden());
+        mockMvc.perform(get("/api/accounts/ACC002")
+                        .header("Authorization", "Bearer " + customerToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.accountId").value("ACC002"))
+                .andExpect(jsonPath("$.ownerId").value("USER002"))
+                .andExpect(jsonPath("$.balance").value(2800000));
+
+        mockMvc.perform(get("/api/secured/accounts/ACC001")
+                        .header("Authorization", "Bearer " + staffToken))
+                .andExpect(status().isForbidden());
+        mockMvc.perform(get("/api/accounts/ACC001")
+                        .header("Authorization", "Bearer " + staffToken))
+                .andExpect(status().isForbidden());
+
+        mockMvc.perform(get("/api/secured/accounts/ACC001"))
+                .andExpect(status().isUnauthorized());
+        mockMvc.perform(get("/api/accounts/ACC001"))
+                .andExpect(status().isUnauthorized());
+
+        mockMvc.perform(get("/api/secured/accounts/UNKNOWN")
+                        .header("Authorization", "Bearer " + customerToken))
+                .andExpect(status().isNotFound());
+        mockMvc.perform(get("/api/accounts/UNKNOWN")
+                        .header("Authorization", "Bearer " + customerToken))
+                .andExpect(status().isNotFound());
+    }
+
+    @Test
     @DisplayName("고객 A가 본인 계좌 거래내역 3건 조회")
     void customerASeesOwnTransactions() throws Exception {
         String token = createToken("USER001", List.of("ROLE_CUSTOMER"), "demo-identity", "demo-services", Instant.now().plusSeconds(3600), testPrivateKey);

@@ -105,6 +105,12 @@ public class AccountSecurityConfig {
                 // Scenario: V07 (counterpart: N07) - 인증은 유지하고 Header 오용을 재현
                 .requestMatchers(HttpMethod.GET, "/api/staff/customers/*/contact")
                     .hasAuthority("ROLE_STAFF")
+                // Scenario: N05/V05 - JWT 고객 Role 기반 계좌 상세 보호
+                .requestMatchers(
+                    HttpMethod.GET,
+                    "/api/secured/accounts/*",
+                    "/api/accounts/*"
+                ).hasAuthority("ROLE_CUSTOMER")
                 // Scenario: N04/V04 - URL은 인증만 요구하고 Method Security 차이를 관찰
                 .requestMatchers(
                     HttpMethod.GET,
