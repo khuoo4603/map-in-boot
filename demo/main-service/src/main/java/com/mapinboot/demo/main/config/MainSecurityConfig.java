@@ -32,6 +32,8 @@ import org.springframework.security.oauth2.jwt.JwtValidators;
 import org.springframework.security.oauth2.jwt.NimbusJwtDecoder;
 import org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationToken;
 import org.springframework.security.web.SecurityFilterChain;
+import org.springframework.security.web.servlet.util.matcher.PathPatternRequestMatcher;
+import org.springframework.security.web.util.matcher.NegatedRequestMatcher;
 import org.springframework.web.cors.CorsConfiguration;
 import org.springframework.web.cors.CorsConfigurationSource;
 import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
@@ -60,12 +62,63 @@ public class MainSecurityConfig {
     }
 
     /**
-     * 보안 필터 체인 구성
+     * V02 취약 경로의 선행 약한 보안 필터 체인 구성
+     */
+    @Bean
+    @Order(1)
+    public SecurityFilterChain vulnerableStaffReportSecurityFilterChain(HttpSecurity http) throws Exception {
+        /*
+         * Scenario: V02 (counterpart: N02)
+         * Rule: CHAIN_ORDER
+         * 넓은 직원 보고서 Matcher의 선행 선택으로 뒤쪽 보호 Chain 미선택
+         */
+        http
+            .securityMatcher("/api/staff/reports/**")
+            .csrf(AbstractHttpConfigurer::disable)
+            .cors(cors -> cors.configurationSource(corsConfigurationSource()))
+            .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
+            .authorizeHttpRequests(auth -> auth.anyRequest().permitAll());
+
+        return http.build();
+    }
+
+    /**
+     * 직원 보고서 보호 보안 필터 체인 구성
+     */
+    @Bean
+    @Order(2)
+    public SecurityFilterChain protectedStaffReportSecurityFilterChain(
+            HttpSecurity http,
+            JwtDecoder jwtDecoder) throws Exception {
+        http
+            .securityMatcher("/api/staff/reports/summary")
+            .csrf(AbstractHttpConfigurer::disable)
+            .cors(cors -> cors.configurationSource(corsConfigurationSource()))
+            .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
+            .authorizeHttpRequests(auth -> auth.anyRequest().hasAuthority("ROLE_STAFF"))
+            .oauth2ResourceServer(oauth2 -> oauth2.jwt(jwt -> jwt
+                .decoder(jwtDecoder)
+                .jwtAuthenticationConverter(jwtAuthenticationConverter())
+            ));
+
+        return http.build();
+    }
+
+    /**
+     * Main 서비스 기본 보안 필터 체인 구성
      */
     @Bean
     @Order(100)
     public SecurityFilterChain securityFilterChain(HttpSecurity http, JwtDecoder jwtDecoder) throws Exception {
         http
+            /*
+             * Scenario: V01 (counterpart: N01)
+             * Rule: CHAIN_MISSING
+             * 레거시 취약 경로의 GET 요청을 모든 SecurityFilterChain 매칭 범위에서 제외
+             */
+            .securityMatcher(new NegatedRequestMatcher(
+                PathPatternRequestMatcher.pathPattern(
+                    HttpMethod.GET, "/api/legacy/account-summary/{accountId}")))
             .csrf(AbstractHttpConfigurer::disable)
             .cors(cors -> cors.configurationSource(corsConfigurationSource()))
             .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
@@ -78,6 +131,10 @@ public class MainSecurityConfig {
                         "/api/portal/secured/accounts/*/summary",
                         "/api/portal/accounts/*/summary")
                     .hasAuthority("ROLE_CUSTOMER")
+                .requestMatchers(HttpMethod.GET, "/api/staff/protected/reports/summary")
+                    .hasAuthority("ROLE_STAFF")
+                .requestMatchers(HttpMethod.GET, "/api/secured/legacy/account-summary/*")
+                    .authenticated()
                 // 기타 모든 요청 기본 인증 요구
                 .anyRequest().authenticated()
             )

@@ -70,6 +70,19 @@ public class InternalAccountController {
         return ResponseEntity.ok(toSummary(account));
     }
 
+    /**
+     * 최종 사용자 식별정보 없이 레거시 계좌 요약 조회
+     */
+    @GetMapping("/internal/accounts/{accountId}/legacy-summary")
+    public ResponseEntity<?> getLegacySummary(@PathVariable String accountId) {
+        DemoAccount account = accountRepository.findByAccountId(accountId).orElse(null);
+        if (account == null) {
+            return ResponseEntity.notFound().build();
+        }
+
+        return ResponseEntity.ok(toSummary(account));
+    }
+
     private Map<String, Object> toSummary(DemoAccount account) {
         return Map.of(
                 "accountId", account.getAccountId(),

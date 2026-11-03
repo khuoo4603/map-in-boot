@@ -28,6 +28,10 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.mock.web.MockHttpServletRequest;
+import org.springframework.security.oauth2.server.resource.web.authentication.BearerTokenAuthenticationFilter;
+import org.springframework.security.web.FilterChainProxy;
+import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.context.TestPropertySource;
@@ -66,6 +70,9 @@ class MainPublicApiIntegrationTest {
     @Autowired
     private WebApplicationContext context;
 
+    @Autowired
+    private FilterChainProxy filterChainProxy;
+
     private MockMvc mockMvc;
 
     @DynamicPropertySource
@@ -90,6 +97,8 @@ class MainPublicApiIntegrationTest {
         accountServer.createContext("/internal/secured/accounts/ACC001/summary",
                 exchange -> respondAccountSummary(exchange, "ACC001", "USER001", 1250000));
         accountServer.createContext("/internal/accounts/ACC001/summary",
+                exchange -> respondAccountSummary(exchange, "ACC001", "USER001", 1250000));
+        accountServer.createContext("/internal/accounts/ACC001/legacy-summary",
                 exchange -> respondAccountSummary(exchange, "ACC001", "USER001", 1250000));
         accountServer.createContext("/internal/secured/accounts/ACC002/summary",
                 MainPublicApiIntegrationTest::respondForbidden);
@@ -196,6 +205,96 @@ class MainPublicApiIntegrationTest {
                 .andExpect(status().isUnauthorized());
         mockMvc.perform(get("/api/portal/accounts/ACC001/summary"))
                 .andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    @DisplayName("N01/V01 계좌 요약의 SecurityFilterChain 적용 차이")
+    void legacyAccountSummarySeparatesChainApplication() throws Exception {
+        String customerToken = createToken("USER001", List.of("ROLE_CUSTOMER"), Instant.now().plusSeconds(3600));
+
+        mockMvc.perform(get("/api/secured/legacy/account-summary/ACC001"))
+                .andExpect(status().isUnauthorized());
+        mockMvc.perform(get("/api/secured/legacy/account-summary/ACC001")
+                        .header("Authorization", "Bearer " + customerToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.accountId").value("ACC001"))
+                .andExpect(jsonPath("$.ownerId").value("USER001"))
+                .andExpect(jsonPath("$.balance").value(1250000));
+        mockMvc.perform(get("/api/secured/legacy/account-summary/UNKNOWN")
+                        .header("Authorization", "Bearer " + customerToken))
+                .andExpect(status().isNotFound());
+
+        mockMvc.perform(get("/api/legacy/account-summary/ACC001"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.accountId").value("ACC001"))
+                .andExpect(jsonPath("$.ownerId").value("USER001"))
+                .andExpect(jsonPath("$.balance").value(1250000));
+        mockMvc.perform(get("/api/legacy/account-summary/UNKNOWN"))
+                .andExpect(status().isNotFound());
+
+        assertThat(matchingChains("/api/secured/legacy/account-summary/ACC001")).hasSize(1);
+        assertThat(matchingChains("/api/legacy/account-summary/ACC001")).isEmpty();
+    }
+
+    @Test
+    @DisplayName("N02/V02 직원 보고서의 Chain 우선순위 차이")
+    void staffReportSummarySeparatesChainOrder() throws Exception {
+        String customerToken = createToken("USER001", List.of("ROLE_CUSTOMER"), Instant.now().plusSeconds(3600));
+        String staffToken = createToken("STAFF001", List.of("ROLE_STAFF"), Instant.now().plusSeconds(3600));
+
+        mockMvc.perform(get("/api/staff/protected/reports/summary"))
+                .andExpect(status().isUnauthorized());
+        mockMvc.perform(get("/api/staff/protected/reports/summary")
+                        .header("Authorization", "Bearer " + customerToken))
+                .andExpect(status().isForbidden());
+        mockMvc.perform(get("/api/staff/protected/reports/summary")
+                        .header("Authorization", "Bearer " + staffToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[*].reportId", containsInAnyOrder("REPORT001", "REPORT002")))
+                .andExpect(jsonPath("$[*].summary", hasSize(2)));
+
+        mockMvc.perform(get("/api/staff/reports/summary"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[*].reportId", containsInAnyOrder("REPORT001", "REPORT002")))
+                .andExpect(jsonPath("$[*].summary", hasSize(2)));
+        mockMvc.perform(get("/api/staff/reports/summary")
+                        .header("Authorization", "Bearer " + customerToken))
+                .andExpect(status().isOk());
+        mockMvc.perform(get("/api/staff/reports/summary")
+                        .header("Authorization", "Bearer " + staffToken))
+                .andExpect(status().isOk());
+
+        List<SecurityFilterChain> normalChains = matchingChains("/api/staff/protected/reports/summary");
+        List<SecurityFilterChain> vulnerableChains = matchingChains("/api/staff/reports/summary");
+        assertThat(normalChains).hasSize(1);
+        assertThat(normalChains.get(0).getFilters())
+                .anyMatch(BearerTokenAuthenticationFilter.class::isInstance);
+        assertThat(vulnerableChains).hasSize(3);
+        assertThat(vulnerableChains.get(0).getFilters())
+                .noneMatch(BearerTokenAuthenticationFilter.class::isInstance);
+        assertThat(vulnerableChains.get(1).getFilters())
+                .anyMatch(BearerTokenAuthenticationFilter.class::isInstance);
+        assertThat(vulnerableChains.get(2).getFilters())
+                .anyMatch(BearerTokenAuthenticationFilter.class::isInstance);
+
+        MockHttpServletRequest vulnerableRequest =
+                new MockHttpServletRequest("GET", "/api/staff/reports/summary");
+        MockHttpServletRequest otherReportRequest =
+                new MockHttpServletRequest("GET", "/api/staff/reports/other");
+        assertThat(vulnerableChains.get(0).matches(vulnerableRequest)).isTrue();
+        assertThat(vulnerableChains.get(1).matches(vulnerableRequest)).isTrue();
+        assertThat(vulnerableChains.get(1).matches(otherReportRequest)).isFalse();
+        assertThat(vulnerableChains.get(2).matches(vulnerableRequest)).isTrue();
+        assertThat(vulnerableChains.get(2).matches(otherReportRequest)).isTrue();
+        assertThat(filterChainProxy.getFilters("/api/staff/reports/summary"))
+                .containsExactlyElementsOf(vulnerableChains.get(0).getFilters());
+    }
+
+    private List<SecurityFilterChain> matchingChains(String path) {
+        MockHttpServletRequest request = new MockHttpServletRequest("GET", path);
+        return filterChainProxy.getFilterChains().stream()
+                .filter(chain -> chain.matches(request))
+                .toList();
     }
 
     private static String createToken(String userId, List<String> roles, Instant expiresAt) throws Exception {
