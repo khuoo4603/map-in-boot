@@ -19,6 +19,7 @@ import java.time.Instant;
 import java.util.Base64;
 import java.util.Date;
 import java.util.List;
+import java.util.UUID;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -61,6 +62,8 @@ class AccountAuthIntegrationTest {
     static Path tempDir;
 
     private static RSAPrivateKey testPrivateKey;
+    private static final String INTERNAL_SERVICE_USERNAME = "main-service";
+    private static final String INTERNAL_SERVICE_SECRET = UUID.randomUUID().toString();
 
     @Autowired
     private WebApplicationContext context;
@@ -96,6 +99,8 @@ class AccountAuthIntegrationTest {
         }
 
         registry.add("demo.jwt.public-key-path", pubPath::toString);
+        registry.add("demo.internal.service-username", () -> INTERNAL_SERVICE_USERNAME);
+        registry.add("demo.internal.service-secret", () -> INTERNAL_SERVICE_SECRET);
     }
 
     @BeforeEach
@@ -234,6 +239,58 @@ class AccountAuthIntegrationTest {
                 .andExpect(status().isNotFound());
         mockMvc.perform(get("/api/accounts/UNKNOWN")
                         .header("Authorization", "Bearer " + customerToken))
+                .andExpect(status().isNotFound());
+    }
+
+    @Test
+    @DisplayName("N10/V10 내부 서비스 인증과 최종 사용자 Owner 검증 분리")
+    void internalAccountApiSeparatesServiceAuthenticationAndOwnerBinding() throws Exception {
+        String customerToken = createToken("USER001", List.of("ROLE_CUSTOMER"), "demo-identity", "demo-services", Instant.now().plusSeconds(3600), testPrivateKey);
+        String serviceAuthorization = internalServiceAuthorization();
+
+        mockMvc.perform(get("/internal/secured/accounts/ACC001/summary")
+                        .header("X-Authenticated-User", "USER001"))
+                .andExpect(status().isUnauthorized());
+        mockMvc.perform(get("/internal/secured/accounts/ACC001/summary")
+                        .header("Authorization", "Bearer " + customerToken)
+                        .header("X-Authenticated-User", "USER001"))
+                .andExpect(status().isUnauthorized());
+        mockMvc.perform(get("/internal/secured/accounts/ACC001/summary")
+                        .header("Authorization", "Basic " + Base64.getEncoder().encodeToString("main-service:wrong".getBytes())))
+                .andExpect(status().isUnauthorized());
+
+        mockMvc.perform(get("/internal/secured/accounts/ACC001/summary")
+                        .header("Authorization", serviceAuthorization)
+                        .header("X-Authenticated-User", "USER001"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.accountId").value("ACC001"))
+                .andExpect(jsonPath("$.ownerId").value("USER001"))
+                .andExpect(jsonPath("$.balance").value(1250000));
+        mockMvc.perform(get("/internal/accounts/ACC001/summary")
+                        .header("Authorization", serviceAuthorization)
+                        .header("X-Authenticated-User", "USER001"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.accountId").value("ACC001"))
+                .andExpect(jsonPath("$.ownerId").value("USER001"))
+                .andExpect(jsonPath("$.balance").value(1250000));
+        mockMvc.perform(get("/internal/secured/accounts/ACC002/summary")
+                        .header("Authorization", serviceAuthorization)
+                        .header("X-Authenticated-User", "USER001"))
+                .andExpect(status().isForbidden());
+        mockMvc.perform(get("/internal/accounts/ACC002/summary")
+                        .header("Authorization", serviceAuthorization)
+                        .header("X-Authenticated-User", "USER001"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.accountId").value("ACC002"))
+                .andExpect(jsonPath("$.ownerId").value("USER002"))
+                .andExpect(jsonPath("$.balance").value(2800000));
+        mockMvc.perform(get("/internal/secured/accounts/UNKNOWN/summary")
+                        .header("Authorization", serviceAuthorization)
+                        .header("X-Authenticated-User", "USER001"))
+                .andExpect(status().isNotFound());
+        mockMvc.perform(get("/internal/accounts/UNKNOWN/summary")
+                        .header("Authorization", serviceAuthorization)
+                        .header("X-Authenticated-User", "USER001"))
                 .andExpect(status().isNotFound());
     }
 
@@ -1273,6 +1330,11 @@ class AccountAuthIntegrationTest {
         mockMvc.perform(get("/api/my/accounts")
                         .header("Authorization", "Bearer " + token))
                 .andExpect(status().isForbidden());
+    }
+
+    private String internalServiceAuthorization() {
+        String credentials = INTERNAL_SERVICE_USERNAME + ":" + INTERNAL_SERVICE_SECRET;
+        return "Basic " + Base64.getEncoder().encodeToString(credentials.getBytes());
     }
 
     @Test

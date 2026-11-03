@@ -73,6 +73,11 @@ public class MainSecurityConfig {
                 // Demo 정적 리소스 및 오류 페이지 접근 허용
                 .requestMatchers("/demo/**", "/error", "/favicon.ico").permitAll()
                 .requestMatchers(HttpMethod.GET, "/api/public/notices").permitAll()
+                .requestMatchers(
+                        HttpMethod.GET,
+                        "/api/portal/secured/accounts/*/summary",
+                        "/api/portal/accounts/*/summary")
+                    .hasAuthority("ROLE_CUSTOMER")
                 // 기타 모든 요청 기본 인증 요구
                 .anyRequest().authenticated()
             )

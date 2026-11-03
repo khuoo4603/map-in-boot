@@ -14,6 +14,7 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.core.annotation.Order;
 import org.springframework.core.convert.converter.Converter;
+import org.springframework.security.config.Customizer;
 import org.springframework.http.HttpMethod;
 import org.springframework.security.authentication.AbstractAuthenticationToken;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
@@ -32,6 +33,11 @@ import org.springframework.security.oauth2.jwt.JwtDecoder;
 import org.springframework.security.oauth2.jwt.JwtValidators;
 import org.springframework.security.oauth2.jwt.NimbusJwtDecoder;
 import org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationToken;
+import org.springframework.security.core.userdetails.User;
+import org.springframework.security.core.userdetails.UserDetailsService;
+import org.springframework.security.core.userdetails.UsernameNotFoundException;
+import org.springframework.security.crypto.factory.PasswordEncoderFactories;
+import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.web.cors.CorsConfiguration;
 import org.springframework.web.cors.CorsConfigurationSource;
@@ -49,16 +55,63 @@ public class AccountSecurityConfig {
     private final String issuer;
     private final String audience;
     private final String corsAllowedOrigins;
+    private final String internalServiceUsername;
+    private final String internalServiceSecret;
 
     public AccountSecurityConfig(
             @Value("${demo.jwt.public-key-path:}") String publicKeyPath,
             @Value("${demo.jwt.issuer:demo-identity}") String issuer,
             @Value("${demo.jwt.audience:demo-services}") String audience,
-            @Value("${DEMO_CORS_ALLOWED_ORIGINS:}") String corsAllowedOrigins) {
+            @Value("${DEMO_CORS_ALLOWED_ORIGINS:}") String corsAllowedOrigins,
+            @Value("${demo.internal.service-username:}") String internalServiceUsername,
+            @Value("${demo.internal.service-secret:}") String internalServiceSecret) {
         this.publicKeyPath = publicKeyPath;
         this.issuer = issuer;
         this.audience = audience;
         this.corsAllowedOrigins = corsAllowedOrigins;
+        this.internalServiceUsername = internalServiceUsername;
+        this.internalServiceSecret = internalServiceSecret;
+    }
+
+    /**
+     * 내부 서비스 호출자 전용 HTTP Basic 보안 체인
+     */
+    @Bean
+    @Order(1)
+    public SecurityFilterChain internalSecurityFilterChain(HttpSecurity http) throws Exception {
+        http
+            .securityMatcher("/internal/**")
+            .csrf(AbstractHttpConfigurer::disable)
+            .cors(cors -> cors.configurationSource(corsConfigurationSource()))
+            .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
+            .authorizeHttpRequests(auth -> auth
+                .anyRequest().hasAuthority("ROLE_INTERNAL_SERVICE"))
+            .httpBasic(Customizer.withDefaults());
+
+        return http.build();
+    }
+
+    /**
+     * 외부 환경변수 기반 내부 서비스 계정 인증 정보 구성
+     */
+    @Bean
+    public UserDetailsService internalServiceUserDetailsService() {
+        PasswordEncoder passwordEncoder = PasswordEncoderFactories.createDelegatingPasswordEncoder();
+        String encodedSecret = internalServiceSecret.isBlank()
+                ? null
+                : passwordEncoder.encode(internalServiceSecret);
+
+        return username -> {
+            if (internalServiceUsername.isBlank()
+                    || internalServiceSecret.isBlank()
+                    || !internalServiceUsername.equals(username)) {
+                throw new UsernameNotFoundException("내부 서비스 인증 실패");
+            }
+            return User.withUsername(internalServiceUsername)
+                    .password(encodedSecret)
+                    .roles("INTERNAL_SERVICE")
+                    .build();
+        };
     }
 
     /**
