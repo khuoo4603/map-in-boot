@@ -18,6 +18,7 @@ import org.springframework.http.HttpMethod;
 import org.springframework.security.authentication.AbstractAuthenticationToken;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
+import org.springframework.security.config.annotation.method.configuration.EnableMethodSecurity;
 import org.springframework.security.config.annotation.web.configurers.AbstractHttpConfigurer;
 import org.springframework.security.config.http.SessionCreationPolicy;
 import org.springframework.security.core.GrantedAuthority;
@@ -41,6 +42,7 @@ import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
  */
 @Configuration
 @EnableWebSecurity
+@EnableMethodSecurity
 public class AccountSecurityConfig {
 
     private final String publicKeyPath;
@@ -91,6 +93,24 @@ public class AccountSecurityConfig {
                     "/api/staff/assigned-customers/*/savings",
                     "/api/staff/assigned-customers/*/loans"
                 ).hasAuthority("ROLE_STAFF")
+                // Scenario: N03 (counterpart: V03) - 직원 Role 기반 고객 검색
+                .requestMatchers(HttpMethod.GET, "/api/staff/secured/customers/search")
+                    .hasAuthority("ROLE_STAFF")
+                // Scenario: V03 (counterpart: N03) - 고객 검색 경로만 공개
+                .requestMatchers(HttpMethod.GET, "/api/staff/customers/search")
+                    .permitAll()
+                // Scenario: N07 (counterpart: V07) - 담당 고객 연락처의 직원 Role 보호
+                .requestMatchers(HttpMethod.GET, "/api/staff/secured/customers/*/contact")
+                    .hasAuthority("ROLE_STAFF")
+                // Scenario: V07 (counterpart: N07) - 인증은 유지하고 Header 오용을 재현
+                .requestMatchers(HttpMethod.GET, "/api/staff/customers/*/contact")
+                    .hasAuthority("ROLE_STAFF")
+                // Scenario: N04/V04 - URL은 인증만 요구하고 Method Security 차이를 관찰
+                .requestMatchers(
+                    HttpMethod.GET,
+                    "/api/staff/secured/customers/*",
+                    "/api/staff/customers/*"
+                ).authenticated()
                 .requestMatchers(
                     HttpMethod.GET,
                     "/api/admin/savings/products",
@@ -174,7 +194,9 @@ public class AccountSecurityConfig {
         CorsConfiguration configuration = new CorsConfiguration();
         configuration.setAllowedOrigins(resolveCorsAllowedOrigins());
         configuration.setAllowedMethods(List.of("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"));
-        configuration.setAllowedHeaders(List.of("Authorization", "Content-Type", "X-Requested-With"));
+        configuration.setAllowedHeaders(List.of(
+            "Authorization", "Content-Type", "X-Requested-With", "X-Staff-Id"
+        ));
         configuration.setAllowCredentials(true);
 
         UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();

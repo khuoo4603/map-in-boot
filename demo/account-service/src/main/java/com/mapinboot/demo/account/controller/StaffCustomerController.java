@@ -7,16 +7,20 @@ import com.mapinboot.demo.account.repository.InMemoryLoanApplicationRepository;
 import com.mapinboot.demo.account.repository.InMemorySavingsProductRepository;
 import com.mapinboot.demo.account.repository.InMemorySavingsSubscriptionRepository;
 import com.mapinboot.demo.account.repository.InMemoryStaffAssignmentRepository;
+import com.mapinboot.demo.account.service.StaffCustomerService;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.RequestHeader;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 /** 직원 담당 고객 및 금융 내역 조회 API 컨트롤러 */
@@ -28,18 +32,92 @@ public class StaffCustomerController {
     private final InMemorySavingsSubscriptionRepository subscriptionRepository;
     private final InMemorySavingsProductRepository savingsProductRepository;
     private final InMemoryLoanApplicationRepository applicationRepository;
+    private final StaffCustomerService staffCustomerService;
 
     public StaffCustomerController(
             InMemoryStaffAssignmentRepository assignmentRepository,
             InMemoryCustomerRepository customerRepository,
             InMemorySavingsSubscriptionRepository subscriptionRepository,
             InMemorySavingsProductRepository savingsProductRepository,
-            InMemoryLoanApplicationRepository applicationRepository) {
+            InMemoryLoanApplicationRepository applicationRepository,
+            StaffCustomerService staffCustomerService) {
         this.assignmentRepository = assignmentRepository;
         this.customerRepository = customerRepository;
         this.subscriptionRepository = subscriptionRepository;
         this.savingsProductRepository = savingsProductRepository;
         this.applicationRepository = applicationRepository;
+        this.staffCustomerService = staffCustomerService;
+    }
+
+    /** 직원 고객 검색 정상 경로 */
+    @GetMapping("/api/staff/secured/customers/search")
+    public ResponseEntity<?> searchSecuredCustomers(@RequestParam(defaultValue = "") String q) {
+        return searchCustomers(q);
+    }
+
+    /** 직원 고객 검색 취약 경로 */
+    @GetMapping("/api/staff/customers/search")
+    public ResponseEntity<?> searchCustomersVulnerable(@RequestParam(defaultValue = "") String q) {
+        return searchCustomers(q);
+    }
+
+    private ResponseEntity<?> searchCustomers(String query) {
+        List<SearchCustomerResponse> customers = staffCustomerService.searchCustomers(query).stream()
+                .map(customer -> new SearchCustomerResponse(customer.getCustomerId(), customer.getDisplayName()))
+                .toList();
+        return ResponseEntity.ok(new CustomerSearchResponse(customers));
+    }
+
+    /** Method Security Proxy가 적용되는 고객 상세 정상 경로 */
+    @GetMapping("/api/staff/secured/customers/{customerId}")
+    public ResponseEntity<?> getSecuredCustomer(@PathVariable String customerId) {
+        return toCustomerResponse(staffCustomerService.findCustomer(customerId));
+    }
+
+    /** 동일 Bean 내부 호출로 Method Security 우회를 재현하는 고객 상세 취약 경로 */
+    @GetMapping("/api/staff/customers/{customerId}")
+    public ResponseEntity<?> getCustomerVulnerable(@PathVariable String customerId) {
+        return toCustomerResponse(staffCustomerService.findCustomerThroughSelfInvocation(customerId));
+    }
+
+    /** JWT 주체와 담당 관계를 비교하는 연락처 정상 경로 */
+    @GetMapping("/api/staff/secured/customers/{customerId}/contact")
+    public ResponseEntity<?> getSecuredContact(
+            @PathVariable String customerId,
+            @AuthenticationPrincipal Jwt jwt) {
+        return toContactResponse(customerId, jwt.getSubject());
+    }
+
+    /*
+     * Scenario: V07 (counterpart: N07)
+     * API: GET /api/staff/customers/{customerId}/contact
+     * Rule: OBJECT_BINDING
+     * Vulnerable: X-Staff-Id를 담당 직원 식별자로 신뢰하여 JWT sub와 비교하지 않음
+     * Normal: JWT sub와 StaffAssignment를 비교하여 담당 고객만 허용
+     */
+    @GetMapping("/api/staff/customers/{customerId}/contact")
+    public ResponseEntity<?> getContactVulnerable(
+            @PathVariable String customerId,
+            @RequestHeader(name = "X-Staff-Id", required = false) String staffId) {
+        return toContactResponse(customerId, staffId);
+    }
+
+    private ResponseEntity<?> toCustomerResponse(Optional<DemoCustomer> customer) {
+        return customer.map(value -> ResponseEntity.ok(new CustomerDetailResponse(
+                        value.getCustomerId(), value.getDisplayName(), value.getStatus())))
+                .orElseGet(() -> ResponseEntity.notFound().build());
+    }
+
+    private ResponseEntity<?> toContactResponse(String customerId, String staffId) {
+        Optional<DemoCustomer> customer = staffCustomerService.findCustomer(customerId);
+        if (customer.isEmpty()) {
+            return ResponseEntity.notFound().build();
+        }
+        if (!staffCustomerService.isAssigned(staffId, customerId)) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN).build();
+        }
+        DemoCustomer value = customer.get();
+        return ResponseEntity.ok(new ContactResponse(value.getCustomerId(), value.getContact()));
     }
 
     /** 검증된 직원 JWT 기준 담당 고객 목록 조회 */
@@ -74,7 +152,7 @@ public class StaffCustomerController {
         if (customer == null) {
             return ResponseEntity.notFound().build();
         }
-        if (!isAssigned(jwt.getSubject(), customerId)) {
+        if (!staffCustomerService.isAssigned(jwt.getSubject(), customerId)) {
             return ResponseEntity.status(HttpStatus.FORBIDDEN).build();
         }
 
@@ -99,7 +177,7 @@ public class StaffCustomerController {
         if (customer == null) {
             return ResponseEntity.notFound().build();
         }
-        if (!isAssigned(jwt.getSubject(), customerId)) {
+        if (!staffCustomerService.isAssigned(jwt.getSubject(), customerId)) {
             return ResponseEntity.status(HttpStatus.FORBIDDEN).build();
         }
 
@@ -116,12 +194,6 @@ public class StaffCustomerController {
         return ResponseEntity.ok(applications);
     }
 
-    private boolean isAssigned(String staffId, String customerId) {
-        return assignmentRepository.findByStaffIdAndCustomerId(staffId, customerId)
-                .map(assignment -> assignment.isAssigned())
-                .orElse(false);
-    }
-
     private SavingsSummaryResponse toSavingsSummary(DemoSavingsSubscription subscription) {
         String productName = savingsProductRepository.findByProductId(subscription.getProductId())
                 .map(product -> product.getName())
@@ -134,6 +206,18 @@ public class StaffCustomerController {
     }
 
     private record CustomerSummaryResponse(String customerId, String displayName, String status) {
+    }
+
+    private record CustomerSearchResponse(List<SearchCustomerResponse> customers) {
+    }
+
+    private record SearchCustomerResponse(String customerId, String displayName) {
+    }
+
+    private record CustomerDetailResponse(String customerId, String displayName, String status) {
+    }
+
+    private record ContactResponse(String customerId, String contact) {
     }
 
     private record SavingsListResponse(List<SavingsSummaryResponse> subscriptions) {

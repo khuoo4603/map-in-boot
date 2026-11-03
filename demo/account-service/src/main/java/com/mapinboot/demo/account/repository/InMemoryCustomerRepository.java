@@ -26,8 +26,8 @@ public class InMemoryCustomerRepository {
         customersById.clear();
         customersByUserId.clear();
 
-        save(new DemoCustomer("CUST001", "USER001", "고객 A", "ACTIVE"));
-        save(new DemoCustomer("CUST002", "USER002", "고객 B", "ACTIVE"));
+        save(new DemoCustomer("CUST001", "USER001", "고객 A", "ACTIVE", "010-1111-0001"));
+        save(new DemoCustomer("CUST002", "USER002", "고객 B", "ACTIVE", "010-2222-0002"));
     }
 
     /**
