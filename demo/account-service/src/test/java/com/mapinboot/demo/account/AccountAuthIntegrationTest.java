@@ -19,6 +19,7 @@ import java.time.Instant;
 import java.util.Base64;
 import java.util.Date;
 import java.util.List;
+import java.util.UUID;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -61,6 +62,8 @@ class AccountAuthIntegrationTest {
     static Path tempDir;
 
     private static RSAPrivateKey testPrivateKey;
+    private static final String INTERNAL_SERVICE_USERNAME = "main-service";
+    private static final String INTERNAL_SERVICE_SECRET = UUID.randomUUID().toString();
 
     @Autowired
     private WebApplicationContext context;
@@ -96,6 +99,8 @@ class AccountAuthIntegrationTest {
         }
 
         registry.add("demo.jwt.public-key-path", pubPath::toString);
+        registry.add("demo.internal.service-username", () -> INTERNAL_SERVICE_USERNAME);
+        registry.add("demo.internal.service-secret", () -> INTERNAL_SERVICE_SECRET);
     }
 
     @BeforeEach
@@ -186,6 +191,107 @@ class AccountAuthIntegrationTest {
                 .andExpect(jsonPath("$[0].accountId").value("ACC002"))
                 .andExpect(jsonPath("$[0].ownerId").value("USER002"))
                 .andExpect(jsonPath("$[0].balance").value(2800000));
+    }
+
+    @Test
+    @DisplayName("N05/V05 계좌 상세 Owner 검증 차이와 인증 경계 확인")
+    void accountDetailNormalAndVulnerablePathsDifferByOwnerCheck() throws Exception {
+        String customerToken = createToken("USER001", List.of("ROLE_CUSTOMER"), "demo-identity", "demo-services", Instant.now().plusSeconds(3600), testPrivateKey);
+        String staffToken = createToken("STAFF001", List.of("ROLE_STAFF"), "demo-identity", "demo-services", Instant.now().plusSeconds(3600), testPrivateKey);
+
+        mockMvc.perform(get("/api/secured/accounts/ACC001")
+                        .header("Authorization", "Bearer " + customerToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.accountId").value("ACC001"))
+                .andExpect(jsonPath("$.ownerId").value("USER001"))
+                .andExpect(jsonPath("$.balance").value(1250000));
+        mockMvc.perform(get("/api/accounts/ACC001")
+                        .header("Authorization", "Bearer " + customerToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.accountId").value("ACC001"))
+                .andExpect(jsonPath("$.ownerId").value("USER001"))
+                .andExpect(jsonPath("$.balance").value(1250000));
+
+        mockMvc.perform(get("/api/secured/accounts/ACC002")
+                        .header("Authorization", "Bearer " + customerToken))
+                .andExpect(status().isForbidden());
+        mockMvc.perform(get("/api/accounts/ACC002")
+                        .header("Authorization", "Bearer " + customerToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.accountId").value("ACC002"))
+                .andExpect(jsonPath("$.ownerId").value("USER002"))
+                .andExpect(jsonPath("$.balance").value(2800000));
+
+        mockMvc.perform(get("/api/secured/accounts/ACC001")
+                        .header("Authorization", "Bearer " + staffToken))
+                .andExpect(status().isForbidden());
+        mockMvc.perform(get("/api/accounts/ACC001")
+                        .header("Authorization", "Bearer " + staffToken))
+                .andExpect(status().isForbidden());
+
+        mockMvc.perform(get("/api/secured/accounts/ACC001"))
+                .andExpect(status().isUnauthorized());
+        mockMvc.perform(get("/api/accounts/ACC001"))
+                .andExpect(status().isUnauthorized());
+
+        mockMvc.perform(get("/api/secured/accounts/UNKNOWN")
+                        .header("Authorization", "Bearer " + customerToken))
+                .andExpect(status().isNotFound());
+        mockMvc.perform(get("/api/accounts/UNKNOWN")
+                        .header("Authorization", "Bearer " + customerToken))
+                .andExpect(status().isNotFound());
+    }
+
+    @Test
+    @DisplayName("N10/V10 내부 서비스 인증과 최종 사용자 Owner 검증 분리")
+    void internalAccountApiSeparatesServiceAuthenticationAndOwnerBinding() throws Exception {
+        String customerToken = createToken("USER001", List.of("ROLE_CUSTOMER"), "demo-identity", "demo-services", Instant.now().plusSeconds(3600), testPrivateKey);
+        String serviceAuthorization = internalServiceAuthorization();
+
+        mockMvc.perform(get("/internal/secured/accounts/ACC001/summary")
+                        .header("X-Authenticated-User", "USER001"))
+                .andExpect(status().isUnauthorized());
+        mockMvc.perform(get("/internal/secured/accounts/ACC001/summary")
+                        .header("Authorization", "Bearer " + customerToken)
+                        .header("X-Authenticated-User", "USER001"))
+                .andExpect(status().isUnauthorized());
+        mockMvc.perform(get("/internal/secured/accounts/ACC001/summary")
+                        .header("Authorization", "Basic " + Base64.getEncoder().encodeToString("main-service:wrong".getBytes())))
+                .andExpect(status().isUnauthorized());
+
+        mockMvc.perform(get("/internal/secured/accounts/ACC001/summary")
+                        .header("Authorization", serviceAuthorization)
+                        .header("X-Authenticated-User", "USER001"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.accountId").value("ACC001"))
+                .andExpect(jsonPath("$.ownerId").value("USER001"))
+                .andExpect(jsonPath("$.balance").value(1250000));
+        mockMvc.perform(get("/internal/accounts/ACC001/summary")
+                        .header("Authorization", serviceAuthorization)
+                        .header("X-Authenticated-User", "USER001"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.accountId").value("ACC001"))
+                .andExpect(jsonPath("$.ownerId").value("USER001"))
+                .andExpect(jsonPath("$.balance").value(1250000));
+        mockMvc.perform(get("/internal/secured/accounts/ACC002/summary")
+                        .header("Authorization", serviceAuthorization)
+                        .header("X-Authenticated-User", "USER001"))
+                .andExpect(status().isForbidden());
+        mockMvc.perform(get("/internal/accounts/ACC002/summary")
+                        .header("Authorization", serviceAuthorization)
+                        .header("X-Authenticated-User", "USER001"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.accountId").value("ACC002"))
+                .andExpect(jsonPath("$.ownerId").value("USER002"))
+                .andExpect(jsonPath("$.balance").value(2800000));
+        mockMvc.perform(get("/internal/secured/accounts/UNKNOWN/summary")
+                        .header("Authorization", serviceAuthorization)
+                        .header("X-Authenticated-User", "USER001"))
+                .andExpect(status().isNotFound());
+        mockMvc.perform(get("/internal/accounts/UNKNOWN/summary")
+                        .header("Authorization", serviceAuthorization)
+                        .header("X-Authenticated-User", "USER001"))
+                .andExpect(status().isNotFound());
     }
 
     @Test
@@ -766,6 +872,145 @@ class AccountAuthIntegrationTest {
                 .andExpect(status().isForbidden());
     }
 
+    /*
+     * Scenario: V03 (counterpart: N03)
+     * API: GET /api/staff/secured/customers/search, /api/staff/customers/search
+     * Rule: PUBLIC_ENDPOINT
+     * Normal: ROLE_STAFF required for customer search
+     * Vulnerable: permitAll customer search exposes fixed customer data
+     */
+    @Test
+    @DisplayName("직원 고객 검색의 정상·취약 경로를 분리")
+    void staffCustomerSearchSeparatesNormalAndVulnerablePaths() throws Exception {
+        String customerToken = createToken("USER001", List.of("ROLE_CUSTOMER"), "demo-identity", "demo-services", Instant.now().plusSeconds(3600), testPrivateKey);
+        String staffToken = createToken("STAFF001", List.of("ROLE_STAFF"), "demo-identity", "demo-services", Instant.now().plusSeconds(3600), testPrivateKey);
+
+        mockMvc.perform(get("/api/staff/secured/customers/search")
+                        .param("q", "CUST"))
+                .andExpect(status().isUnauthorized());
+
+        mockMvc.perform(get("/api/staff/secured/customers/search")
+                        .param("q", "CUST")
+                        .header("Authorization", "Bearer " + customerToken))
+                .andExpect(status().isForbidden());
+
+        mockMvc.perform(get("/api/staff/secured/customers/search")
+                        .param("q", "CUST")
+                        .header("Authorization", "Bearer " + staffToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.customers", hasSize(2)))
+                .andExpect(jsonPath("$.customers[*].customerId", containsInAnyOrder("CUST001", "CUST002")))
+                .andExpect(jsonPath("$.customers[0].displayName").isNotEmpty())
+                .andExpect(jsonPath("$.customers[0].status").doesNotExist());
+
+        mockMvc.perform(get("/api/staff/customers/search")
+                        .param("q", "CUST"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.customers", hasSize(2)))
+                .andExpect(jsonPath("$.customers[*].customerId", containsInAnyOrder("CUST001", "CUST002")))
+                .andExpect(jsonPath("$.customers[0].displayName").isNotEmpty())
+                .andExpect(jsonPath("$.customers[0].status").doesNotExist());
+
+        mockMvc.perform(get("/api/staff/customers/search")
+                        .param("q", "CUST")
+                        .header("Authorization", "Bearer " + customerToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.customers", hasSize(2)));
+    }
+
+    /*
+     * Scenario: V04 (counterpart: N04)
+     * API: GET /api/staff/secured/customers/{customerId}, /api/staff/customers/{customerId}
+     * Rule: METHOD_MISMATCH
+     * Normal: proxied @PreAuthorize protects the customer detail method
+     * Vulnerable: same Bean self-invocation bypasses the method proxy
+     */
+    @Test
+    @DisplayName("고객 상세의 Method Security Proxy와 Self-invocation 차이 재현")
+    void methodSecurityProxyAndSelfInvocationAreObservable() throws Exception {
+        String customerToken = createToken("USER001", List.of("ROLE_CUSTOMER"), "demo-identity", "demo-services", Instant.now().plusSeconds(3600), testPrivateKey);
+        String staffToken = createToken("STAFF001", List.of("ROLE_STAFF"), "demo-identity", "demo-services", Instant.now().plusSeconds(3600), testPrivateKey);
+
+        mockMvc.perform(get("/api/staff/secured/customers/CUST002")
+                        .header("Authorization", "Bearer " + customerToken))
+                .andExpect(status().isForbidden());
+
+        mockMvc.perform(get("/api/staff/customers/CUST002")
+                        .header("Authorization", "Bearer " + customerToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.customerId").value("CUST002"))
+                .andExpect(jsonPath("$.displayName").value("고객 B"))
+                .andExpect(jsonPath("$.status").value("ACTIVE"));
+
+        mockMvc.perform(get("/api/staff/secured/customers/CUST002")
+                        .header("Authorization", "Bearer " + staffToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.customerId").value("CUST002"));
+
+        mockMvc.perform(get("/api/staff/customers/CUST002")
+                        .header("Authorization", "Bearer " + staffToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.customerId").value("CUST002"));
+    }
+
+    /*
+     * Scenario: V07 (counterpart: N07)
+     * API: GET /api/staff/secured/customers/{customerId}/contact, /api/staff/customers/{customerId}/contact
+     * Rule: OBJECT_BINDING
+     * Normal: verified JWT sub is compared with StaffAssignment
+     * Vulnerable: X-Staff-Id is trusted for assignment lookup
+     */
+    @Test
+    @DisplayName("직원 담당 고객 연락처의 Principal·Header 차이 재현")
+    void staffContactUsesPrincipalForNormalAndHeaderForVulnerablePath() throws Exception {
+        String staffAToken = createToken("STAFF001", List.of("ROLE_STAFF"), "demo-identity", "demo-services", Instant.now().plusSeconds(3600), testPrivateKey);
+
+        mockMvc.perform(get("/api/staff/secured/customers/CUST001/contact")
+                        .header("Authorization", "Bearer " + staffAToken)
+                        .header("X-Staff-Id", "STAFF001"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.customerId").value("CUST001"))
+                .andExpect(jsonPath("$.contact").value("010-1111-0001"));
+
+        mockMvc.perform(get("/api/staff/customers/CUST001/contact")
+                        .header("Authorization", "Bearer " + staffAToken)
+                        .header("X-Staff-Id", "STAFF001"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.customerId").value("CUST001"))
+                .andExpect(jsonPath("$.contact").value("010-1111-0001"));
+
+        mockMvc.perform(get("/api/staff/secured/customers/CUST002/contact")
+                        .header("Authorization", "Bearer " + staffAToken)
+                        .header("X-Staff-Id", "STAFF002"))
+                .andExpect(status().isForbidden());
+
+        mockMvc.perform(get("/api/staff/customers/CUST002/contact")
+                        .header("Authorization", "Bearer " + staffAToken)
+                        .header("X-Staff-Id", "STAFF002"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.customerId").value("CUST002"))
+                .andExpect(jsonPath("$.contact").value("010-2222-0002"));
+
+        mockMvc.perform(options("/api/staff/customers/CUST002/contact")
+                        .header("Origin", "http://localhost:8080")
+                        .header("Access-Control-Request-Method", "GET")
+                        .header("Access-Control-Request-Headers", "authorization,x-staff-id"))
+                .andExpect(status().isOk())
+                .andExpect(header().string("Access-Control-Allow-Origin", "http://localhost:8080"))
+                .andExpect(header().string("Access-Control-Allow-Headers", containsString("x-staff-id")));
+
+        mockMvc.perform(get("/api/staff/secured/customers/CUST001/contact"))
+                .andExpect(status().isUnauthorized());
+
+        mockMvc.perform(get("/api/staff/secured/customers/CUST001/contact")
+                        .header("X-Staff-Id", "STAFF001"))
+                .andExpect(status().isUnauthorized());
+
+        mockMvc.perform(get("/api/staff/customers/CUST001/contact")
+                        .header("X-Staff-Id", "STAFF001"))
+                .andExpect(status().isUnauthorized());
+    }
+
     @Test
     @DisplayName("은행 관리자는 활성·비활성 예적금 상품 전체 조회")
     void bankAdminListsAllSavingsProducts() throws Exception {
@@ -1085,6 +1330,11 @@ class AccountAuthIntegrationTest {
         mockMvc.perform(get("/api/my/accounts")
                         .header("Authorization", "Bearer " + token))
                 .andExpect(status().isForbidden());
+    }
+
+    private String internalServiceAuthorization() {
+        String credentials = INTERNAL_SERVICE_USERNAME + ":" + INTERNAL_SERVICE_SECRET;
+        return "Basic " + Base64.getEncoder().encodeToString(credentials.getBytes());
     }
 
     @Test

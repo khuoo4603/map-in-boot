@@ -10,5 +10,8 @@ demo:
     public-key-path: ${JWT_PUBLIC_KEY_PATH:}
     issuer: ${JWT_ISSUER:demo-identity}
     audience: ${JWT_AUDIENCE:demo-services}
+  internal:
+    service-username: ${DEMO_INTERNAL_SERVICE_USERNAME:}
+    service-secret: ${DEMO_INTERNAL_SERVICE_SECRET:}
 
 

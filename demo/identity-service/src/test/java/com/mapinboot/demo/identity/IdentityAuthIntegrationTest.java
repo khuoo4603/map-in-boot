@@ -128,6 +128,75 @@ class IdentityAuthIntegrationTest {
     }
 
     @Test
+    @DisplayName("N06/V06 Session 프로필 Owner 검증 차이와 JWT 접근 경계 확인")
+    void sessionProfileNormalAndVulnerablePathsDifferByOwnerCheck() throws Exception {
+        MvcResult customerLogin = login("customer.a", csrfSession());
+        Cookie customerSession = customerLogin.getResponse().getCookie("MIB_IDENTITY_SESSION");
+        String customerToken = accessToken(customerLogin);
+
+        mockMvc.perform(get("/api/session/secured/customers/CUST001/profile")
+                        .cookie(customerSession))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.customerId").value("CUST001"))
+                .andExpect(jsonPath("$.displayName").value("고객 A"));
+        mockMvc.perform(get("/api/session/customers/CUST001/profile")
+                        .cookie(customerSession))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.customerId").value("CUST001"))
+                .andExpect(jsonPath("$.displayName").value("고객 A"));
+
+        mockMvc.perform(get("/api/session/secured/customers/CUST002/profile")
+                        .cookie(customerSession))
+                .andExpect(status().isForbidden());
+        mockMvc.perform(get("/api/session/customers/CUST002/profile")
+                        .cookie(customerSession))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.customerId").value("CUST002"))
+                .andExpect(jsonPath("$.displayName").value("고객 B"));
+
+        mockMvc.perform(get("/api/session/secured/customers/CUST001/profile"))
+                .andExpect(status().isUnauthorized());
+        mockMvc.perform(get("/api/session/customers/CUST001/profile"))
+                .andExpect(status().isUnauthorized());
+        mockMvc.perform(get("/api/session/secured/customers/CUST001/profile")
+                        .header("Authorization", "Bearer " + customerToken))
+                .andExpect(status().isUnauthorized());
+        mockMvc.perform(get("/api/session/customers/CUST001/profile")
+                        .header("Authorization", "Bearer " + customerToken))
+                .andExpect(status().isUnauthorized());
+
+        MvcResult staffLogin = login("staff.a", csrfSession());
+        Cookie staffSession = staffLogin.getResponse().getCookie("MIB_IDENTITY_SESSION");
+        mockMvc.perform(get("/api/session/secured/customers/CUST001/profile")
+                        .cookie(staffSession))
+                .andExpect(status().isForbidden());
+        mockMvc.perform(get("/api/session/customers/CUST001/profile")
+                        .cookie(staffSession))
+                .andExpect(status().isForbidden());
+
+        mockMvc.perform(get("/api/session/secured/customers/UNKNOWN/profile")
+                        .cookie(customerSession))
+                .andExpect(status().isNotFound());
+        mockMvc.perform(get("/api/session/customers/UNKNOWN/profile")
+                        .cookie(customerSession))
+                .andExpect(status().isNotFound());
+    }
+
+    @Test
+    @DisplayName("Session 프로필 API의 허용 Origin CORS preflight 응답")
+    void sessionProfileCorsPreflightUsesExistingPolicy() throws Exception {
+        String allowedOrigin = corsAllowedOrigins.split(",")[0].trim();
+
+        mockMvc.perform(options("/api/session/secured/customers/CUST001/profile")
+                        .header(HttpHeaders.ORIGIN, allowedOrigin)
+                        .header(HttpHeaders.ACCESS_CONTROL_REQUEST_METHOD, "GET")
+                        .header(HttpHeaders.ACCESS_CONTROL_REQUEST_HEADERS, "authorization"))
+                .andExpect(status().isOk())
+                .andExpect(header().string(HttpHeaders.ACCESS_CONTROL_ALLOW_ORIGIN, allowedOrigin))
+                .andExpect(header().string(HttpHeaders.ACCESS_CONTROL_ALLOW_CREDENTIALS, "true"));
+    }
+
+    @Test
     @DisplayName("Session Cookie 속성 및 JWT 로그인 응답 계약 유지")
     void sessionCookiePolicyAndLoginContract() throws Exception {
         MvcResult loginResult = login("customer.a", csrfSession());
@@ -195,6 +264,8 @@ class IdentityAuthIntegrationTest {
                 .isTrue();
 
         mockMvc.perform(get("/api/auth/me").cookie(sessionCookie))
+                .andExpect(status().isUnauthorized());
+        mockMvc.perform(get("/api/session/customers/CUST001/profile").cookie(sessionCookie))
                 .andExpect(status().isUnauthorized());
     }
 

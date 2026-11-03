@@ -17,6 +17,7 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.core.annotation.Order;
 import org.springframework.core.convert.converter.Converter;
+import org.springframework.http.HttpStatus;
 import org.springframework.security.authentication.AbstractAuthenticationToken;
 import org.springframework.security.authentication.AuthenticationManager;
 import org.springframework.security.config.annotation.authentication.configuration.AuthenticationConfiguration;
@@ -37,6 +38,7 @@ import org.springframework.security.oauth2.jwt.JwtValidators;
 import org.springframework.security.oauth2.jwt.NimbusJwtDecoder;
 import org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationToken;
 import org.springframework.security.web.SecurityFilterChain;
+import org.springframework.security.web.authentication.HttpStatusEntryPoint;
 import org.springframework.security.web.authentication.session.ChangeSessionIdAuthenticationStrategy;
 import org.springframework.security.web.authentication.session.SessionAuthenticationStrategy;
 import org.springframework.security.web.context.HttpSessionSecurityContextRepository;
@@ -76,6 +78,25 @@ public class IdentitySecurityConfig {
     /**
      * 보안 필터 체인 구성
      */
+    @Bean
+    @Order(1)
+    public SecurityFilterChain sessionSecurityFilterChain(
+            HttpSecurity http,
+            SecurityContextRepository securityContextRepository) throws Exception {
+        http
+            .securityMatcher("/api/session/**")
+            .cors(cors -> cors.configurationSource(corsConfigurationSource()))
+            .securityContext(securityContext -> securityContext
+                .securityContextRepository(securityContextRepository))
+            .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.IF_REQUIRED))
+            .exceptionHandling(exception -> exception
+                .authenticationEntryPoint(new HttpStatusEntryPoint(HttpStatus.UNAUTHORIZED)))
+            .authorizeHttpRequests(auth -> auth
+                .anyRequest().hasAuthority("ROLE_CUSTOMER"));
+
+        return http.build();
+    }
+
     @Bean
     @Order(100)
     public SecurityFilterChain securityFilterChain(

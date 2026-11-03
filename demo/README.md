@@ -84,3 +84,20 @@ Repository 외부 `.env`에 로컬 실행 값을 입력한 뒤 다음 명령으�
 ```bash
 docker compose --env-file ../.env up --build -d
 ```
+
+## 9. Access Control 시나리오 검증
+
+모든 Endpoint는 GET 요청 기준입니다. JWT 요청은 Identity에서 발급한 Access Token을 사용하며, 직원·고객 역할은 Token의 `roles` Claim으로 구분합니다. N06은 JWT가 아닌 `MIB_IDENTITY_SESSION` Cookie와 CSRF 조건을 갖춘 Session 요청을 사용합니다. N10/V10은 Main의 내부 서비스 인증 환경변수도 필요합니다.
+
+| Scenario | 정상 Endpoint | 취약 Endpoint | 요청 준비 조건 | 정상 기대 결과 | 취약 기대 결과 |
+| --- | --- | --- | --- | --- | --- |
+| N01/V01 | `/api/secured/legacy/account-summary/{accountId}` | `/api/legacy/account-summary/{accountId}` | `ACC001`, 고객 JWT | 익명 401, JWT 200, 없는 계좌 404 | 익명 200, 없는 계좌 404; V01 Chain 미매칭 |
+| N02/V02 | `/api/staff/protected/reports/summary` | `/api/staff/reports/summary` | `STAFF001` 직원 JWT, `USER001` 고객 JWT | 익명 401, 고객 403, 직원 200 | 익명·고객·직원 200; V02 선행 약한 Chain 선택 |
+| N03/V03 | `/api/staff/secured/customers/search?q=CUST` | `/api/staff/customers/search?q=CUST` | `STAFF001` 직원 JWT, `USER001` 고객 JWT | 익명 401, 고객 403, 직원 200 | 익명·고객·직원 200 |
+| N04/V04 | `/api/staff/secured/customers/{customerId}` | `/api/staff/customers/{customerId}` | `CUST002`, 고객·직원 JWT | 고객 403, 직원 200 | 고객·직원 200 |
+| N05/V05 | `/api/secured/accounts/{accountId}` | `/api/accounts/{accountId}` | `ACC001`·`ACC002`, 고객 JWT | 본인 200, 타인 403, 익명 401 | 본인·타인 200, 익명 401 |
+| N06/V06 | `/api/session/secured/customers/{customerId}/profile` | `/api/session/customers/{customerId}/profile` | 고객 Session Cookie, `CUST001`·`CUST002` | 본인 200, 타인 403, Session 없음 401 | 본인·타인 200, Session 없음 401 |
+| N07/V07 | `/api/staff/secured/customers/{customerId}/contact` | `/api/staff/customers/{customerId}/contact` | `STAFF001` 직원 JWT와 `X-Staff-Id` | 담당 고객 200, 타인 403, 익명 401 | 위조 Header 기준 담당 고객 200 |
+| N10/V10 | `/api/portal/secured/accounts/{accountId}/summary` | `/api/portal/accounts/{accountId}/summary` | `USER001` 고객 JWT, 내부 서비스 인증 환경변수 | 본인 200, 타인 403, 익명 401 | 본인·타인 200, 익명 401 |
+
+N01/V01은 Main `SecurityFilterChain` 적용 여부, N02/V02는 `@Order`와 Matcher의 첫 번째 일치 Chain 선택 차이를 검증합니다. V01의 공개 상태는 `permitAll`이 아니라 GET 경로가 모든 Chain Matcher에서 제외된 결과이며, V02는 뒤쪽 보호 Chain이 존재하지만 넓은 선행 Chain이 먼저 선택되는 구조입니다.

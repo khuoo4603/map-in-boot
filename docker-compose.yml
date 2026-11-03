@@ -68,6 +68,8 @@ services:
       JWT_PUBLIC_KEY_PATH: "/keys/jwt-public.pem"
       JWT_ISSUER: "${JWT_ISSUER:-demo-identity}"
       JWT_AUDIENCE: "${JWT_AUDIENCE:-demo-services}"
+      DEMO_INTERNAL_SERVICE_USERNAME: "${DEMO_INTERNAL_SERVICE_USERNAME:-}"
+      DEMO_INTERNAL_SERVICE_SECRET: "${DEMO_INTERNAL_SERVICE_SECRET:-}"
     volumes:
       - jwt-public-keys:/keys-public:ro
     depends_on:
@@ -92,6 +94,8 @@ services:
       JWT_PUBLIC_KEY_PATH: "/keys/jwt-public.pem"
       JWT_ISSUER: "${JWT_ISSUER:-demo-identity}"
       JWT_AUDIENCE: "${JWT_AUDIENCE:-demo-services}"
+      DEMO_INTERNAL_SERVICE_USERNAME: "${DEMO_INTERNAL_SERVICE_USERNAME:-}"
+      DEMO_INTERNAL_SERVICE_SECRET: "${DEMO_INTERNAL_SERVICE_SECRET:-}"
     volumes:
       - jwt-public-keys:/keys-public:ro
     depends_on:

@@ -14,10 +14,12 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.core.annotation.Order;
 import org.springframework.core.convert.converter.Converter;
+import org.springframework.security.config.Customizer;
 import org.springframework.http.HttpMethod;
 import org.springframework.security.authentication.AbstractAuthenticationToken;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
+import org.springframework.security.config.annotation.method.configuration.EnableMethodSecurity;
 import org.springframework.security.config.annotation.web.configurers.AbstractHttpConfigurer;
 import org.springframework.security.config.http.SessionCreationPolicy;
 import org.springframework.security.core.GrantedAuthority;
@@ -31,6 +33,11 @@ import org.springframework.security.oauth2.jwt.JwtDecoder;
 import org.springframework.security.oauth2.jwt.JwtValidators;
 import org.springframework.security.oauth2.jwt.NimbusJwtDecoder;
 import org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationToken;
+import org.springframework.security.core.userdetails.User;
+import org.springframework.security.core.userdetails.UserDetailsService;
+import org.springframework.security.core.userdetails.UsernameNotFoundException;
+import org.springframework.security.crypto.factory.PasswordEncoderFactories;
+import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.web.cors.CorsConfiguration;
 import org.springframework.web.cors.CorsConfigurationSource;
@@ -41,22 +48,70 @@ import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
  */
 @Configuration
 @EnableWebSecurity
+@EnableMethodSecurity
 public class AccountSecurityConfig {
 
     private final String publicKeyPath;
     private final String issuer;
     private final String audience;
     private final String corsAllowedOrigins;
+    private final String internalServiceUsername;
+    private final String internalServiceSecret;
 
     public AccountSecurityConfig(
             @Value("${demo.jwt.public-key-path:}") String publicKeyPath,
             @Value("${demo.jwt.issuer:demo-identity}") String issuer,
             @Value("${demo.jwt.audience:demo-services}") String audience,
-            @Value("${DEMO_CORS_ALLOWED_ORIGINS:}") String corsAllowedOrigins) {
+            @Value("${DEMO_CORS_ALLOWED_ORIGINS:}") String corsAllowedOrigins,
+            @Value("${demo.internal.service-username:}") String internalServiceUsername,
+            @Value("${demo.internal.service-secret:}") String internalServiceSecret) {
         this.publicKeyPath = publicKeyPath;
         this.issuer = issuer;
         this.audience = audience;
         this.corsAllowedOrigins = corsAllowedOrigins;
+        this.internalServiceUsername = internalServiceUsername;
+        this.internalServiceSecret = internalServiceSecret;
+    }
+
+    /**
+     * 내부 서비스 호출자 전용 HTTP Basic 보안 체인
+     */
+    @Bean
+    @Order(1)
+    public SecurityFilterChain internalSecurityFilterChain(HttpSecurity http) throws Exception {
+        http
+            .securityMatcher("/internal/**")
+            .csrf(AbstractHttpConfigurer::disable)
+            .cors(cors -> cors.configurationSource(corsConfigurationSource()))
+            .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
+            .authorizeHttpRequests(auth -> auth
+                .anyRequest().hasAuthority("ROLE_INTERNAL_SERVICE"))
+            .httpBasic(Customizer.withDefaults());
+
+        return http.build();
+    }
+
+    /**
+     * 외부 환경변수 기반 내부 서비스 계정 인증 정보 구성
+     */
+    @Bean
+    public UserDetailsService internalServiceUserDetailsService() {
+        PasswordEncoder passwordEncoder = PasswordEncoderFactories.createDelegatingPasswordEncoder();
+        String encodedSecret = internalServiceSecret.isBlank()
+                ? null
+                : passwordEncoder.encode(internalServiceSecret);
+
+        return username -> {
+            if (internalServiceUsername.isBlank()
+                    || internalServiceSecret.isBlank()
+                    || !internalServiceUsername.equals(username)) {
+                throw new UsernameNotFoundException("내부 서비스 인증 실패");
+            }
+            return User.withUsername(internalServiceUsername)
+                    .password(encodedSecret)
+                    .roles("INTERNAL_SERVICE")
+                    .build();
+        };
     }
 
     /**
@@ -91,6 +146,30 @@ public class AccountSecurityConfig {
                     "/api/staff/assigned-customers/*/savings",
                     "/api/staff/assigned-customers/*/loans"
                 ).hasAuthority("ROLE_STAFF")
+                // Scenario: N03 (counterpart: V03) - 직원 Role 기반 고객 검색
+                .requestMatchers(HttpMethod.GET, "/api/staff/secured/customers/search")
+                    .hasAuthority("ROLE_STAFF")
+                // Scenario: V03 (counterpart: N03) - 고객 검색 경로만 공개
+                .requestMatchers(HttpMethod.GET, "/api/staff/customers/search")
+                    .permitAll()
+                // Scenario: N07 (counterpart: V07) - 담당 고객 연락처의 직원 Role 보호
+                .requestMatchers(HttpMethod.GET, "/api/staff/secured/customers/*/contact")
+                    .hasAuthority("ROLE_STAFF")
+                // Scenario: V07 (counterpart: N07) - 인증은 유지하고 Header 오용을 재현
+                .requestMatchers(HttpMethod.GET, "/api/staff/customers/*/contact")
+                    .hasAuthority("ROLE_STAFF")
+                // Scenario: N05/V05 - JWT 고객 Role 기반 계좌 상세 보호
+                .requestMatchers(
+                    HttpMethod.GET,
+                    "/api/secured/accounts/*",
+                    "/api/accounts/*"
+                ).hasAuthority("ROLE_CUSTOMER")
+                // Scenario: N04/V04 - URL은 인증만 요구하고 Method Security 차이를 관찰
+                .requestMatchers(
+                    HttpMethod.GET,
+                    "/api/staff/secured/customers/*",
+                    "/api/staff/customers/*"
+                ).authenticated()
                 .requestMatchers(
                     HttpMethod.GET,
                     "/api/admin/savings/products",
@@ -174,7 +253,9 @@ public class AccountSecurityConfig {
         CorsConfiguration configuration = new CorsConfiguration();
         configuration.setAllowedOrigins(resolveCorsAllowedOrigins());
         configuration.setAllowedMethods(List.of("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"));
-        configuration.setAllowedHeaders(List.of("Authorization", "Content-Type", "X-Requested-With"));
+        configuration.setAllowedHeaders(List.of(
+            "Authorization", "Content-Type", "X-Requested-With", "X-Staff-Id"
+        ));
         configuration.setAllowCredentials(true);
 
         UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();
