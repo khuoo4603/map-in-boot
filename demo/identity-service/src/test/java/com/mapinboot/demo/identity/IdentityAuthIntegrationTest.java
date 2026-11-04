@@ -8,6 +8,7 @@ import java.nio.file.Path;
 import java.security.KeyPair;
 import java.security.KeyPairGenerator;
 import java.util.Base64;
+import java.util.List;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -18,6 +19,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
+import org.springframework.security.web.FilterChainProxy;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.context.TestPropertySource;
@@ -54,6 +56,9 @@ class IdentityAuthIntegrationTest {
 
     @Autowired
     private InMemoryIdentityStateRepository identityStateRepository;
+
+    @Autowired
+    private FilterChainProxy filterChainProxy;
 
     @Value("${DEMO_CORS_ALLOWED_ORIGINS:http://localhost:8080}")
     private String corsAllowedOrigins;
@@ -95,6 +100,73 @@ class IdentityAuthIntegrationTest {
                 .addFilters(context.getBean("springSessionRepositoryFilter", Filter.class))
                 .apply(springSecurity())
                 .build();
+    }
+
+    @Test
+    @DisplayName("N08/V08 Refresh Filter의 Bearer 인증 Filter 상대 순서 검증")
+    void refreshFilterOrderDiffersByEndpoint() {
+        List<Filter> normalFilters = filterChainProxy.getFilters("/api/auth/secured/refresh");
+        List<Filter> vulnerableFilters = filterChainProxy.getFilters("/api/auth/refresh");
+
+        int normalBearerIndex = filterIndex(normalFilters, "BearerTokenAuthenticationFilter");
+        int normalRefreshIndex = filterIndex(normalFilters, "RefreshTokenFilter");
+        int vulnerableBearerIndex = filterIndex(vulnerableFilters, "BearerTokenAuthenticationFilter");
+        int vulnerableRefreshIndex = filterIndex(vulnerableFilters, "RefreshTokenFilter");
+
+        assertThat(normalRefreshIndex).isGreaterThan(normalBearerIndex);
+        assertThat(vulnerableRefreshIndex).isLessThan(vulnerableBearerIndex);
+    }
+
+    @Test
+    @DisplayName("N08 유효 JWT로 Refresh 시 새 JWT 발급")
+    void normalRefreshReissuesJwt() throws Exception {
+        String oldToken = accessToken(login("customer.a", csrfSession()));
+
+        MvcResult refreshResult = mockMvc.perform(post("/api/auth/secured/refresh")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + oldToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.accessToken").isNotEmpty())
+                .andExpect(jsonPath("$.expiresIn").isNumber())
+                .andExpect(jsonPath("$.user.id").value("USER001"))
+                .andReturn();
+
+        mockMvc.perform(get("/api/auth/me")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + accessToken(refreshResult)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.userId").value("USER001"));
+    }
+
+    @Test
+    @DisplayName("Refresh는 Bearer JWT 없이 Session Cookie만으로 처리하지 않음")
+    void refreshRejectsMissingOrSessionOnlyAuthentication() throws Exception {
+        MvcResult loginResult = login("customer.a", csrfSession());
+        Cookie sessionCookie = loginResult.getResponse().getCookie("MIB_IDENTITY_SESSION");
+
+        mockMvc.perform(post("/api/auth/secured/refresh"))
+                .andExpect(status().isUnauthorized());
+        mockMvc.perform(post("/api/auth/secured/refresh").cookie(sessionCookie))
+                .andExpect(status().isUnauthorized());
+        mockMvc.perform(post("/api/auth/refresh"))
+                .andExpect(status().isUnauthorized());
+        mockMvc.perform(post("/api/auth/refresh").cookie(sessionCookie))
+                .andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    @DisplayName("V08 유효 JWT는 Bearer 인증 전 Refresh Filter에서 거부")
+    void vulnerableRefreshRejectsJwtBeforeBearerAuthentication() throws Exception {
+        String token = accessToken(login("customer.a", csrfSession()));
+
+        mockMvc.perform(post("/api/auth/refresh")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + token))
+                .andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    @DisplayName("RefreshTokenFilter는 Servlet Filter로 중복 등록되지 않음")
+    void refreshFilterIsNotServletRegistered() {
+        assertThat(context.getServletContext().getFilterRegistrations().keySet())
+                .noneMatch(filterName -> filterName.contains("RefreshTokenFilter"));
     }
 
     @Test
@@ -483,6 +555,15 @@ class IdentityAuthIntegrationTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.identityVerified").value(false))
                 .andExpect(jsonPath("$.verifiedAt").doesNotExist());
+    }
+
+    private int filterIndex(List<Filter> filters, String simpleName) {
+        for (int index = 0; index < filters.size(); index++) {
+            if (filters.get(index).getClass().getSimpleName().equals(simpleName)) {
+                return index;
+            }
+        }
+        return -1;
     }
 
     private MvcResult login(String username, CsrfSession csrf) throws Exception {

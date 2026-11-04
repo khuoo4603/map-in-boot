@@ -12,6 +12,7 @@ import com.mapinboot.demo.identity.model.DemoUser;
 import com.mapinboot.demo.identity.repository.InMemoryIdentityStateRepository;
 import com.mapinboot.demo.identity.repository.InMemoryUserRepository;
 import com.mapinboot.demo.identity.security.JwtIssuerService;
+import com.mapinboot.demo.identity.security.RefreshTokenFilter;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import java.time.LocalDateTime;
@@ -147,6 +148,22 @@ public class AuthController {
     }
 
     /**
+     * 정상 Refresh Token 재발급
+     */
+    @PostMapping("/auth/secured/refresh")
+    public ResponseEntity<?> securedRefresh(HttpServletRequest request) {
+        return refreshToken(request);
+    }
+
+    /**
+     * 취약 Refresh Token 재발급 경로
+     */
+    @PostMapping("/auth/refresh")
+    public ResponseEntity<?> refresh(HttpServletRequest request) {
+        return refreshToken(request);
+    }
+
+    /**
      * 현재 인증 사용자의 본인확인 상태 조회
      */
     @GetMapping("/identity/status")
@@ -159,6 +176,24 @@ public class AuthController {
                 .orElse(new DemoIdentityState(authentication.getName(), false, false, null));
         return ResponseEntity.ok(new IdentityStatusResponse(
                 state.isIdentityVerified(), state.getVerifiedAt()));
+    }
+
+    private ResponseEntity<?> refreshToken(HttpServletRequest request) {
+        Object refreshUser = request.getAttribute(RefreshTokenFilter.USER_ATTRIBUTE);
+        if (!(refreshUser instanceof DemoUser user)) {
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+        }
+
+        boolean identityVerified = identityStateRepository.findByUserId(user.getUserId())
+                .map(DemoIdentityState::isIdentityVerified)
+                .orElse(false);
+        String token = jwtIssuerService.issueToken(user, identityVerified);
+        String primaryRole = user.getRoles().stream().findFirst().orElse("");
+
+        return ResponseEntity.ok(new LoginResponse(
+                token,
+                jwtIssuerService.getExpirationSeconds(),
+                new UserSummary(user.getUserId(), primaryRole)));
     }
 
     /**
