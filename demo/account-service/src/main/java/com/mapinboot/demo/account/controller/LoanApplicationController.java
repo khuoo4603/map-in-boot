@@ -42,6 +42,30 @@ public class LoanApplicationController {
         if (!isIdentityVerified(jwt)) {
             return identityVerificationRequired();
         }
+        return submitApplication(request, jwt);
+    }
+
+    /*
+     * Scenario: V09 (counterpart: N09)
+     * API: POST /api/loans/applications
+     * Rule: STATE_BYPASS
+     * Vulnerable: JWT 인증 후 필수 본인확인 상태 검사 누락
+     * Normal: identity_verified 검증 실패 시 403
+     * Note: SDK는 이 주석을 탐지 근거로 사용하지 않음
+     */
+    @PostMapping("/api/loans/applications")
+    public ResponseEntity<?> createVulnerableApplication(
+            @RequestBody LoanApplicationRequest request,
+            @AuthenticationPrincipal Jwt jwt) {
+        if (jwt == null) {
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+        }
+        return submitApplication(request, jwt);
+    }
+
+    private ResponseEntity<?> submitApplication(
+            LoanApplicationRequest request,
+            Jwt jwt) {
         if (request == null
                 || request.productId() == null
                 || request.productId().isBlank()

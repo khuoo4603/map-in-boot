@@ -133,7 +133,11 @@ public class AccountSecurityConfig {
                     "/api/public/loans/products",
                     "/api/public/loans/products/*"
                 ).permitAll()
-                .requestMatchers(HttpMethod.POST, "/api/secured/loans/applications")
+                .requestMatchers(
+                    HttpMethod.POST,
+                    "/api/secured/loans/applications",
+                    "/api/loans/applications"
+                )
                     .hasAuthority("ROLE_CUSTOMER")
                 .requestMatchers(
                     HttpMethod.GET,

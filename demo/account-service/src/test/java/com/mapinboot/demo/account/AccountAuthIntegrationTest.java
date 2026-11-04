@@ -613,6 +613,46 @@ class AccountAuthIntegrationTest {
     }
 
     @Test
+    @DisplayName("본인확인 미완료 고객의 V09 대출 신청은 201과 함께 실제 저장")
+    void vulnerableLoanApplicationAcceptsUnverifiedCustomerAndSavesApplication() throws Exception {
+        String token = createToken("USER001", List.of("ROLE_CUSTOMER"), "demo-identity", "demo-services", Instant.now().plusSeconds(3600), testPrivateKey);
+        int applicationCount = loanApplicationRepository.findAll().size();
+
+        mockMvc.perform(post("/api/loans/applications")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"productId\":\"LOAN-BASIC\",\"amount\":1000000,\"applicantId\":\"USER002\"}"))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.applicationId").value("LNAPPNEW1"))
+                .andExpect(jsonPath("$.applicantId").value("USER001"))
+                .andExpect(jsonPath("$.status").value("SUBMITTED"));
+
+        org.assertj.core.api.Assertions.assertThat(loanApplicationRepository.findAll()).hasSize(applicationCount + 1);
+        org.assertj.core.api.Assertions.assertThat(loanApplicationRepository.findByApplicationId("LNAPPNEW1"))
+                .get()
+                .extracting(application -> application.getApplicantId())
+                .isEqualTo("USER001");
+    }
+
+    @Test
+    @DisplayName("V09 대출 신청도 기존 상품·금액 검증을 적용")
+    void vulnerableLoanApplicationValidatesProductAndAmount() throws Exception {
+        String token = createToken("USER001", List.of("ROLE_CUSTOMER"), "demo-identity", "demo-services", Instant.now().plusSeconds(3600), testPrivateKey);
+
+        mockMvc.perform(post("/api/loans/applications")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"productId\":\"UNKNOWN\",\"amount\":1000000}"))
+                .andExpect(status().isNotFound());
+
+        mockMvc.perform(post("/api/loans/applications")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"productId\":\"LOAN-BASIC\",\"amount\":0}"))
+                .andExpect(status().isBadRequest());
+    }
+
+    @Test
     @DisplayName("본인확인 완료 고객의 대출 신청은 JWT 주체를 소유자로 저장")
     void verifiedCustomerCreatesLoanApplicationOwnedByTokenSubject() throws Exception {
         String token = createToken("USER001", List.of("ROLE_CUSTOMER"), "demo-identity", "demo-services", Instant.now().plusSeconds(3600), testPrivateKey, true);
@@ -1303,6 +1343,22 @@ class AccountAuthIntegrationTest {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"productId\":\"LOAN-BASIC\",\"amount\":1000000}"))
                 .andExpect(status().isForbidden());
+
+        mockMvc.perform(post("/api/loans/applications")
+                        .header("Authorization", "Bearer " + staffToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"productId\":\"LOAN-BASIC\",\"amount\":1000000}"))
+                .andExpect(status().isForbidden());
+
+        mockMvc.perform(post("/api/secured/loans/applications")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"productId\":\"LOAN-BASIC\",\"amount\":1000000}"))
+                .andExpect(status().isUnauthorized());
+
+        mockMvc.perform(post("/api/loans/applications")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"productId\":\"LOAN-BASIC\",\"amount\":1000000}"))
+                .andExpect(status().isUnauthorized());
     }
 
     @Test
