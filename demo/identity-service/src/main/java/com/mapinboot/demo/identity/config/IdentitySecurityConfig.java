@@ -1,5 +1,7 @@
 package com.mapinboot.demo.identity.config;
 
+import com.mapinboot.demo.identity.repository.InMemoryUserRepository;
+import com.mapinboot.demo.identity.security.RefreshTokenFilter;
 import jakarta.servlet.http.Cookie;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -41,6 +43,8 @@ import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.authentication.HttpStatusEntryPoint;
 import org.springframework.security.web.authentication.session.ChangeSessionIdAuthenticationStrategy;
 import org.springframework.security.web.authentication.session.SessionAuthenticationStrategy;
+import org.springframework.security.oauth2.server.resource.web.authentication.BearerTokenAuthenticationFilter;
+import org.springframework.security.web.context.NullSecurityContextRepository;
 import org.springframework.security.web.context.HttpSessionSecurityContextRepository;
 import org.springframework.security.web.context.SecurityContextRepository;
 import org.springframework.security.web.csrf.CookieCsrfTokenRepository;
@@ -97,6 +101,46 @@ public class IdentitySecurityConfig {
         return http.build();
     }
 
+    /*
+     * Scenario: N08 (counterpart: V08)
+     * API: POST /api/auth/secured/refresh
+     * Rule: FILTER_ORDER
+     * Vulnerable: 없음
+     * Normal: BearerTokenAuthenticationFilter 완료 후 RefreshTokenFilter 실행
+     * Note: SDK는 이 주석을 탐지 근거로 사용하지 않음
+     */
+    @Bean
+    @Order(50)
+    public SecurityFilterChain normalRefreshSecurityFilterChain(
+            HttpSecurity http,
+            JwtDecoder jwtDecoder,
+            InMemoryUserRepository userRepository) throws Exception {
+        configureRefreshSecurity(http, "/api/auth/secured/refresh", jwtDecoder);
+        http.addFilterAfter(
+                new RefreshTokenFilter(userRepository), BearerTokenAuthenticationFilter.class);
+        return http.build();
+    }
+
+    /*
+     * Scenario: V08 (counterpart: N08)
+     * API: POST /api/auth/refresh
+     * Rule: FILTER_ORDER
+     * Vulnerable: RefreshTokenFilter 선행으로 동일 유효 JWT 요청이 401 처리
+     * Normal: 해당 없음
+     * Note: SDK는 이 주석을 탐지 근거로 사용하지 않음
+     */
+    @Bean
+    @Order(51)
+    public SecurityFilterChain vulnerableRefreshSecurityFilterChain(
+            HttpSecurity http,
+            JwtDecoder jwtDecoder,
+            InMemoryUserRepository userRepository) throws Exception {
+        configureRefreshSecurity(http, "/api/auth/refresh", jwtDecoder);
+        http.addFilterBefore(
+                new RefreshTokenFilter(userRepository), BearerTokenAuthenticationFilter.class);
+        return http.build();
+    }
+
     @Bean
     @Order(100)
     public SecurityFilterChain securityFilterChain(
@@ -143,6 +187,26 @@ public class IdentitySecurityConfig {
             ));
 
         return http.build();
+    }
+
+    private void configureRefreshSecurity(
+            HttpSecurity http,
+            String path,
+            JwtDecoder jwtDecoder) throws Exception {
+        http
+            .securityMatcher(path)
+            .csrf(csrf -> csrf.disable())
+            .cors(cors -> cors.configurationSource(corsConfigurationSource()))
+            .securityContext(securityContext -> securityContext
+                .securityContextRepository(new NullSecurityContextRepository()))
+            .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
+            .exceptionHandling(exception -> exception
+                .authenticationEntryPoint(new HttpStatusEntryPoint(HttpStatus.UNAUTHORIZED)))
+            .authorizeHttpRequests(auth -> auth.anyRequest().authenticated())
+            .oauth2ResourceServer(oauth2 -> oauth2.jwt(jwt -> jwt
+                .decoder(jwtDecoder)
+                .jwtAuthenticationConverter(jwtAuthenticationConverter())
+            ));
     }
 
     private boolean hasIdentitySessionCookie(Cookie[] cookies) {
