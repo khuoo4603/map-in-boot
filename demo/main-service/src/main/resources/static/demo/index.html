@@ -3,11 +3,195 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Map in Boot Demo Portal</title>
+    <meta name="description" content="Demo Bank 금융 서비스 공통 화면">
+    <title>Demo Bank | 금융 Demo 포털</title>
+    <link rel="stylesheet" href="/demo/bank.css">
 </head>
 <body>
-    <h1>Map in Boot Financial Demo Portal</h1>
-    <p>금융 데모 서비스 메인 포털</p>
+<header class="site-header">
+    <div class="shell header-inner">
+        <a class="brand" href="/demo/" aria-label="Demo Bank 홈">
+            <span class="brand-mark" aria-hidden="true">
+                <svg viewBox="0 0 32 32" role="img">
+                    <path d="M6 14.5 16 7l10 7.5" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2.4"/>
+                    <path d="M8.5 14.5v9h15v-9M5.5 25.5h21" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2.4"/>
+                    <path d="M12 17v4.5M16 17v4.5M20 17v4.5" fill="none" stroke="currentColor" stroke-linecap="round" stroke-width="2"/>
+                </svg>
+            </span>
+            <span class="brand-text">
+                <strong>Demo Bank</strong>
+                <small>금융 Demo 포털</small>
+            </span>
+        </a>
+
+        <nav class="primary-nav" aria-label="주요 메뉴">
+            <a class="nav-link is-current" href="/demo/" aria-current="page">홈</a>
+            <span class="nav-link is-disabled" aria-disabled="true">상품</span>
+            <span class="nav-link is-disabled" aria-disabled="true">개인뱅킹</span>
+            <span class="nav-link is-disabled" aria-disabled="true">대출</span>
+            <span class="nav-link is-disabled" aria-disabled="true">영업점</span>
+            <span class="nav-link is-disabled" aria-disabled="true">은행 관리자</span>
+            <span class="nav-link is-disabled" aria-disabled="true">개발자 검증</span>
+        </nav>
+
+        <div class="header-tools" aria-label="사용자 메뉴">
+            <span class="utility-link is-disabled" aria-disabled="true">로그인</span>
+            <span class="utility-divider" aria-hidden="true"></span>
+            <span class="utility-link is-disabled" aria-disabled="true">메뉴</span>
+        </div>
+    </div>
+</header>
+
+<main class="shell portal-main">
+    <section class="portal-intro" aria-labelledby="portal-title">
+        <div>
+            <p class="eyebrow">가상 금융 Demo</p>
+            <h1 id="portal-title">필요한 금융 서비스를<br><span>한눈에 확인하세요</span></h1>
+        </div>
+        <p class="intro-copy">Demo Bank의 공통 화면과 서비스 메뉴를 확인하는 공간입니다.<br>실제 금융 업무와 API 연결은 후속 단계에서 제공됩니다.</p>
+    </section>
+
+    <section class="portal-grid" aria-label="Demo Bank 안내 영역">
+        <article class="card notice-card">
+            <div class="card-heading">
+                <div>
+                    <p class="section-label">공지·안내</p>
+                    <h2>새로운 소식을<br>확인해 보세요</h2>
+                </div>
+                <span class="heading-icon" aria-hidden="true">
+                    <svg viewBox="0 0 24 24" role="img">
+                        <path d="M5 9.5h14M7 5h10a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2Z" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.7"/>
+                        <path d="M8 13h8M8 16h5" fill="none" stroke="currentColor" stroke-linecap="round" stroke-width="1.7"/>
+                    </svg>
+                </span>
+            </div>
+            <div class="status-message is-empty" role="status">
+                <strong>등록된 공지가 없습니다</strong>
+                <span>공지사항은 후속 화면 연결 단계에서 제공됩니다.</span>
+            </div>
+        </article>
+
+        <article class="main-banner">
+            <div class="banner-content">
+                <p class="banner-label">Demo Bank</p>
+                <h2>더 간편하고 편리한<br><strong>금융 생활의 시작</strong></h2>
+                <p>공통 금융 화면을 위한 밝고 편안한 작업 공간</p>
+            </div>
+            <div class="banner-illustration" aria-hidden="true">
+                <svg viewBox="0 0 250 180" role="img">
+                    <path d="M68 125c11-22 23-34 43-34 24 0 40 17 50 42" fill="none" stroke="rgba(255,255,255,.86)" stroke-linecap="round" stroke-width="3"/>
+                    <path d="M103 91c-10-17-6-33 10-44 16 10 22 25 12 43" fill="rgba(255,255,255,.22)" stroke="rgba(255,255,255,.9)" stroke-linejoin="round" stroke-width="2.5"/>
+                    <path d="M144 113c2-21 12-33 31-37 6 18-1 35-20 44" fill="rgba(255,255,255,.16)" stroke="rgba(255,255,255,.9)" stroke-linejoin="round" stroke-width="2.5"/>
+                    <circle cx="54" cy="67" fill="rgba(255,255,255,.24)" r="22"/>
+                    <path d="M43 68h22M54 57v22" stroke="rgba(255,255,255,.9)" stroke-linecap="round" stroke-width="2"/>
+                    <circle cx="195" cy="50" fill="rgba(255,255,255,.22)" r="11"/>
+                </svg>
+            </div>
+        </article>
+
+        <article class="card access-card">
+            <div class="card-heading">
+                <div>
+                    <p class="section-label">이용 안내</p>
+                    <h2>Demo Bank를<br>시작해 보세요</h2>
+                </div>
+                <span class="heading-icon" aria-hidden="true">
+                    <svg viewBox="0 0 24 24" role="img">
+                        <path d="M12 3.8 19 6v5.1c0 4.2-2.7 7.4-7 9.1-4.3-1.7-7-4.9-7-9.1V6l7-2.2Z" fill="none" stroke="currentColor" stroke-linejoin="round" stroke-width="1.7"/>
+                        <path d="m8.8 12 2.1 2.1 4.4-4.4" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.7"/>
+                    </svg>
+                </span>
+            </div>
+            <div class="status-message is-auth">
+                <strong>로그인 기능 준비 중</strong>
+                <span>인증과 금융 업무 화면은 후속 작업에서 연결됩니다.</span>
+            </div>
+            <button class="button button-primary button-wide" type="button" disabled>로그인</button>
+        </article>
+    </section>
+
+    <section class="services-section" aria-labelledby="services-title">
+        <div class="section-heading-row">
+            <div>
+                <p class="section-label">서비스 메뉴</p>
+                <h2 id="services-title">필요한 업무를 선택하세요</h2>
+            </div>
+            <p>화면 연결 전에는 메뉴가 비활성화되어 있습니다.</p>
+        </div>
+
+        <div class="service-grid">
+            <button class="service-tile" type="button" disabled>
+                <span class="service-icon" aria-hidden="true"><svg viewBox="0 0 24 24" role="img"><path d="M4 9.5h16v9H4zM6 9.5V7.8L12 4l6 3.8v1.7M7.5 13v2.5M12 13v2.5M16.5 13v2.5M3 19.5h18" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.7"/></svg></span>
+                <span>계좌조회</span>
+            </button>
+            <button class="service-tile" type="button" disabled>
+                <span class="service-icon" aria-hidden="true"><svg viewBox="0 0 24 24" role="img"><path d="M5 4.5h14v15H5zM8.5 8h7M8.5 11.5h7M8.5 15h4" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.7"/></svg></span>
+                <span>거래내역</span>
+            </button>
+            <button class="service-tile" type="button" disabled>
+                <span class="service-icon" aria-hidden="true"><svg viewBox="0 0 24 24" role="img"><circle cx="12" cy="12" fill="none" r="7.5" stroke="currentColor" stroke-width="1.7"/><path d="M12 8v8M9.5 10.5c.3-1 1.2-1.5 2.5-1.5 1.5 0 2.5.7 2.5 1.8 0 2.4-5 1-5 3.4 0 1.1 1 1.8 2.5 1.8 1.3 0 2.2-.5 2.5-1.5" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.4"/></svg></span>
+                <span>예금·적금</span>
+            </button>
+            <button class="service-tile" type="button" disabled>
+                <span class="service-icon" aria-hidden="true"><svg viewBox="0 0 24 24" role="img"><path d="M4 10.5 12 5l8 5.5M6.5 10.8v7.7h11v-7.7M4.5 19.5h15" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.7"/><path d="M12 10.5v4M10 12.5h4" fill="none" stroke="currentColor" stroke-linecap="round" stroke-width="1.7"/></svg></span>
+                <span>대출상품</span>
+            </button>
+            <button class="service-tile" type="button" disabled>
+                <span class="service-icon" aria-hidden="true"><svg viewBox="0 0 24 24" role="img"><path d="M7 4.5h8l3 3v12H7zM15 4.5v4h3M9.5 13h5M9.5 16h3" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.7"/><path d="M4 8v11.5h9" fill="none" stroke="currentColor" stroke-linecap="round" stroke-width="1.7"/></svg></span>
+                <span>대출신청</span>
+            </button>
+            <button class="service-tile" type="button" disabled>
+                <span class="service-icon" aria-hidden="true"><svg viewBox="0 0 24 24" role="img"><rect x="4.5" y="6" fill="none" height="12" rx="2" stroke="currentColor" stroke-width="1.7" width="15"/><path d="M8 10h8M8 14h5" fill="none" stroke="currentColor" stroke-linecap="round" stroke-width="1.7"/></svg></span>
+                <span>내 금융</span>
+            </button>
+            <button class="service-tile" type="button" disabled>
+                <span class="service-icon" aria-hidden="true"><svg viewBox="0 0 24 24" role="img"><circle cx="12" cy="8" fill="none" r="3.2" stroke="currentColor" stroke-width="1.7"/><path d="M5.5 19c.8-3 3-4.5 6.5-4.5s5.7 1.5 6.5 4.5" fill="none" stroke="currentColor" stroke-linecap="round" stroke-width="1.7"/></svg></span>
+                <span>내 정보</span>
+            </button>
+            <button class="service-tile" type="button" disabled>
+                <span class="service-icon" aria-hidden="true"><svg viewBox="0 0 24 24" role="img"><path d="M4.5 19.5h15M6.5 19.5v-8h11v8M4.5 11.5 12 6l7.5 5.5M9 15h6" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.7"/></svg></span>
+                <span>직원 업무</span>
+            </button>
+            <button class="service-tile" type="button" disabled>
+                <span class="service-icon" aria-hidden="true"><svg viewBox="0 0 24 24" role="img"><path d="M5 6.5h14v11H5zM8 4.5v4M16 4.5v4M8 12h2M12 12h2M16 12h.1M8 15h2M12 15h2" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.7"/></svg></span>
+                <span>상품 관리</span>
+            </button>
+            <button class="service-tile" type="button" disabled>
+                <span class="service-icon" aria-hidden="true"><svg viewBox="0 0 24 24" role="img"><path d="M12 3.8 19 6v5.1c0 4.2-2.7 7.4-7 9.1-4.3-1.7-7-4.9-7-9.1V6l7-2.2Z" fill="none" stroke="currentColor" stroke-linejoin="round" stroke-width="1.7"/><path d="m8.8 12 2.1 2.1 4.4-4.4" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.7"/></svg></span>
+                <span>보안 검증</span>
+            </button>
+        </div>
+    </section>
+
+    <section class="support-grid" aria-label="서비스 안내">
+        <article class="card support-card">
+            <span class="support-icon" aria-hidden="true"><svg viewBox="0 0 24 24" role="img"><path d="M5 5h14v14H5zM8.5 9h7M8.5 12h7M8.5 15h4" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.7"/></svg></span>
+            <div>
+                <p class="section-label">공통 화면</p>
+                <h2>금융 업무를 위한<br>공통 디자인 기반</h2>
+                <p>카드, 버튼, 상태 메시지와 반응형 메뉴를 후속 화면에서 재사용할 수 있습니다.</p>
+            </div>
+        </article>
+        <article class="card support-card">
+            <span class="support-icon" aria-hidden="true"><svg viewBox="0 0 24 24" role="img"><path d="M5 7.5h14v9H5zM8 19.5h8M10 16.5v3M14 16.5v3" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.7"/></svg></span>
+            <div>
+                <p class="section-label">가상 금융 Demo</p>
+                <h2>연결되지 않은 메뉴는<br>비활성 상태로 표시</h2>
+                <p>아직 구현되지 않은 화면을 작동하는 기능처럼 보이게 하지 않습니다.</p>
+            </div>
+        </article>
+    </section>
+</main>
+
+<footer class="site-footer">
+    <div class="shell footer-inner">
+        <div>
+            <strong>Demo Bank</strong>
+            <p>가상 금융 Demo 화면</p>
+        </div>
+        <p>공통 UI 기반 · 후속 금융 업무 화면에서 확장</p>
+    </div>
+</footer>
 </body>
 </html>
 
