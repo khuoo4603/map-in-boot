@@ -1319,6 +1319,59 @@ select:focus-visible {
     transition: transform 160ms ease, box-shadow 160ms ease;
 }
 
+.loan-product-card .detail-grid,
+.loan-application-item .detail-grid,
+.loan-application-card .detail-grid,
+.loan-confirm-card .detail-grid {
+    margin-top: 18px;
+}
+
+.status-inline {
+    display: inline-flex;
+    min-height: 42px;
+    align-items: center;
+    color: var(--text-muted);
+    font-size: 13px;
+    font-weight: 800;
+}
+
+.identity-card > p {
+    margin: 0 0 18px;
+    color: var(--text-muted);
+}
+
+.identity-steps {
+    display: flex;
+    gap: 8px;
+    padding: 0;
+    margin: 0;
+    list-style: none;
+}
+
+.identity-steps li {
+    flex: 1;
+    padding: 11px 8px;
+    color: var(--text-muted);
+    background: var(--surface-muted);
+    border-radius: 10px;
+    font-size: 12px;
+    text-align: center;
+}
+
+.identity-steps li.is-current {
+    color: var(--brand-primary);
+    background: var(--brand-soft);
+    font-weight: 800;
+}
+
+.loan-confirm-actions {
+    max-width: none;
+}
+
+.security-card .status-message {
+    margin-top: 18px;
+}
+
 @media (max-width: 860px) {
     .customer-nav {
         gap: 10px;
@@ -1370,5 +1423,9 @@ select:focus-visible {
 
     .customer-heading h1 {
         font-size: 32px;
+    }
+
+    .identity-steps {
+        flex-direction: column;
     }
 }

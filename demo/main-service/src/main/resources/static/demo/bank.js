@@ -8,7 +8,9 @@
         busy: false,
         requestId: 0,
         enrollment: null,
-        pendingEnrollments: []
+        pendingEnrollments: [],
+        loanDraft: null,
+        pendingLoanApplications: []
     };
 
     const roleLabels = {
@@ -31,9 +33,29 @@
         "/demo/savings/complete.html",
         "/demo/my/savings.html",
         "/demo/my/savings-detail.html",
-        "/demo/my/profile.html"
+        "/demo/my/profile.html",
+        "/demo/loans/index.html",
+        "/demo/loans/product.html",
+        "/demo/loans/apply.html",
+        "/demo/identity/verify.html",
+        "/demo/loans/confirm.html",
+        "/demo/loans/complete.html",
+        "/demo/my/loans.html",
+        "/demo/my/loan-detail.html",
+        "/demo/my/security.html"
     ]);
-    const returnQueryKeys = new Set(["accountId", "productId", "subscriptionId"]);
+    const routeQueryKeys = new Map([
+        ["/demo/accounts/detail.html", new Set(["accountId"])],
+        ["/demo/savings/product.html", new Set(["productId"])],
+        ["/demo/savings/enroll.html", new Set(["productId"])],
+        ["/demo/savings/complete.html", new Set(["subscriptionId"])],
+        ["/demo/my/savings-detail.html", new Set(["subscriptionId"])],
+        ["/demo/loans/product.html", new Set(["productId"])],
+        ["/demo/loans/apply.html", new Set(["productId"])],
+        ["/demo/identity/verify.html", new Set(["returnTo", "applicationId"])],
+        ["/demo/loans/complete.html", new Set(["applicationId"])],
+        ["/demo/my/loan-detail.html", new Set(["applicationId"])]
+    ]);
 
     // 현재 Main Origin 기준 Identity·Account Origin 계산
     function resolveServiceOrigin(offset) {
@@ -135,6 +157,8 @@
         state.csrfToken = null;
         state.enrollment = null;
         state.pendingEnrollments = [];
+        state.loanDraft = null;
+        state.pendingLoanApplications = [];
     }
 
     function isCurrentScreen(root, requestId) {
@@ -146,11 +170,12 @@
     }
 
     class ApiError extends Error {
-        constructor(status, message, requestId = state.requestId) {
+        constructor(status, message, requestId = state.requestId, code = null) {
             super(message);
             this.name = "ApiError";
             this.status = status;
             this.requestId = requestId;
+            this.code = code;
         }
     }
 
@@ -221,18 +246,48 @@
         if (!accountOrigin || !state.accessToken) {
             throw new ApiError(401, "로그인이 필요합니다.", requestId);
         }
+        const expectedStatus = options.expectedStatus;
+        const fetchOptions = { ...options };
+        delete fetchOptions.expectedStatus;
         const headers = new Headers(options.headers || {});
         headers.set("Authorization", `Bearer ${state.accessToken}`);
         const response = await fetch(`${accountOrigin}${path}`, {
-            ...options,
+            ...fetchOptions,
             headers,
             credentials: "omit",
             cache: "no-store"
         });
+        const body = await readBody(response);
         if (!response.ok) {
-            throw new ApiError(response.status, "금융 API 요청에 실패했습니다.", requestId);
+            throw new ApiError(
+                response.status,
+                body?.error?.message || "금융 API 요청에 실패했습니다.",
+                requestId,
+                body?.error?.code || null
+            );
         }
-        return readBody(response);
+        if (expectedStatus && response.status !== expectedStatus) {
+            const error = new ApiError(response.status, "금융 API 응답 상태를 확인하지 못했습니다.", requestId);
+            error.resultUnknown = true;
+            throw error;
+        }
+        return body;
+    }
+
+    // Identity 업무 응답의 오류 코드와 메시지 보존
+    async function identityApiRequest(path, options = {}) {
+        const requestId = state.requestId;
+        const response = await identityRequest(path, options);
+        const body = await readBody(response);
+        if (!response.ok) {
+            throw new ApiError(
+                response.status,
+                body?.error?.message || "인증 API 요청에 실패했습니다.",
+                requestId,
+                body?.error?.code || null
+            );
+        }
+        return body;
     }
 
     async function publicAccountRequest(path) {
@@ -262,8 +317,9 @@
                     || url.hash) {
                 return null;
             }
+            const allowedKeys = routeQueryKeys.get(url.pathname) || new Set();
             for (const key of url.searchParams.keys()) {
-                if (!returnQueryKeys.has(key)) {
+                if (!allowedKeys.has(key)) {
                     return null;
                 }
             }
@@ -287,7 +343,9 @@
     function isCustomerPath(path) {
         return path.startsWith("/demo/my/")
             || path.startsWith("/demo/accounts/")
-            || path.startsWith("/demo/savings/");
+            || path.startsWith("/demo/savings/")
+            || path.startsWith("/demo/loans/")
+            || path.startsWith("/demo/identity/");
     }
 
     function resolveLoginDestination(user, requestedPath) {
@@ -302,8 +360,50 @@
         document.title = `Demo Bank | ${title}`;
     }
 
+    function updateHeaderAuth(user) {
+        const login = query("[data-header-login]");
+        const userLabel = query("[data-header-user]");
+        const logout = query("[data-logout]");
+        if (!login || !userLabel || !logout) {
+            return;
+        }
+        login.href = `/demo/login.html?returnTo=${encodeURIComponent(currentPath())}`;
+        if (user?.userId) {
+            login.hidden = true;
+            userLabel.textContent = `${user.userId} · ${roleLabel(user)}`;
+            userLabel.hidden = false;
+            logout.hidden = false;
+            return;
+        }
+        login.hidden = false;
+        userLabel.hidden = true;
+        logout.hidden = true;
+    }
+
+    // 공개 상품 화면의 Session 상태 비동기 동기화
+    async function syncHeaderAuth(requestId) {
+        const currentUser = await loadCurrentUser(false);
+        if (requestId !== state.requestId) {
+            return;
+        }
+        if (currentUser.response?.ok && currentUser.body?.userId) {
+            if (state.sessionUser && state.sessionUser.userId !== currentUser.body.userId) {
+                clearAuthState();
+            }
+            state.sessionUser = currentUser.body;
+            updateHeaderAuth(currentUser.body);
+            return;
+        }
+        if (currentUser.response?.status === 401) {
+            clearAuthState();
+            updateHeaderAuth(null);
+            return;
+        }
+        updateHeaderAuth(state.sessionUser);
+    }
+
     // 고객 화면 공통 프레임 구성
-    function renderCustomerFrame() {
+    function renderCustomerFrame(requestId, syncAuth = false) {
         document.body.className = "bank-page customer-page";
         document.body.dataset.page = "screen";
         document.body.replaceChildren();
@@ -311,8 +411,8 @@
         header.className = "site-header customer-header";
         header.innerHTML = `<div class="shell header-inner">
             <a class="brand" href="/demo/" data-route="true" aria-label="Demo Bank 홈"><span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 32 32"><path d="M6 14.5 16 7l10 7.5" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2.4"/><path d="M8.5 14.5v9h15v-9M5.5 25.5h21" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2.4"/><path d="M12 17v4.5M16 17v4.5M20 17v4.5" fill="none" stroke="currentColor" stroke-linecap="round" stroke-width="2"/></svg></span><span class="brand-text"><strong>Demo Bank</strong><small>금융 Demo 포털</small></span></a>
-            <nav class="customer-nav" aria-label="개인 금융 메뉴"><a href="/demo/my/index.html" data-route="true">나의 금융</a><a href="/demo/accounts/index.html" data-route="true">내 계좌</a><a href="/demo/savings/index.html" data-route="true">예적금 상품</a><a href="/demo/my/savings.html" data-route="true">내 예적금</a><a href="/demo/my/profile.html" data-route="true">내 정보</a></nav>
-            <button class="button button-quiet button-small" type="button" data-logout>로그아웃</button>
+            <nav class="customer-nav" aria-label="개인 금융 메뉴"><a href="/demo/my/index.html" data-route="true">나의 금융</a><a href="/demo/accounts/index.html" data-route="true">내 계좌</a><a href="/demo/savings/index.html" data-route="true">예적금 상품</a><a href="/demo/loans/index.html" data-route="true">대출 상품</a><a href="/demo/my/savings.html" data-route="true">내 예적금</a><a href="/demo/my/loans.html" data-route="true">내 대출</a><a href="/demo/my/security.html" data-route="true">인증 관리</a><a href="/demo/my/profile.html" data-route="true">내 정보</a></nav>
+            <div class="header-tools" data-header-auth><a class="utility-link" data-header-login href="/demo/login.html">로그인</a><span class="user-label" data-header-user hidden></span><button class="button button-quiet button-small" type="button" data-logout hidden>로그아웃</button></div>
         </div>`;
         const main = document.createElement("main");
         main.className = "customer-main";
@@ -321,7 +421,11 @@
         footer.className = "site-footer";
         footer.innerHTML = `<div class="shell footer-inner"><div><strong>Demo Bank</strong><p>금융 서비스 포털</p></div><p>고객 금융 서비스</p></div>`;
         document.body.append(header, main, footer);
+        updateHeaderAuth(state.sessionUser);
         bindLogout();
+        if (syncAuth) {
+            syncHeaderAuth(requestId);
+        }
     }
 
     function screenRoot() {
@@ -565,6 +669,16 @@
         listElement.append(item);
     }
 
+    function renderPublicLoanProduct(listElement, product) {
+        const item = document.createElement("a");
+        item.className = "product-item";
+        item.href = `/demo/loans/product.html?productId=${encodeURIComponent(product.productId)}`;
+        item.dataset.route = "true";
+        appendText(item, "strong", product.name || "상품명 없음");
+        appendText(item, "span", `${formatMoney(product.minAmount)} ~ ${formatMoney(product.maxAmount)}`);
+        listElement.append(item);
+    }
+
     async function loadProducts(path, listSelector, stateSelector, renderItem) {
         const stateElement = query(stateSelector);
         const listElement = query(listSelector);
@@ -603,13 +717,7 @@
             }),
             loadNotices(),
             loadProducts("/api/public/savings/products", "[data-savings-list]", "[data-savings-state]", renderPublicProduct),
-            loadProducts("/api/public/loans/products", "[data-loans-list]", "[data-loans-state]", (listElement, product) => {
-                const item = document.createElement("article");
-                item.className = "product-item";
-                appendText(item, "strong", product.name || "상품명 없음");
-                appendText(item, "span", `${formatMoney(product.minAmount)} ~ ${formatMoney(product.maxAmount)}`);
-                listElement.append(item);
-            })
+            loadProducts("/api/public/loans/products", "[data-loans-list]", "[data-loans-state]", renderPublicLoanProduct)
         ]);
     }
 
@@ -768,6 +876,8 @@
             actions.className = "page-actions";
             appendAction(actions, "/demo/accounts/index.html", "계좌조회");
             appendAction(actions, "/demo/savings/index.html", "예적금 상품", "button-primary");
+            appendAction(actions, "/demo/loans/index.html", "대출 상품");
+            appendAction(actions, "/demo/my/loans.html", "내 대출");
             appendAction(actions, "/demo/my/profile.html", "내 정보");
             accountSection.append(actions);
             root.append(accountSection);
@@ -1353,6 +1463,933 @@
         }
     }
 
+    function loanPurposeLabel(value) {
+        return value === "LIVING_COST" ? "생활비" : value === "HOUSING" ? "주거" : value === "OTHER" ? "기타" : "미선택";
+    }
+
+    function loanStatusLabel(value) {
+        return value === "SUBMITTED" ? "신청 접수" : value === "REVIEW" ? "심사 검토" : value === "DONE" ? "처리 완료" : value || "상태 정보 없음";
+    }
+
+    function validateLoanAmount(value, product) {
+        if (!/^\d+(\.\d+)?$/.test(value)) {
+            return { valid: false, message: "대출 신청 금액을 숫자로 입력해 주세요." };
+        }
+        const amount = Number(value);
+        const minimum = Number(product.minAmount);
+        const maximum = Number(product.maxAmount);
+        if (!Number.isFinite(amount) || amount <= 0) {
+            return { valid: false, message: "대출 신청 금액은 0보다 커야 합니다." };
+        }
+        if (!Number.isFinite(minimum) || !Number.isFinite(maximum) || amount < minimum || amount > maximum) {
+            return { valid: false, message: `${formatMoney(product.minAmount)} 이상 ${formatMoney(product.maxAmount)} 이하로 입력해 주세요.` };
+        }
+        return { valid: true, amount };
+    }
+
+    function findPendingLoan(userId, productId) {
+        return state.pendingLoanApplications.find((pending) => pending.userId === userId && pending.productId === productId);
+    }
+
+    function clearPendingLoan(pendingLoan) {
+        if (!pendingLoan) {
+            return;
+        }
+        state.pendingLoanApplications = state.pendingLoanApplications.filter((pending) => pending !== pendingLoan);
+    }
+
+    function renderPendingLoan(root) {
+        root.replaceChildren();
+        enrollmentMessage(root, "is-server-error", "대출 신청 처리 결과를 확정할 수 없습니다.", "내 대출 신청 내역에서 접수 여부를 확인해 주세요. 자동으로 다시 신청하지 않습니다.");
+        appendAction(root, "/demo/my/loans.html", "내 대출 확인", "button-primary");
+    }
+
+    function renderLoanProductCard(product) {
+        const card = document.createElement("article");
+        card.className = "catalog-card loan-product-card";
+        appendText(card, "span", "대출 상품", "section-label");
+        appendText(card, "h2", product.name || product.productId || "상품명 없음");
+        appendDetailGrid(card, [
+            ["상품 식별자", product.productId],
+            ["신청 가능 금액", `${formatMoney(product.minAmount)} ~ ${formatMoney(product.maxAmount)}`],
+            ["판매 상태", product.active ? "신청 가능" : "신청 중단"]
+        ]);
+        const actions = document.createElement("div");
+        actions.className = "page-actions";
+        if (product.active) {
+            appendAction(actions, `/demo/loans/product.html?productId=${encodeURIComponent(product.productId)}`, "상품 상세", "button-primary");
+        } else {
+            appendText(actions, "span", "현재 신청할 수 없습니다", "status-inline");
+        }
+        card.append(actions);
+        return card;
+    }
+
+    async function renderLoanList(root, requestId) {
+        root.replaceChildren();
+        renderHeading(root, "대출 상품", "대출 상품", "현재 공개된 대출 상품과 신청 가능 금액을 확인합니다.");
+        try {
+            const products = await publicAccountRequest("/api/public/loans/products");
+            if (!isCurrentScreen(root, requestId)) {
+                return;
+            }
+            if (!Array.isArray(products)) {
+                throw new Error("대출 상품 응답 형식 오류");
+            }
+            const grid = document.createElement("div");
+            grid.className = "catalog-grid";
+            products.forEach((product) => grid.append(renderLoanProductCard(product)));
+            if (products.length === 0) {
+                showStatus(grid, "is-empty", "판매 중인 대출 상품이 없습니다", "현재 이용 가능한 대출 상품이 없습니다.");
+            }
+            root.append(grid);
+        } catch (error) {
+            handleScreenError(root, error, requestId);
+        }
+    }
+
+    async function renderLoanProduct(root, requestId) {
+        root.replaceChildren();
+        const productId = new URLSearchParams(window.location.search).get("productId");
+        renderHeading(root, "대출 상품 상세", "대출 상품 상세", productId ? `${productId}의 상품 정보를 확인합니다.` : "상품 식별자가 필요합니다.");
+        if (!productId) {
+            renderError(root, "상품 식별자가 없습니다.", "대출 상품 목록에서 상세 보기를 선택해 주세요.");
+            return;
+        }
+        try {
+            const product = await publicAccountRequest(`/api/public/loans/products/${encodeURIComponent(productId)}`);
+            if (!isCurrentScreen(root, requestId)) {
+                return;
+            }
+            const card = document.createElement("section");
+            card.className = "card data-section loan-detail-card";
+            appendText(card, "h2", product.name || product.productId || "대출 상품");
+            appendDetailGrid(card, [
+                ["상품 식별자", product.productId],
+                ["신청 가능 금액", `${formatMoney(product.minAmount)} ~ ${formatMoney(product.maxAmount)}`],
+                ["판매 상태", product.active ? "신청 가능" : "신청 중단"]
+            ]);
+            if (product.active) {
+                appendAction(card, `/demo/loans/apply.html?productId=${encodeURIComponent(product.productId)}`, "신청하기", "button-primary");
+            } else {
+                const stopped = document.createElement("div");
+                showStatus(stopped, "is-empty", "현재 신청할 수 없습니다", "상품의 최신 판매 상태를 확인했습니다.");
+                card.append(stopped);
+            }
+            root.append(card);
+        } catch (error) {
+            handleScreenError(root, error, requestId);
+        }
+    }
+
+    // 본인확인 상태를 서버에서 재조회하는 업무 호출
+    async function loadIdentityStatus() {
+        const body = await identityApiRequest("/api/identity/status");
+        if (typeof body?.identityVerified !== "boolean") {
+            throw new Error("본인확인 상태 응답 형식 오류");
+        }
+        return body;
+    }
+
+    // 본인확인 상태가 반영된 새 서명 JWT 수령
+    async function refreshAccessToken(expectedRequestId = state.requestId) {
+        if (expectedRequestId !== state.requestId) {
+            return null;
+        }
+        const expectedUserId = state.sessionUser?.userId;
+        const previousToken = state.accessToken;
+        try {
+            const body = await identityApiRequest("/api/auth/secured/refresh", { method: "POST" });
+            if (expectedRequestId !== state.requestId) {
+                return null;
+            }
+            const refreshedUserId = body?.user?.id || body?.user?.userId;
+            if (typeof body?.accessToken !== "string" || !body.accessToken || !refreshedUserId) {
+                throw new Error("인증 갱신 응답을 확인하지 못했습니다.");
+            }
+            if (expectedUserId && refreshedUserId !== expectedUserId) {
+                throw new Error("인증 갱신 사용자 확인에 실패했습니다.");
+            }
+            state.accessToken = body.accessToken;
+            const currentUser = await loadCurrentUser(true);
+            if (expectedRequestId !== state.requestId) {
+                state.accessToken = previousToken;
+                return null;
+            }
+            if (currentUser.error || !currentUser.response?.ok || !currentUser.body?.userId) {
+                throw new Error("갱신된 인증 Session을 확인하지 못했습니다.");
+            }
+            if (expectedUserId && currentUser.body.userId !== expectedUserId) {
+                throw new Error("갱신된 인증 사용자가 일치하지 않습니다.");
+            }
+            state.sessionUser = currentUser.body;
+            return currentUser.body;
+        } catch (error) {
+            state.accessToken = previousToken;
+            throw error;
+        }
+    }
+
+    function loanIdentityAction(root, returnPath) {
+        renderError(root, "추가 본인확인이 필요합니다.", "신청 또는 결과 조회를 계속하려면 본인확인을 완료해 주세요.", "is-forbidden");
+        const actions = document.createElement("div");
+        actions.className = "page-actions";
+        appendAction(actions, `/demo/identity/verify.html?returnTo=${encodeURIComponent(returnPath)}`, "본인확인하기", "button-primary");
+        root.append(actions);
+    }
+
+    function loanDraftSnapshot(draft) {
+        return {
+            userId: draft.userId,
+            productId: draft.productId,
+            amount: draft.amount,
+            purpose: draft.purpose,
+            terms: draft.terms
+        };
+    }
+
+    function sameLoanDraft(draft, snapshot) {
+        return Boolean(draft && snapshot
+            && draft.userId === snapshot.userId
+            && draft.productId === snapshot.productId
+            && draft.amount === snapshot.amount
+            && draft.purpose === snapshot.purpose
+            && draft.terms === snapshot.terms);
+    }
+
+    function hasLoanDraftForUser(userId) {
+        const draft = state.loanDraft;
+        return Boolean(draft
+            && draft.userId === userId
+            && ["DRAFT", "REVIEW_REQUIRED"].includes(draft.status)
+            && typeof draft.productId === "string"
+            && draft.productId.length > 0
+            && Number.isFinite(draft.amount)
+            && draft.amount > 0
+            && ["LIVING_COST", "HOUSING", "OTHER"].includes(draft.purpose)
+            && draft.terms === true);
+    }
+
+    // 본인확인 완료 후 대출 초안의 서버 상품·입력 유효성 재확인
+    async function prepareLoanDraftForConfirm(userId, requestId) {
+        if (!hasLoanDraftForUser(userId)) {
+            return false;
+        }
+        const draft = state.loanDraft;
+        const product = await publicAccountRequest(`/api/public/loans/products/${encodeURIComponent(draft.productId)}`);
+        if (requestId !== state.requestId) {
+            return null;
+        }
+        const amount = validateLoanAmount(String(draft.amount), product);
+        if (!product.active || !amount.valid) {
+            return false;
+        }
+        draft.amount = amount.amount;
+        draft.reviewed = true;
+        draft.status = "REVIEW_REQUIRED";
+        draft.reviewedSnapshot = loanDraftSnapshot(draft);
+        return true;
+    }
+
+    async function submitLoanDraft(form, product, root, requestId) {
+        if (form.dataset.submitting === "true" || state.busy) {
+            return;
+        }
+        const amountInput = query("[name=amount]", form);
+        const purposeInput = query("[name=purpose]", form);
+        const termsInput = query("[name=terms]", form);
+        const errorElement = query("[data-loan-form-error]", form);
+        const amountValue = amountInput.value.trim();
+        const validation = validateLoanAmount(amountValue, product);
+        if (!validation.valid) {
+            showStatus(errorElement, "is-error", "신청 금액을 확인해 주세요", validation.message);
+            return;
+        }
+        if (!termsInput.checked) {
+            showStatus(errorElement, "is-error", "약관 동의가 필요합니다", "가상 약관을 확인하고 동의해 주세요.");
+            return;
+        }
+        form.dataset.submitting = "true";
+        state.busy = true;
+        queryAll("input, select, button", form).forEach((element) => { element.disabled = true; });
+        try {
+            const currentProduct = await publicAccountRequest(`/api/public/loans/products/${encodeURIComponent(product.productId)}`);
+            if (!isCurrentScreen(root, requestId)) {
+                return;
+            }
+            if (!currentProduct.active) {
+                throw new ApiError(409, "현재 신청할 수 없는 상품입니다.");
+            }
+            const currentValidation = validateLoanAmount(amountValue, currentProduct);
+            if (!currentValidation.valid) {
+                throw new ApiError(400, currentValidation.message);
+            }
+            const draft = {
+                userId: state.sessionUser.userId,
+                productId: currentProduct.productId,
+                amount: currentValidation.amount,
+                purpose: purposeInput.value,
+                terms: termsInput.checked,
+                reviewed: false,
+                status: "DRAFT"
+            };
+            state.loanDraft = draft;
+            const identityStatus = await loadIdentityStatus();
+            if (!isCurrentScreen(root, requestId)) {
+                return;
+            }
+            if (identityStatus.identityVerified) {
+                const currentUser = await refreshAccessToken(requestId);
+                if (!currentUser || !isCurrentScreen(root, requestId)) {
+                    return;
+                }
+                if (!currentUser.identityVerified) {
+                    throw new Error("본인확인 상태가 최신 인증에 반영되지 않았습니다.");
+                }
+                draft.reviewed = true;
+                draft.status = "REVIEW_REQUIRED";
+                draft.reviewedSnapshot = loanDraftSnapshot(draft);
+                await navigateTo("/demo/loans/confirm.html");
+                return;
+            }
+            await navigateTo(`/demo/identity/verify.html?returnTo=${encodeURIComponent("/demo/loans/confirm.html")}`);
+        } catch (error) {
+            if (!isCurrentScreen(root, requestId)) {
+                return;
+            }
+            if (error.status === 401) {
+                clearAuthState();
+                renderInlineLogin(currentPath(), "인증 상태가 만료되었습니다. 대출 신청 내용은 자동 제출하지 않습니다.");
+            } else if (error.status === 409) {
+                enrollmentMessage(root, "is-error", error.message, "상품의 최신 판매 상태를 확인해 주세요.");
+            } else if (error.status === 400) {
+                showStatus(errorElement, "is-error", "신청 내용을 확인해 주세요", error.message);
+            } else {
+                showStatus(errorElement, "is-server-error", "본인확인 상태를 확인하지 못했습니다", "잠시 후 다시 시도해 주세요. 신청 내용은 화면 메모리에만 유지됩니다.");
+            }
+        } finally {
+            state.busy = false;
+            if (form.isConnected) {
+                form.dataset.submitting = "false";
+                queryAll("input, select, button", form).forEach((element) => { element.disabled = false; });
+            }
+        }
+    }
+
+    async function renderLoanApply(root, requestId) {
+        if (!await ensureCustomerAccess(root, requestId)) {
+            return;
+        }
+        const productId = new URLSearchParams(window.location.search).get("productId");
+        root.replaceChildren();
+        renderHeading(root, "대출 신청", "대출 신청서", productId ? `${productId} 신청 내용을 입력합니다.` : "상품 식별자가 필요합니다.");
+        if (!productId) {
+            renderError(root, "상품 식별자가 없습니다.", "대출 상품 상세에서 신청하기를 선택해 주세요.");
+            return;
+        }
+        if (findPendingLoan(state.sessionUser.userId, productId)) {
+            renderPendingLoan(root);
+            return;
+        }
+        try {
+            const product = await publicAccountRequest(`/api/public/loans/products/${encodeURIComponent(productId)}`);
+            if (!isCurrentScreen(root, requestId)) {
+                return;
+            }
+            if (!product.active) {
+                renderError(root, "현재 신청할 수 없는 상품입니다.", "상품의 최신 판매 상태를 확인했습니다.", "is-empty");
+                return;
+            }
+            const card = document.createElement("section");
+            card.className = "card data-section loan-apply-card";
+            appendText(card, "h2", product.name || product.productId);
+            appendDetailGrid(card, [
+                ["신청자", state.sessionUser.userId],
+                ["신청 가능 금액", `${formatMoney(product.minAmount)} ~ ${formatMoney(product.maxAmount)}`]
+            ]);
+            const form = document.createElement("form");
+            form.className = "customer-form";
+            form.innerHTML = `<label class="field-label" for="loan-amount">대출 신청 금액</label><input class="field" id="loan-amount" name="amount" inputmode="decimal" autocomplete="off" required><label class="field-label" for="loan-purpose">신청 목적</label><select class="select-control" id="loan-purpose" name="purpose"><option value="LIVING_COST">생활비</option><option value="HOUSING">주거</option><option value="OTHER">기타</option></select><label class="check-field"><input type="checkbox" name="terms"><span>가상 약관을 확인하고 신청 내용에 동의합니다.</span></label><div class="status-message is-error" data-loan-form-error role="alert" hidden></div><button class="button button-primary" data-loan-next type="submit">다음</button>`;
+            const existingDraft = state.loanDraft && state.loanDraft.userId === state.sessionUser.userId && state.loanDraft.productId === product.productId && state.loanDraft.status !== "SUBMITTED"
+                ? state.loanDraft
+                : null;
+            if (existingDraft) {
+                query("[name=amount]", form).value = String(existingDraft.amount);
+                query("[name=purpose]", form).value = existingDraft.purpose || "LIVING_COST";
+                query("[name=terms]", form).checked = existingDraft.terms === true;
+            }
+            form.addEventListener("submit", (event) => {
+                event.preventDefault();
+                submitLoanDraft(form, product, root, requestId);
+            });
+            card.append(form);
+            root.append(card);
+        } catch (error) {
+            handleScreenError(root, error, requestId);
+        }
+    }
+
+    async function submitIdentityVerification(form, root, requestId, returnPath) {
+        if (form.dataset.submitting === "true" || state.busy) {
+            return;
+        }
+        const input = query("[name=verificationCode]", form);
+        const errorElement = query("[data-identity-error]", form);
+        const code = input.value.trim();
+        if (!/^\d{6}$/.test(code)) {
+            showStatus(errorElement, "is-error", "인증번호를 확인해 주세요", "6자리 숫자를 입력해 주세요.");
+            return;
+        }
+        const expectedUserId = state.sessionUser?.userId;
+        const previousToken = state.accessToken;
+        form.dataset.submitting = "true";
+        state.busy = true;
+        queryAll("input, button", form).forEach((element) => { element.disabled = true; });
+        try {
+            const body = await identityApiRequest("/api/identity/verify", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ method: "DEMO_OTP", verificationCode: code })
+            });
+            if (!isCurrentScreen(root, requestId)) {
+                return;
+            }
+            if (typeof body?.accessToken !== "string" || !body.accessToken || body.identityVerified !== true) {
+                throw new Error("본인확인 응답을 확인하지 못했습니다.");
+            }
+            state.accessToken = body.accessToken;
+            const currentUser = await loadCurrentUser(true);
+            if (!isCurrentScreen(root, requestId)) {
+                state.accessToken = previousToken;
+                return;
+            }
+            if (currentUser.error || !currentUser.response?.ok || currentUser.body?.userId !== expectedUserId || currentUser.body?.identityVerified !== true) {
+                state.accessToken = previousToken;
+                throw new Error("갱신된 본인확인 사용자를 확인하지 못했습니다.");
+            }
+            const status = await loadIdentityStatus();
+            if (!isCurrentScreen(root, requestId)) {
+                return;
+            }
+            if (!status.identityVerified) {
+                throw new Error("본인확인 상태 재조회가 완료되지 않았습니다.");
+            }
+            state.sessionUser = currentUser.body;
+            if (returnPath === "/demo/loans/confirm.html") {
+                const draftReady = await prepareLoanDraftForConfirm(expectedUserId, requestId);
+                if (!isCurrentScreen(root, requestId)) {
+                    return;
+                }
+                if (!draftReady) {
+                    await navigateTo("/demo/my/security.html");
+                    return;
+                }
+            }
+            await navigateTo(returnPath);
+        } catch (error) {
+            if (!isCurrentScreen(root, requestId)) {
+                return;
+            }
+            if (error instanceof TypeError || error.status >= 500) {
+                try {
+                    const recoveredStatus = await loadIdentityStatus();
+                    if (isCurrentScreen(root, requestId) && recoveredStatus.identityVerified) {
+                        const recoveredUser = await refreshAccessToken(requestId);
+                        if (recoveredUser?.identityVerified && isCurrentScreen(root, requestId)) {
+                            state.sessionUser = recoveredUser;
+                            if (returnPath === "/demo/loans/confirm.html") {
+                                const draftReady = await prepareLoanDraftForConfirm(expectedUserId, requestId);
+                                if (!isCurrentScreen(root, requestId)) {
+                                    return;
+                                }
+                                if (!draftReady) {
+                                    await navigateTo("/demo/my/security.html");
+                                    return;
+                                }
+                            }
+                            await navigateTo(returnPath);
+                            return;
+                        }
+                    }
+                } catch {
+                    // 서버 상태 재확인 실패 시 자동 OTP 재전송 없이 현재 화면 유지
+                }
+                if (isCurrentScreen(root, requestId)) {
+                    showStatus(errorElement, "is-server-error", "본인확인 결과를 확인하지 못했습니다", "서버 상태를 다시 확인해 주세요. 인증번호를 자동으로 재전송하지 않습니다.");
+                }
+            } else if (error.status === 401) {
+                clearAuthState();
+                renderInlineLogin(currentPath(), "인증 Session이 만료되었습니다. 다시 로그인해 주세요.");
+            } else if (error.status === 400) {
+                showStatus(errorElement, "is-error", "인증번호가 올바르지 않습니다", "6자리 인증번호를 확인한 뒤 다시 입력해 주세요.");
+            } else if (error.status === 403) {
+                renderError(root, "본인확인을 진행할 권한이 없습니다.", "고객 계정으로 다시 로그인해 주세요.");
+            } else {
+                showStatus(errorElement, "is-server-error", "본인확인을 완료하지 못했습니다", "네트워크 상태를 확인한 뒤 다시 시도해 주세요.");
+            }
+        } finally {
+            state.busy = false;
+            if (form.isConnected) {
+                form.dataset.submitting = "false";
+                queryAll("input, button", form).forEach((element) => { element.disabled = false; });
+            }
+        }
+    }
+
+    function resolveIdentityReturnPath(userId, applicationId, rawReturn) {
+        const requestedReturn = normalizePath(rawReturn || "");
+        const safeRequestedReturn = requestedReturn
+            && !requestedReturn.startsWith("/demo/identity/verify.html")
+            && requestedReturn !== currentPath()
+            ? requestedReturn
+            : null;
+        const detailReturn = applicationId
+            ? `/demo/my/loan-detail.html?applicationId=${encodeURIComponent(applicationId)}`
+            : null;
+        const hasDraft = hasLoanDraftForUser(userId);
+        const returnsToDetail = safeRequestedReturn?.startsWith("/demo/my/loan-detail.html");
+        const returnsToSecurity = safeRequestedReturn === "/demo/my/security.html";
+        const returnPath = detailReturn
+            || (safeRequestedReturn === "/demo/loans/confirm.html" && hasDraft
+                ? safeRequestedReturn
+                : (returnsToDetail || returnsToSecurity)
+                    ? safeRequestedReturn
+                    : hasDraft
+                        ? "/demo/loans/confirm.html"
+                        : "/demo/my/security.html");
+        return returnPath;
+    }
+
+    async function renderIdentityVerify(root, requestId) {
+        if (!await ensureCustomerAccess(root, requestId)) {
+            return;
+        }
+        const params = new URLSearchParams(window.location.search);
+        const applicationId = params.get("applicationId");
+        const returnPath = resolveIdentityReturnPath(state.sessionUser.userId, applicationId, params.get("returnTo"));
+        root.replaceChildren();
+        renderHeading(root, "본인확인", "안전한 금융거래를 위한 본인확인", "대출 신청과 결과 조회를 위해 현재 고객의 본인확인 상태를 확인합니다.");
+        try {
+            const status = await loadIdentityStatus();
+            if (!isCurrentScreen(root, requestId)) {
+                return;
+            }
+            if (status.identityVerified) {
+                const currentUser = await refreshAccessToken(requestId);
+                if (!currentUser || !isCurrentScreen(root, requestId)) {
+                    return;
+                }
+                if (!currentUser.identityVerified) {
+                    throw new Error("본인확인 상태가 최신 인증에 반영되지 않았습니다.");
+                }
+                if (returnPath === "/demo/loans/confirm.html") {
+                    const draftReady = await prepareLoanDraftForConfirm(currentUser.userId, requestId);
+                    if (!isCurrentScreen(root, requestId)) {
+                        return;
+                    }
+                    if (!draftReady) {
+                        await navigateTo("/demo/my/security.html");
+                        return;
+                    }
+                }
+                await navigateTo(returnPath);
+                return;
+            }
+            const card = document.createElement("section");
+            card.className = "card data-section identity-card";
+            appendText(card, "h2", "인증번호 입력");
+            appendText(card, "p", `${state.sessionUser.userId} 고객님의 가상 본인확인 절차입니다.`);
+            const steps = document.createElement("ol");
+            steps.className = "identity-steps";
+            ["정보 확인", "인증번호 입력", "완료"].forEach((label, index) => appendText(steps, "li", `${index + 1}. ${label}`, index === 1 ? "is-current" : ""));
+            card.append(steps);
+            const form = document.createElement("form");
+            form.className = "customer-form";
+            form.innerHTML = `<label class="field-label" for="verification-code">가상 인증번호</label><input class="field" id="verification-code" name="verificationCode" inputmode="numeric" autocomplete="one-time-code" maxlength="6" required><div class="status-message is-error" data-identity-error role="alert" hidden></div><div class="page-actions"><button class="button button-primary" type="submit">인증하기</button><a class="button button-secondary" data-route="true" href="/demo/loans/index.html">취소</a></div>`;
+            form.addEventListener("submit", (event) => {
+                event.preventDefault();
+                submitIdentityVerification(form, root, requestId, returnPath);
+            });
+            card.append(form);
+            root.append(card);
+        } catch (error) {
+            if (error.status === 401) {
+                clearAuthState();
+                renderInlineLogin(currentPath(), "인증 Session이 만료되었습니다. 다시 로그인해 주세요.");
+                return;
+            }
+            handleScreenError(root, error, requestId);
+        }
+    }
+
+    async function submitLoanApplication(form, product, root, requestId) {
+        if (form.dataset.submitting === "true" || state.busy) {
+            return;
+        }
+        const draft = state.loanDraft;
+        const userId = state.sessionUser?.userId;
+        const snapshot = draft?.reviewedSnapshot;
+        if (!draft || draft.userId !== userId || draft.status !== "REVIEW_REQUIRED" || !sameLoanDraft(draft, snapshot)) {
+            renderError(root, "신청 확인 상태가 만료되었습니다.", "신청 내용을 다시 확인해 주세요.");
+            appendAction(root, `/demo/loans/apply.html?productId=${encodeURIComponent(product.productId)}`, "신청 내용 다시 확인", "button-primary");
+            return;
+        }
+        form.dataset.submitting = "true";
+        state.busy = true;
+        queryAll("button", form).forEach((element) => { element.disabled = true; });
+        let postStarted = false;
+        let pendingLoan = null;
+        try {
+            const currentProduct = await publicAccountRequest(`/api/public/loans/products/${encodeURIComponent(product.productId)}`);
+            if (!currentProduct.active) {
+                throw new ApiError(409, "현재 신청할 수 없는 상품입니다.");
+            }
+            const amountValidation = validateLoanAmount(String(draft.amount), currentProduct);
+            if (!amountValidation.valid) {
+                throw new ApiError(400, amountValidation.message);
+            }
+            if (state.loanDraft !== draft || !sameLoanDraft(draft, snapshot)) {
+                throw new Error("신청 확인 내용이 변경되었습니다.");
+            }
+            const identityStatus = await loadIdentityStatus();
+            if (!isCurrentScreen(root, requestId)) {
+                return;
+            }
+            if (!identityStatus.identityVerified) {
+                throw new ApiError(403, "본인확인이 필요합니다.", state.requestId, "IDENTITY_VERIFICATION_REQUIRED");
+            }
+            const currentUser = await refreshAccessToken(requestId);
+            if (!currentUser || !isCurrentScreen(root, requestId)) {
+                return;
+            }
+            if (!currentUser.identityVerified) {
+                throw new ApiError(403, "본인확인이 필요합니다.", state.requestId, "IDENTITY_VERIFICATION_REQUIRED");
+            }
+            pendingLoan = {
+                userId,
+                productId: draft.productId,
+                amount: draft.amount,
+                status: "SUBMITTING"
+            };
+            state.pendingLoanApplications.push(pendingLoan);
+            postStarted = true;
+            const body = await accountRequest("/api/secured/loans/applications", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ productId: draft.productId, amount: draft.amount, purpose: draft.purpose }),
+                expectedStatus: 201
+            });
+            if (typeof body?.applicationId !== "string" || body.applicationId.trim() === "") {
+                const error = new Error("대출 신청 응답에 신청번호가 없습니다.");
+                error.resultUnknown = true;
+                throw error;
+            }
+            if (state.sessionUser?.userId === userId) {
+                clearPendingLoan(pendingLoan);
+                if (state.loanDraft === draft) {
+                    draft.status = "SUBMITTED";
+                    draft.applicationId = body.applicationId;
+                }
+            }
+            if (isCurrentScreen(root, requestId)) {
+                await navigateTo(`/demo/loans/complete.html?applicationId=${encodeURIComponent(body.applicationId)}`);
+            }
+        } catch (error) {
+            const sameUser = state.sessionUser?.userId === userId;
+            const pendingIsCurrent = pendingLoan && state.pendingLoanApplications.includes(pendingLoan) && sameUser;
+            const resultUnknown = postStarted && (error instanceof TypeError || error.resultUnknown === true || error.status >= 500);
+            if (resultUnknown && pendingIsCurrent) {
+                pendingLoan.status = "UNRESOLVED";
+                if (state.loanDraft === draft) {
+                    draft.status = "UNRESOLVED";
+                }
+            } else if (postStarted && pendingIsCurrent) {
+                clearPendingLoan(pendingLoan);
+            }
+            if (!isCurrentScreen(root, requestId)) {
+                return;
+            }
+            if (resultUnknown) {
+                renderPendingLoan(root);
+            } else if (error.status === 401) {
+                clearAuthState();
+                renderInlineLogin(currentPath(), "인증 상태가 만료되었습니다. 대출 신청은 자동 재시도하지 않습니다.");
+            } else if (error.status === 403 && error.code === "IDENTITY_VERIFICATION_REQUIRED") {
+                if (state.loanDraft === draft) {
+                    draft.status = "DRAFT";
+                }
+                loanIdentityAction(root, "/demo/loans/confirm.html");
+            } else if (error.status === 400) {
+                enrollmentMessage(root, "is-error", "신청 내용을 확인해 주세요", error.message || "서버가 신청을 거부했습니다.");
+            } else if (error.status === 409) {
+                enrollmentMessage(root, "is-error", error.message || "현재 신청할 수 없습니다", "상품의 최신 판매 상태를 확인해 주세요.");
+            } else if (error.status === 404) {
+                enrollmentMessage(root, "is-error", "신청 상품을 찾지 못했습니다", "상품 목록에서 다시 확인해 주세요.");
+            } else if (error.status === 403) {
+                renderError(root, "대출 신청 권한이 없습니다.", "현재 계정으로는 이 신청을 처리할 수 없습니다.");
+            } else {
+                enrollmentMessage(root, "is-server-error", "대출 신청을 처리하지 못했습니다", "신청 결과가 확정되지 않은 경우 내 대출에서 접수 여부를 확인해 주세요.");
+            }
+        } finally {
+            state.busy = false;
+            if (form.isConnected) {
+                form.dataset.submitting = "false";
+                queryAll("button", form).forEach((element) => { element.disabled = false; });
+            }
+        }
+    }
+
+    function renderLoanApplicationSummary(application, title) {
+        const section = document.createElement("section");
+        section.className = "card data-section loan-application-card";
+        appendText(section, "h2", title || "대출 신청 내역");
+        appendDetailGrid(section, [
+            ["신청번호", application.applicationId],
+            ["상품 식별자", application.productId],
+            ["신청 금액", formatMoney(application.amount)],
+            ["접수일", formatDate(application.createdAt)],
+            ["진행 상태", loanStatusLabel(application.status)]
+        ]);
+        return section;
+    }
+
+    async function renderLoanConfirm(root, requestId) {
+        if (!await ensureCustomerAccess(root, requestId)) {
+            return;
+        }
+        root.replaceChildren();
+        renderHeading(root, "신청 내용 확인", "대출 신청 최종 확인", "내용을 확인한 뒤 신청 접수를 선택해 주세요.");
+        const draft = state.loanDraft;
+        if (!draft || draft.userId !== state.sessionUser.userId || draft.status !== "REVIEW_REQUIRED") {
+            renderError(root, "확인할 신청 내용이 없습니다.", "대출 상품에서 신청 내용을 다시 작성해 주세요.");
+            appendAction(root, "/demo/loans/index.html", "대출 상품 보기", "button-primary");
+            return;
+        }
+        try {
+            const product = await publicAccountRequest(`/api/public/loans/products/${encodeURIComponent(draft.productId)}`);
+            if (!isCurrentScreen(root, requestId)) {
+                return;
+            }
+            if (!product.active) {
+                renderError(root, "현재 신청할 수 없는 상품입니다.", "상품의 최신 판매 상태를 확인했습니다.", "is-empty");
+                return;
+            }
+            if (!sameLoanDraft(draft, draft.reviewedSnapshot)) {
+                renderError(root, "신청 확인 상태가 변경되었습니다.", "신청 내용을 다시 확인해 주세요.");
+                appendAction(root, `/demo/loans/apply.html?productId=${encodeURIComponent(draft.productId)}`, "신청 내용 수정", "button-primary");
+                return;
+            }
+            const card = document.createElement("section");
+            card.className = "card data-section loan-confirm-card";
+            appendText(card, "h2", product.name || product.productId);
+            appendDetailGrid(card, [
+                ["신청자", draft.userId],
+                ["신청 금액", formatMoney(draft.amount)],
+                ["신청 목적", loanPurposeLabel(draft.purpose)],
+                ["약관 동의", draft.terms ? "동의함" : "미동의"],
+                ["본인확인", state.sessionUser.identityVerified ? "확인됨" : "서버 상태 재확인 필요"]
+            ]);
+            const note = document.createElement("div");
+            showStatus(note, "is-loading", "신청 전 확인", "신청 목적은 화면 입력값이며, 신청자와 소유자는 서버 인증 주체로 결정됩니다.");
+            card.append(note);
+            const form = document.createElement("form");
+            form.className = "page-actions loan-confirm-actions";
+            const edit = link(`/demo/loans/apply.html?productId=${encodeURIComponent(draft.productId)}`, "수정하기", "button button-secondary");
+            const submit = document.createElement("button");
+            submit.className = "button button-primary";
+            submit.dataset.loanSubmit = "true";
+            submit.type = "submit";
+            submit.textContent = "신청 접수";
+            form.append(edit, submit);
+            form.addEventListener("submit", (event) => {
+                event.preventDefault();
+                submitLoanApplication(form, product, root, requestId);
+            });
+            card.append(form);
+            root.append(card);
+        } catch (error) {
+            handleScreenError(root, error, requestId);
+        }
+    }
+
+    async function renderLoanComplete(root, requestId) {
+        if (!await ensureCustomerAccess(root, requestId)) {
+            return;
+        }
+        const applicationId = new URLSearchParams(window.location.search).get("applicationId");
+        root.replaceChildren();
+        renderHeading(root, "신청 접수", "대출 신청이 접수되었습니다", "서버에 저장된 신청 내역을 다시 조회합니다.");
+        if (!applicationId) {
+            renderError(root, "신청번호가 없습니다.", "내 대출 신청 내역에서 접수 상태를 확인해 주세요.");
+            appendAction(root, "/demo/my/loans.html", "내 대출 확인", "button-primary");
+            return;
+        }
+        try {
+            const application = await accountRequest(`/api/loans/applications/my/${encodeURIComponent(applicationId)}`);
+            if (!isCurrentScreen(root, requestId)) {
+                return;
+            }
+            root.append(renderLoanApplicationSummary(application, "접수 내역 재조회 결과"));
+            const actions = document.createElement("div");
+            actions.className = "page-actions";
+            appendAction(actions, `/demo/my/loan-detail.html?applicationId=${encodeURIComponent(applicationId)}`, "신청 내역 상세", "button-primary");
+            appendAction(actions, "/demo/my/loans.html", "내 대출 목록");
+            appendAction(actions, "/demo/", "은행 홈");
+            root.append(actions);
+        } catch (error) {
+            if (error.status === 403 && error.code === "IDENTITY_VERIFICATION_REQUIRED") {
+                loanIdentityAction(root, currentPath());
+                return;
+            }
+            handleScreenError(root, error, requestId);
+        }
+    }
+
+    function renderLoanApplicationCard(application) {
+        const card = document.createElement("a");
+        card.className = "subscription-card loan-application-item";
+        card.href = `/demo/my/loan-detail.html?applicationId=${encodeURIComponent(application.applicationId)}`;
+        card.dataset.route = "true";
+        appendText(card, "span", application.productId || "상품 식별자 없음", "section-label");
+        appendText(card, "h2", application.applicationId || "신청번호 없음");
+        appendDetailGrid(card, [
+            ["신청 금액", formatMoney(application.amount)],
+            ["접수일", formatDate(application.createdAt)],
+            ["진행 상태", loanStatusLabel(application.status)]
+        ]);
+        return card;
+    }
+
+    async function renderMyLoans(root, requestId) {
+        if (!await ensureCustomerAccess(root, requestId)) {
+            return;
+        }
+        root.replaceChildren();
+        renderHeading(root, "내 대출", "내 대출 신청 내역", "현재 로그인한 고객의 대출 신청 목록입니다.");
+        try {
+            const applications = await accountRequest("/api/loans/applications/my");
+            if (!isCurrentScreen(root, requestId)) {
+                return;
+            }
+            if (!Array.isArray(applications)) {
+                throw new Error("대출 신청 목록 응답 형식 오류");
+            }
+            const grid = document.createElement("div");
+            grid.className = "subscription-grid loan-application-grid";
+            applications.forEach((application) => grid.append(renderLoanApplicationCard(application)));
+            if (applications.length === 0) {
+                showStatus(grid, "is-empty", "신청 내역이 없습니다", "현재 접수된 대출 신청이 없습니다.");
+            }
+            root.append(grid);
+            const actions = document.createElement("div");
+            actions.className = "page-actions";
+            appendAction(actions, "/demo/loans/index.html", "대출 상품 둘러보기", "button-primary");
+            root.append(actions);
+        } catch (error) {
+            handleScreenError(root, error, requestId);
+        }
+    }
+
+    async function renderLoanDetail(root, requestId) {
+        if (!await ensureCustomerAccess(root, requestId)) {
+            return;
+        }
+        const applicationId = new URLSearchParams(window.location.search).get("applicationId");
+        root.replaceChildren();
+        renderHeading(root, "대출 신청 상세", "대출 신청 결과", applicationId ? `${applicationId}의 현재 저장 상태를 조회합니다.` : "신청번호가 필요합니다.");
+        if (!applicationId) {
+            renderError(root, "신청번호가 없습니다.", "내 대출 신청 내역에서 상세 보기를 선택해 주세요.");
+            return;
+        }
+        try {
+            const application = await accountRequest(`/api/loans/applications/my/${encodeURIComponent(applicationId)}`);
+            if (!isCurrentScreen(root, requestId)) {
+                return;
+            }
+            root.append(renderLoanApplicationSummary(application, "신청 결과"));
+            const actions = document.createElement("div");
+            actions.className = "page-actions";
+            appendAction(actions, "/demo/my/loans.html", "내 대출 목록", "button-primary");
+            appendAction(actions, "/demo/loans/index.html", "대출 상품 보기");
+            root.append(actions);
+        } catch (error) {
+            if (error.status === 403 && error.code === "IDENTITY_VERIFICATION_REQUIRED") {
+                loanIdentityAction(root, currentPath());
+                return;
+            }
+            handleScreenError(root, error, requestId);
+        }
+    }
+
+    async function renderSecurity(root, requestId) {
+        if (!await ensureCustomerAccess(root, requestId)) {
+            return;
+        }
+        root.replaceChildren();
+        renderHeading(root, "인증 관리", "본인확인 및 인증 갱신", "현재 고객의 인증 상태를 확인하고 필요한 경우 최신 인증을 요청합니다.");
+        try {
+            const status = await loadIdentityStatus();
+            if (!isCurrentScreen(root, requestId)) {
+                return;
+            }
+            const card = document.createElement("section");
+            card.className = "card data-section security-card";
+            appendText(card, "h2", "현재 인증 상태");
+            appendDetailGrid(card, [
+                ["사용자 ID", state.sessionUser.userId],
+                ["본인확인", status.identityVerified ? "확인됨" : "미확인"],
+                ["확인 시각", formatDate(status.verifiedAt)]
+            ]);
+            const actions = document.createElement("div");
+            actions.className = "page-actions";
+            const refresh = document.createElement("button");
+            refresh.type = "button";
+            refresh.className = "button button-primary";
+            refresh.textContent = "인증 갱신";
+            const message = document.createElement("div");
+            message.className = "status-message is-loading";
+            message.hidden = true;
+            refresh.addEventListener("click", async () => {
+                if (state.busy) {
+                    return;
+                }
+                state.busy = true;
+                refresh.disabled = true;
+                refresh.textContent = "갱신 중...";
+                try {
+                    const user = await refreshAccessToken(requestId);
+                    if (!user || !isCurrentScreen(root, requestId)) {
+                        return;
+                    }
+                    showStatus(message, "is-success", "인증이 갱신되었습니다", user.identityVerified ? "최신 본인확인 상태가 반영된 인증을 사용합니다." : "현재 본인확인 상태를 확인해 주세요.");
+                } catch (error) {
+                    if (error.status === 401) {
+                        clearAuthState();
+                        renderInlineLogin(currentPath(), "인증 갱신이 만료되었습니다. 다시 로그인해 주세요.");
+                    } else {
+                        showStatus(message, "is-server-error", "인증을 갱신하지 못했습니다", "네트워크 상태와 Session을 확인한 뒤 다시 시도해 주세요.");
+                    }
+                } finally {
+                    state.busy = false;
+                    if (refresh.isConnected) {
+                        refresh.disabled = false;
+                        refresh.textContent = "인증 갱신";
+                    }
+                }
+            });
+            actions.append(refresh);
+            card.append(actions, message);
+            root.append(card);
+        } catch (error) {
+            if (error.status === 401) {
+                clearAuthState();
+                renderInlineLogin(currentPath(), "인증 Session이 만료되었습니다. 다시 로그인해 주세요.");
+                return;
+            }
+            handleScreenError(root, error, requestId);
+        }
+    }
+
     function renderLoginDocument() {
         document.body.className = "bank-page login-page";
         document.body.dataset.page = "login";
@@ -1392,7 +2429,8 @@
 
     async function initScreen(path) {
         const requestId = ++state.requestId;
-        renderCustomerFrame();
+        const publicLoanScreen = path === "/demo/loans/index.html" || path === "/demo/loans/product.html";
+        renderCustomerFrame(requestId, publicLoanScreen);
         const root = screenRoot();
         const screen = {
             "/demo/my/index.html": ["나의 금융", renderMyHome],
@@ -1404,7 +2442,16 @@
             "/demo/savings/complete.html": ["가입 완료", renderSavingsComplete],
             "/demo/my/savings.html": ["내 예적금", renderMySavings],
             "/demo/my/savings-detail.html": ["예적금 가입 상세", renderSavingsDetail],
-            "/demo/my/profile.html": ["내 정보", renderProfile]
+            "/demo/my/profile.html": ["내 정보", renderProfile],
+            "/demo/loans/index.html": ["대출 상품", renderLoanList],
+            "/demo/loans/product.html": ["대출 상품 상세", renderLoanProduct],
+            "/demo/loans/apply.html": ["대출 신청", renderLoanApply],
+            "/demo/identity/verify.html": ["본인확인", renderIdentityVerify],
+            "/demo/loans/confirm.html": ["신청 내용 확인", renderLoanConfirm],
+            "/demo/loans/complete.html": ["신청 접수", renderLoanComplete],
+            "/demo/my/loans.html": ["내 대출", renderMyLoans],
+            "/demo/my/loan-detail.html": ["대출 신청 상세", renderLoanDetail],
+            "/demo/my/security.html": ["인증 관리", renderSecurity]
         }[path];
         if (!screen) {
             renderError(root, "화면 경로를 확인할 수 없습니다.", "Demo Bank 고객 화면 경로가 아닙니다.");
