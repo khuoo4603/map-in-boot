@@ -97,6 +97,8 @@ class RuntimeCollectorIntegrationTest {
                     .filter(entry -> entry.getKey().getPatternValues().contains("/error")).toList();
 
             assertEquals(AnalysisStatus.READY, endpoints.status());
+            assertTrue(endpoints.facts().stream().allMatch(fact ->
+                    "DEFAULT".equals(fact.attributes().get("mvcPathPatternSettings"))));
             assertEquals(2, errorMappings.size());
             assertTrue(errorMappings.stream().allMatch(entry -> entry.getKey().getMethodsCondition().getMethods().isEmpty()));
             assertFalse(endpoints.facts().isEmpty());

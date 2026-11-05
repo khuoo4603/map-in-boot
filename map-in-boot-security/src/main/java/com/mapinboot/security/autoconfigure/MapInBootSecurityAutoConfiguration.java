@@ -1,5 +1,6 @@
 package com.mapinboot.security.autoconfigure;
 
+import com.mapinboot.security.analyzer.EndpointChainMatchingAnalysisAdapter;
 import com.mapinboot.security.collector.SecurityChainCollectorAdapter;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
@@ -18,5 +19,11 @@ public class MapInBootSecurityAutoConfiguration {
     @ConditionalOnMissingBean(SecurityChainCollectorAdapter.class)
     SecurityChainCollectorAdapter securityChainCollectorAdapter() {
         return new SecurityChainCollectorAdapter();
+    }
+
+    @Bean
+    @ConditionalOnMissingBean(EndpointChainMatchingAnalysisAdapter.class)
+    EndpointChainMatchingAnalysisAdapter endpointChainMatchingAnalysisAdapter() {
+        return new EndpointChainMatchingAnalysisAdapter();
     }
 }
