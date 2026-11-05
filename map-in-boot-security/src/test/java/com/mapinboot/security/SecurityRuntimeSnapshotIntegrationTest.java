@@ -231,6 +231,26 @@ class SecurityRuntimeSnapshotIntegrationTest {
         }
     }
 
+    @Test
+    void assemblesPublicRuntimeWithoutFindingWhenProtectionRequirementIsUnavailable() throws Exception {
+        try (AnnotationConfigApplicationContext context = context(PublicRuntimeConfiguration.class)) {
+            SecurityChainCollectorAdapter chainCollector = context.getBean(SecurityChainCollectorAdapter.class);
+            EndpointChainMatchingAnalysisAdapter analyzer = context.getBean(EndpointChainMatchingAnalysisAdapter.class);
+            SecurityRuleEngine ruleEngine = context.getBean(SecurityRuleEngine.class);
+
+            CollectionReport collection = collect(context, chainCollector);
+            AnalysisReport analysis = new AnalysisProvider().execute(
+                    new AnalysisContext(collection, "main"), List.of(analyzer));
+            Snapshot snapshot = new SnapshotAssembler(List.of(ruleEngine), "1")
+                    .assemble(analysis, "main", "instance", "test");
+
+            assertEquals(1, context.getBeansOfType(com.mapinboot.core.finding.FindingEvaluator.class).size());
+            assertTrue(snapshot.findings().isEmpty());
+            assertTrue(snapshot.edges().stream().flatMap(edge -> edge.evidenceIds().stream())
+                    .allMatch(id -> snapshot.evidence().stream().anyMatch(evidence -> evidence.id().equals(id))));
+        }
+    }
+
     private AnnotationConfigApplicationContext context(Class<?> configuration) {
         AnnotationConfigApplicationContext context = new AnnotationConfigApplicationContext();
         context.register(configuration, MapInBootSecurityAutoConfiguration.class);
@@ -380,6 +400,35 @@ class SecurityRuntimeSnapshotIntegrationTest {
         }
     }
 
+    @Configuration(proxyBeanMethods = false)
+    static class PublicRuntimeConfiguration {
+
+        @Bean
+        FilterChainProxy springSecurityFilterChain() {
+            return new FilterChainProxy(List.of(
+                    chain(PathPatternRequestMatcher.pathPattern("/api/public/notices"), permitAllFilter())));
+        }
+
+        private AuthorizationFilter permitAllFilter() {
+            RequestMatcherDelegatingAuthorizationManager manager =
+                    RequestMatcherDelegatingAuthorizationManager.builder()
+                            .anyRequest()
+                            .permitAll()
+                            .build();
+            return new AuthorizationFilter(manager);
+        }
+
+        @Bean
+        PublicRuntimeController publicRuntimeController() {
+            return new PublicRuntimeController();
+        }
+
+        @Bean
+        RequestMappingHandlerMapping requestMappingHandlerMapping() {
+            return new RequestMappingHandlerMapping();
+        }
+    }
+
     @Controller
     static class RuntimeController {
 
@@ -393,6 +442,14 @@ class SecurityRuntimeSnapshotIntegrationTest {
 
         @RequestMapping(path = "/api/reports/summary", method = RequestMethod.GET)
         public void summary() {
+        }
+    }
+
+    @Controller
+    static class PublicRuntimeController {
+
+        @RequestMapping(path = "/api/public/notices", method = RequestMethod.GET)
+        public void notices() {
         }
     }
 

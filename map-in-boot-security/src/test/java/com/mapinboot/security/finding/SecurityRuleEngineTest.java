@@ -124,10 +124,11 @@ class SecurityRuleEngineTest {
                 objectAuthorization), readyStatuses(),
                 List.of(objectAuthorizationRelation(endpoint, objectAuthorization)));
 
-        assertEquals(1, findings.size());
-        assertEquals("CHAIN_ORDER", findings.get(0).ruleId());
-        assertEquals(Confidence.CONFIRMED, findings.get(0).confidence());
-        assertTrue(findings.get(0).evidenceIds().contains("object-evidence-reports"));
+        Finding chainOrder = findings.stream()
+                .filter(finding -> "CHAIN_ORDER".equals(finding.ruleId()))
+                .findFirst().orElseThrow();
+        assertEquals(Confidence.CONFIRMED, chainOrder.confidence());
+        assertTrue(chainOrder.evidenceIds().contains("object-evidence-reports"));
     }
 
     @Test
@@ -196,7 +197,7 @@ class SecurityRuleEngineTest {
                 objectAuthorization), readyStatuses(),
                 List.of(objectAuthorizationRelation(endpoint, objectAuthorization)));
 
-        assertTrue(findings.isEmpty());
+        assertTrue(findings.stream().noneMatch(finding -> "CHAIN_ORDER".equals(finding.ruleId())));
     }
 
     @Test
@@ -285,6 +286,84 @@ class SecurityRuleEngineTest {
                 protectedChain,
                 policy("protected-policy", protectedChain, "AUTHORITY_REQUIRED", "/api/reports/summary", "ROLE_STAFF")),
                 readyStatuses()).isEmpty());
+    }
+
+    @Test
+    void createsLikelyPublicEndpointForActualPermitAllWithObjectAuthorization() {
+        Fact endpoint = endpoint("customers", "/api/customers/search");
+        Fact chain = chain("customers", 1, "/api/customers/**");
+        Fact objectAuthorization = objectAuthorization("customers", endpoint);
+
+        List<Finding> findings = evaluate(List.of(
+                endpoint,
+                chain,
+                policy("customers-policy", chain, "PERMIT_ALL", "/api/customers/search", null),
+                objectAuthorization), readyStatuses(),
+                List.of(objectAuthorizationRelation(endpoint, objectAuthorization)));
+
+        assertEquals(1, findings.size());
+        assertEquals("PUBLIC_ENDPOINT", findings.get(0).ruleId());
+        assertEquals(Confidence.LIKELY, findings.get(0).confidence());
+        assertTrue(findings.get(0).evidenceIds().contains("endpoint-evidence-customers"));
+        assertTrue(findings.get(0).evidenceIds().contains("policy-evidence-customers-policy"));
+        assertTrue(findings.get(0).evidenceIds().contains("object-evidence-customers"));
+    }
+
+    @Test
+    void doesNotCreatePublicEndpointForNormalOrUncertainPolicies() {
+        Fact endpoint = endpoint("customers", "/api/customers/search");
+        Fact chain = chain("customers", 1, "/api/customers/**");
+        Fact objectAuthorization = objectAuthorization("customers", endpoint);
+
+        assertTrue(evaluate(List.of(
+                endpoint,
+                chain,
+                policy("permit-policy", chain, "PERMIT_ALL", "/api/customers/search", null)),
+                readyStatuses()).isEmpty());
+        assertTrue(evaluate(List.of(
+                endpoint,
+                chain,
+                policy("authority-policy", chain, "AUTHORITY_REQUIRED", "/api/customers/search", "ROLE_STAFF"),
+                objectAuthorization), readyStatuses(),
+                List.of(objectAuthorizationRelation(endpoint, objectAuthorization))).isEmpty());
+        assertTrue(evaluate(List.of(
+                endpoint,
+                chain,
+                policy("deny-policy", chain, "DENY_ALL", "/api/customers/**", null, "PATH", 1),
+                policy("later-permit-policy", chain, "PERMIT_ALL", "ANY", null, "ANY", 2),
+                objectAuthorization), readyStatuses(),
+                List.of(objectAuthorizationRelation(endpoint, objectAuthorization))).isEmpty());
+        Fact unsupportedPolicy = policy("unsupported-policy", chain, "PERMIT_ALL", "/api/customers/search", null,
+                "UNSUPPORTED", 1);
+        assertTrue(evaluate(List.of(endpoint, chain, unsupportedPolicy, objectAuthorization), readyStatuses(),
+                List.of(objectAuthorizationRelation(endpoint, objectAuthorization))).isEmpty());
+        assertTrue(evaluate(List.of(
+                endpoint,
+                chain,
+                policy("state-policy", chain, "PERMIT_ALL", "/api/customers/search", null),
+                requiredState("customers")), readyStatuses()).isEmpty());
+    }
+
+    @Test
+    void createsPublicEndpointOnlyForPermitAllEndpointOfSharedHandler() {
+        Fact publicEndpoint = endpoint("customers-public", "/api/customers/public", "Customers#search");
+        Fact protectedEndpoint = endpoint("customers-protected", "/api/customers/protected", "Customers#search");
+        Fact chain = chain("customers", 1, "/api/customers/**");
+        Fact objectAuthorization = objectAuthorization("customers", publicEndpoint);
+
+        List<Finding> findings = evaluate(List.of(
+                publicEndpoint,
+                protectedEndpoint,
+                chain,
+                policy("public-policy", chain, "PERMIT_ALL", "/api/customers/public", null, "PATH", 1),
+                policy("protected-policy", chain, "AUTHORITY_REQUIRED", "/api/customers/protected", "ROLE_STAFF", "PATH", 2),
+                objectAuthorization), readyStatuses(),
+                List.of(objectAuthorizationRelation(publicEndpoint, objectAuthorization)));
+
+        assertEquals(1, findings.size());
+        assertEquals("PUBLIC_ENDPOINT", findings.get(0).ruleId());
+        assertTrue(findings.get(0).evidenceIds().contains("endpoint-evidence-customers-public"));
+        assertTrue(!findings.get(0).evidenceIds().contains("endpoint-evidence-customers-protected"));
     }
 
     @Test
@@ -392,10 +471,14 @@ class SecurityRuleEngineTest {
     }
 
     private Fact endpoint(String key, String path) {
+        return endpoint(key, path, "Reports#" + key);
+    }
+
+    private Fact endpoint(String key, String path, String handler) {
         return fact("endpoint", key, "ENDPOINT_MAPPING", "endpoint|" + key, Map.of(
                 "httpMethod", "GET",
                 "path", path,
-                "handler", "Reports#" + key,
+                "handler", handler,
                 "mvcPathPatternSettings", "DEFAULT"));
     }
 
@@ -410,12 +493,24 @@ class SecurityRuleEngineTest {
     }
 
     private Fact policy(String key, Fact chain, String kind, String condition, String authority) {
+        return policy(key, chain, kind, condition, authority, "PATH", 1);
+    }
+
+    private Fact policy(
+            String key,
+            Fact chain,
+            String kind,
+            String condition,
+            String authority,
+            String matcherType,
+            int order
+    ) {
         Map<String, String> attributes = new LinkedHashMap<>();
         attributes.put("chainKey", chain.attributes().get("chainKey"));
         attributes.put("chainOrder", chain.attributes().get("chainOrder"));
-        attributes.put("policyOrder", "1");
+        attributes.put("policyOrder", Integer.toString(order));
         attributes.put("policyKind", kind);
-        attributes.put("policyMatcherType", "PATH");
+        attributes.put("policyMatcherType", matcherType);
         attributes.put("policyMatcherCondition", condition);
         attributes.put("pathPatternSettings", "DEFAULT");
         attributes.put("policySource", "URL");

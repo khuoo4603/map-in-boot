@@ -60,7 +60,7 @@ final class ChainOrderFindingRule {
                 if (!"ALL".equals(coverage)) {
                     break;
                 }
-                Fact laterPolicy = selectedPolicy(endpoint, laterChain, policies);
+                Fact laterPolicy = firstApplicablePolicy(endpoint, laterChain, policies);
                 if (laterPolicy != null && STRONGER_POLICIES.contains(laterPolicy.attributes().get("policyKind"))) {
                     Finding finding = finding(report, endpoint, selectedChain, selectedPolicy,
                             laterChain, laterPolicy, requirements);
@@ -158,10 +158,10 @@ final class ChainOrderFindingRule {
                 .orElse(null);
     }
 
-    private Fact selectedPolicy(Fact endpoint, Fact chain, List<Fact> policies) {
+    static Fact firstApplicablePolicy(Fact endpoint, Fact chain, List<Fact> policies) {
         List<Fact> chainPolicies = policies.stream()
                 .filter(policy -> chain.attributes().get("chainKey").equals(policy.attributes().get("chainKey")))
-                .sorted(Comparator.comparingInt(this::policyOrder).thenComparing(Fact::id))
+                .sorted(Comparator.comparingInt(ChainOrderFindingRule::policyOrder).thenComparing(Fact::id))
                 .toList();
         int expectedOrder = 1;
         for (Fact policy : chainPolicies) {
@@ -179,7 +179,7 @@ final class ChainOrderFindingRule {
         return null;
     }
 
-    private int policyOrder(Fact policy) {
+    private static int policyOrder(Fact policy) {
         try {
             return Integer.parseInt(policy.attributes().get("policyOrder"));
         } catch (RuntimeException exception) {

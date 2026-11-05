@@ -10,10 +10,12 @@ import java.util.stream.Stream;
 public class SecurityRuleEngine implements FindingEvaluator {
     private final ChainMissingFindingRule chainMissingRule = new ChainMissingFindingRule();
     private final ChainOrderFindingRule chainOrderRule = new ChainOrderFindingRule();
+    private final PublicEndpointFindingRule publicEndpointRule = new PublicEndpointFindingRule();
 
     @Override
     public List<Finding> evaluate(AnalysisReport report) {
-        return Stream.concat(chainMissingRule.evaluate(report).stream(), chainOrderRule.evaluate(report).stream())
+        return Stream.of(chainMissingRule.evaluate(report), chainOrderRule.evaluate(report), publicEndpointRule.evaluate(report))
+                .flatMap(List::stream)
                 .sorted(java.util.Comparator.comparing(Finding::id))
                 .toList();
     }
