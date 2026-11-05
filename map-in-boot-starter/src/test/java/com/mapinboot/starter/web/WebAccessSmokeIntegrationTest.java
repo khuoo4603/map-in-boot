@@ -32,6 +32,7 @@ import org.springframework.boot.autoconfigure.EnableAutoConfiguration;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.context.ConfigurableApplicationContext;
 import org.springframework.context.annotation.Bean;
+import org.springframework.http.MediaType;
 import org.springframework.security.config.Customizer;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.core.userdetails.User;
@@ -49,6 +50,7 @@ import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
@@ -100,8 +102,10 @@ class WebAccessSmokeIntegrationTest {
     void disabledWebDoesNotRegisterSdkRoutes() throws Exception {
         try (ConfigurableApplicationContext context = start(
                 AccessHost.class,
-                Map.of("mapinboot.web.enabled", "false", "mapinboot.snapshot.directory",
-                        tempDirectory.resolve("snapshots").toString()))) {
+                Map.of(
+                        "spring.profiles.active", "develop",
+                        "mapinboot.web.enabled", "false",
+                        "mapinboot.snapshot.directory", tempDirectory.resolve("snapshots").toString()))) {
             MockMvc mvc = MockMvcBuilders.webAppContextSetup((WebApplicationContext) context).build();
 
             mvc.perform(get("/mapinboot/api/status").with(principal(true)))
@@ -110,16 +114,38 @@ class WebAccessSmokeIntegrationTest {
                     .andExpect(status().isNotFound());
             mvc.perform(get("/mapinboot/smoke.txt").with(principal(true)))
                     .andExpect(status().isNotFound());
+            mvc.perform(get("/mapinboot/test").with(principal(true)))
+                    .andExpect(status().isNotFound());
         }
 
         try (ConfigurableApplicationContext context = start(
                 AccessHost.class,
-                Map.of("mapinboot.enabled", "false", "mapinboot.web.enabled", "true"))) {
+                Map.of(
+                        "spring.profiles.active", "develop",
+                        "mapinboot.enabled", "false",
+                        "mapinboot.web.enabled", "true"))) {
             MockMvc mvc = MockMvcBuilders.webAppContextSetup((WebApplicationContext) context).build();
 
             mvc.perform(get("/mapinboot/api/status").with(principal(true)))
                     .andExpect(status().isNotFound());
             mvc.perform(get("/mapinboot/smoke.txt").with(principal(true)))
+                    .andExpect(status().isNotFound());
+            mvc.perform(get("/mapinboot/test").with(principal(true)))
+                    .andExpect(status().isNotFound());
+        }
+    }
+
+    @Test
+    void developmentDiagnosticRouteIsUnavailableOutsideDevelopProfile() throws Exception {
+        try (ConfigurableApplicationContext context = start(
+                AccessHost.class,
+                Map.of(
+                        "spring.profiles.active", "production",
+                        "mapinboot.web.enabled", "true",
+                        "mapinboot.snapshot.directory", tempDirectory.resolve("production-snapshots").toString()))) {
+            MockMvc mvc = MockMvcBuilders.webAppContextSetup((WebApplicationContext) context).build();
+
+            mvc.perform(get("/mapinboot/test").with(principal(true)))
                     .andExpect(status().isNotFound());
         }
     }
@@ -181,8 +207,10 @@ class WebAccessSmokeIntegrationTest {
     void actualSecurityFilterChainProvidesPrincipalAndRoleToSdkAccessGuard() throws Exception {
         try (ConfigurableApplicationContext context = start(
                 SecurityHost.class,
-                Map.of("mapinboot.web.enabled", "true", "mapinboot.snapshot.directory",
-                        tempDirectory.resolve("security-snapshots").toString()))) {
+                Map.of(
+                        "spring.profiles.active", "develop",
+                        "mapinboot.web.enabled", "true",
+                        "mapinboot.snapshot.directory", tempDirectory.resolve("security-snapshots").toString()))) {
             MapInBootBootstrap bootstrap = context.getBean(MapInBootBootstrap.class);
             await(() -> bootstrap.persistedSnapshot() != null || bootstrap.failureCode() != null);
             MockMvc mvc = MockMvcBuilders.webAppContextSetup((WebApplicationContext) context)
@@ -195,6 +223,14 @@ class WebAccessSmokeIntegrationTest {
                     .andExpect(status().isForbidden());
             mvc.perform(get("/mapinboot/api/status").with(basic("admin", "password")))
                     .andExpect(status().isOk());
+            mvc.perform(get("/mapinboot/test"))
+                    .andExpect(status().isUnauthorized());
+            mvc.perform(get("/mapinboot/test").with(basic("viewer", "password")))
+                    .andExpect(status().isForbidden());
+            mvc.perform(get("/mapinboot/test").with(basic("admin", "password")))
+                    .andExpect(status().isOk())
+                    .andExpect(content().contentTypeCompatibleWith(MediaType.TEXT_HTML))
+                    .andExpect(content().string(org.hamcrest.Matchers.containsString("Map in Boot Development Diagnostics")));
             mvc.perform(get("/mapinboot/smoke.txt").with(basic("admin", "password")))
                     .andExpect(status().isOk());
             mvc.perform(post("/mapinboot/api/snapshot").with(basic("admin", "password")))
