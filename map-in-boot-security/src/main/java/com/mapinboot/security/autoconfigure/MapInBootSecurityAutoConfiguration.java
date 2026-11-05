@@ -2,6 +2,8 @@ package com.mapinboot.security.autoconfigure;
 
 import com.mapinboot.security.analyzer.EndpointChainMatchingAnalysisAdapter;
 import com.mapinboot.security.collector.SecurityChainCollectorAdapter;
+import com.mapinboot.security.finding.SecurityRuleEngine;
+import com.mapinboot.core.finding.FindingEvaluator;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
@@ -25,5 +27,11 @@ public class MapInBootSecurityAutoConfiguration {
     @ConditionalOnMissingBean(EndpointChainMatchingAnalysisAdapter.class)
     EndpointChainMatchingAnalysisAdapter endpointChainMatchingAnalysisAdapter() {
         return new EndpointChainMatchingAnalysisAdapter();
+    }
+
+    @Bean
+    @ConditionalOnMissingBean(FindingEvaluator.class)
+    SecurityRuleEngine securityRuleEngine() {
+        return new SecurityRuleEngine();
     }
 }

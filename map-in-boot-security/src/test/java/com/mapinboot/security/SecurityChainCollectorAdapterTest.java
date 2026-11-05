@@ -320,11 +320,13 @@ class SecurityChainCollectorAdapterTest {
                 RuntimeSecurityConfiguration.class, MapInBootSecurityAutoConfiguration.class)) {
             assertEquals(1, withSecurity.getBeansOfType(SecurityChainCollectorAdapter.class).size());
             assertEquals(1, withSecurity.getBeansOfType(EndpointChainMatchingAnalysisAdapter.class).size());
+            assertEquals(1, withSecurity.getBeansOfType(com.mapinboot.security.finding.SecurityRuleEngine.class).size());
         }
         try (AnnotationConfigApplicationContext withoutSecurity = context(
                 NoSecurityConfiguration.class, MapInBootSecurityAutoConfiguration.class)) {
             assertEquals(1, withoutSecurity.getBeansOfType(SecurityChainCollectorAdapter.class).size());
             assertEquals(1, withoutSecurity.getBeansOfType(EndpointChainMatchingAnalysisAdapter.class).size());
+            assertEquals(1, withoutSecurity.getBeansOfType(com.mapinboot.security.finding.SecurityRuleEngine.class).size());
         }
     }
 
@@ -338,6 +340,7 @@ class SecurityChainCollectorAdapterTest {
         try (context) {
             assertTrue(context.getBeansOfType(SecurityChainCollectorAdapter.class).isEmpty());
             assertTrue(context.getBeansOfType(EndpointChainMatchingAnalysisAdapter.class).isEmpty());
+            assertTrue(context.getBeansOfType(com.mapinboot.security.finding.SecurityRuleEngine.class).isEmpty());
         }
     }
 

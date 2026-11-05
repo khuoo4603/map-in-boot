@@ -751,6 +751,20 @@ public class EndpointChainMatchingAnalysisAdapter extends AbstractAnalysisAdapte
         return value == null || value.isBlank();
     }
 
+    // Finding Rule 공통 Chain·URL 정책 적용 범위 판정
+    public static String chainCoverage(Fact endpoint, Fact chain) {
+        EndpointChainMatchingAnalysisAdapter adapter = new EndpointChainMatchingAnalysisAdapter();
+        EndpointRequest request = adapter.endpointRequest(endpoint);
+        return request == null ? Coverage.UNKNOWN.name() : adapter.coverage(adapter.matcher(chain), request).name();
+    }
+
+    // Finding Rule 공통 URL 정책 적용 범위 판정
+    public static String policyCoverage(Fact endpoint, Fact policy) {
+        EndpointChainMatchingAnalysisAdapter adapter = new EndpointChainMatchingAnalysisAdapter();
+        EndpointRequest request = adapter.endpointRequest(endpoint);
+        return request == null ? Coverage.UNKNOWN.name() : adapter.coverage(adapter.policyMatcher(policy), request).name();
+    }
+
     private enum Coverage {
         ALL,
         NONE,

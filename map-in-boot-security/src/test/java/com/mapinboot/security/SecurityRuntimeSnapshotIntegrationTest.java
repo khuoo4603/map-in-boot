@@ -11,6 +11,7 @@ import com.mapinboot.core.collection.CollectionProvider;
 import com.mapinboot.core.collection.model.CollectionContext;
 import com.mapinboot.core.collection.model.CollectionReport;
 import com.mapinboot.core.common.status.AnalysisStatus;
+import com.mapinboot.core.common.status.Confidence;
 import com.mapinboot.core.common.type.EdgeType;
 import com.mapinboot.core.common.status.EvidenceSource;
 import com.mapinboot.core.evidence.Evidence;
@@ -21,6 +22,7 @@ import com.mapinboot.core.snapshot.Snapshot;
 import com.mapinboot.security.analyzer.EndpointChainMatchingAnalysisAdapter;
 import com.mapinboot.security.autoconfigure.MapInBootSecurityAutoConfiguration;
 import com.mapinboot.security.collector.SecurityChainCollectorAdapter;
+import com.mapinboot.security.finding.SecurityRuleEngine;
 import com.mapinboot.starter.collector.EndpointMappingCollectorAdapter;
 import com.mapinboot.starter.snapshot.SnapshotAssembler;
 import java.util.List;
@@ -54,6 +56,7 @@ class SecurityRuntimeSnapshotIntegrationTest {
         try (AnnotationConfigApplicationContext context = context(CompleteRuntimeConfiguration.class)) {
             SecurityChainCollectorAdapter chainCollector = context.getBean(SecurityChainCollectorAdapter.class);
             EndpointChainMatchingAnalysisAdapter analyzer = context.getBean(EndpointChainMatchingAnalysisAdapter.class);
+            SecurityRuleEngine ruleEngine = context.getBean(SecurityRuleEngine.class);
             assertNotNull(chainCollector);
             assertNotNull(analyzer);
 
@@ -76,9 +79,10 @@ class SecurityRuntimeSnapshotIntegrationTest {
             assertTrue(graph.edges().get(0).sourceId() != null);
             assertTrue(graph.edges().get(0).targetId() != null);
 
-            Snapshot snapshot = new SnapshotAssembler(List.of(), "1")
+            Snapshot snapshot = new SnapshotAssembler(List.of(ruleEngine), "1")
                     .assemble(analysis, "main", "instance", "test");
             assertEquals(2, snapshot.edges().size());
+            assertTrue(snapshot.findings().isEmpty());
             assertTrue(snapshot.analysisStatus().containsKey(analyzer.id()));
             assertTrue(snapshot.edges().get(0).evidenceIds().stream()
                     .allMatch(id -> snapshot.evidence().stream().anyMatch(evidence -> evidence.id().equals(id))));
@@ -199,7 +203,32 @@ class SecurityRuntimeSnapshotIntegrationTest {
                 .run(context -> {
                     assertEquals(1, context.getBeansOfType(SecurityChainCollectorAdapter.class).size());
                     assertEquals(1, context.getBeansOfType(EndpointChainMatchingAnalysisAdapter.class).size());
+                    assertEquals(1, context.getBeansOfType(SecurityRuleEngine.class).size());
                 });
+    }
+
+    @Test
+    void assemblesLikelyChainOrderRuntimeFromProvenUrlPolicyCovering() throws Exception {
+        try (AnnotationConfigApplicationContext context = context(ChainOrderRuntimeConfiguration.class)) {
+            SecurityChainCollectorAdapter chainCollector = context.getBean(SecurityChainCollectorAdapter.class);
+            EndpointChainMatchingAnalysisAdapter analyzer = context.getBean(EndpointChainMatchingAnalysisAdapter.class);
+            SecurityRuleEngine ruleEngine = context.getBean(SecurityRuleEngine.class);
+
+            CollectionReport collection = collect(context, chainCollector);
+            AnalysisReport analysis = new AnalysisProvider().execute(
+                    new AnalysisContext(collection, "main"), List.of(analyzer));
+            Snapshot snapshot = new SnapshotAssembler(List.of(ruleEngine), "1")
+                    .assemble(analysis, "main", "instance", "test");
+
+            assertEquals(1, context.getBeansOfType(com.mapinboot.core.finding.FindingEvaluator.class).size());
+            assertEquals(1, snapshot.findings().size());
+            assertEquals("CHAIN_ORDER", snapshot.findings().get(0).ruleId());
+            assertEquals(Confidence.LIKELY, snapshot.findings().get(0).confidence());
+            assertTrue(snapshot.evidence().stream()
+                    .map(Evidence::id)
+                    .collect(java.util.stream.Collectors.toSet())
+                    .containsAll(snapshot.findings().get(0).evidenceIds()));
+        }
     }
 
     private AnnotationConfigApplicationContext context(Class<?> configuration) {
@@ -312,11 +341,58 @@ class SecurityRuntimeSnapshotIntegrationTest {
         }
     }
 
+    @Configuration(proxyBeanMethods = false)
+    static class ChainOrderRuntimeConfiguration {
+
+        @Bean
+        FilterChainProxy springSecurityFilterChain() {
+            return new FilterChainProxy(List.of(
+                    chain(PathPatternRequestMatcher.pathPattern("/api/reports/**"), permitAllFilter()),
+                    chain(PathPatternRequestMatcher.pathPattern("/api/reports/summary"), authorityFilter())));
+        }
+
+        private AuthorizationFilter permitAllFilter() {
+            RequestMatcherDelegatingAuthorizationManager manager =
+                    RequestMatcherDelegatingAuthorizationManager.builder()
+                            .anyRequest()
+                            .permitAll()
+                            .build();
+            return new AuthorizationFilter(manager);
+        }
+
+        private AuthorizationFilter authorityFilter() {
+            RequestMatcherDelegatingAuthorizationManager manager =
+                    RequestMatcherDelegatingAuthorizationManager.builder()
+                            .anyRequest()
+                            .hasAuthority("ROLE_STAFF")
+                            .build();
+            return new AuthorizationFilter(manager);
+        }
+
+        @Bean
+        ReportsController reportsController() {
+            return new ReportsController();
+        }
+
+        @Bean
+        RequestMappingHandlerMapping requestMappingHandlerMapping() {
+            return new RequestMappingHandlerMapping();
+        }
+    }
+
     @Controller
     static class RuntimeController {
 
         @RequestMapping(path = "/api/orders", method = RequestMethod.GET)
         public void orders() {
+        }
+    }
+
+    @Controller
+    static class ReportsController {
+
+        @RequestMapping(path = "/api/reports/summary", method = RequestMethod.GET)
+        public void summary() {
         }
     }
 
