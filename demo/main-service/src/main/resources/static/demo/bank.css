@@ -18,6 +18,10 @@
     --shadow-card: 0 12px 30px rgba(34, 72, 64, 0.08);
 }
 
+[hidden] {
+    display: none !important;
+}
+
 * {
     box-sizing: border-box;
 }
@@ -320,6 +324,67 @@ select:focus-visible {
     background: #edf5f3;
 }
 
+.notice-list,
+.product-list {
+    padding: 0;
+    margin: auto 0 0;
+    list-style: none;
+}
+
+.notice-item {
+    display: grid;
+    gap: 3px;
+    padding: 12px 0;
+    border-bottom: 1px solid var(--color-line);
+}
+
+.notice-item:first-child {
+    padding-top: 20px;
+}
+
+.notice-item:last-child {
+    padding-bottom: 0;
+    border-bottom: 0;
+}
+
+.notice-item strong {
+    overflow: hidden;
+    color: #3f5752;
+    font-size: 13px;
+    font-weight: 700;
+    letter-spacing: -0.04em;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.notice-item time {
+    color: var(--color-muted-text);
+    font-size: 11px;
+}
+
+.button-secondary {
+    color: var(--color-brand-dark);
+    background: #e7f3ef;
+}
+
+.button-secondary:hover {
+    background: #d6ece5;
+}
+
+.logout-link {
+    color: var(--color-brand-dark);
+    background: transparent;
+    cursor: pointer;
+}
+
+.user-label {
+    max-width: 150px;
+    overflow: hidden;
+    color: #45645d;
+    font-weight: 700;
+    text-overflow: ellipsis;
+}
+
 .main-banner {
     position: relative;
     display: flex;
@@ -450,13 +515,18 @@ select:focus-visible {
     justify-items: center;
     gap: 11px;
     padding: 14px 8px;
-    color: var(--color-disabled);
+    color: #57766e;
     background: rgba(255, 255, 255, 0.78);
     border: 1px solid rgba(217, 230, 225, 0.9);
     border-radius: 18px;
-    cursor: not-allowed;
+    cursor: pointer;
     font-size: 12px;
     letter-spacing: -0.04em;
+}
+
+.service-tile:disabled {
+    color: var(--color-disabled);
+    cursor: not-allowed;
 }
 
 .service-tile:not(:disabled):hover {
@@ -505,6 +575,146 @@ select:focus-visible {
     color: var(--color-muted-text);
     font-size: 12px;
     letter-spacing: -0.04em;
+}
+
+.product-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: var(--content-gap);
+    margin-top: 42px;
+}
+
+.product-panel {
+    min-height: 260px;
+}
+
+.product-heading {
+    align-items: start;
+    margin-bottom: 0;
+}
+
+.product-list {
+    display: grid;
+    gap: 10px;
+    margin-top: 18px;
+}
+
+.product-item {
+    display: grid;
+    gap: 3px;
+    padding: 13px 15px;
+    background: var(--color-muted-surface);
+    border-radius: 14px;
+}
+
+.product-item strong {
+    color: #3f5752;
+    font-size: 14px;
+    letter-spacing: -0.04em;
+}
+
+.product-item span {
+    color: var(--color-muted-text);
+    font-size: 12px;
+    letter-spacing: -0.04em;
+}
+
+.login-main {
+    padding: 72px 0 92px;
+}
+
+.login-layout {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(390px, 500px);
+    gap: 90px;
+    align-items: center;
+    max-width: 1050px;
+    margin: 0 auto;
+}
+
+.login-copy h1 {
+    margin: 0;
+    color: #1f3934;
+    font-size: clamp(30px, 4vw, 48px);
+    letter-spacing: -0.08em;
+    line-height: 1.3;
+}
+
+.login-copy h1 span {
+    color: var(--color-brand);
+}
+
+.login-copy > p:not(.eyebrow) {
+    margin: 20px 0 0;
+    color: var(--color-muted-text);
+    font-size: 14px;
+    letter-spacing: -0.04em;
+}
+
+.login-notice {
+    margin-top: 28px;
+}
+
+.login-card {
+    min-height: 0;
+}
+
+.account-picker {
+    margin-top: 25px;
+}
+
+.field-label {
+    display: block;
+    margin: 0 0 7px;
+    color: #4e6761;
+    font-size: 12px;
+    font-weight: 700;
+}
+
+.account-options {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 7px;
+}
+
+.account-options button {
+    min-height: 36px;
+    padding: 0 6px;
+    color: #5c756e;
+    background: var(--color-muted-surface);
+    border: 1px solid transparent;
+    border-radius: 9px;
+    cursor: pointer;
+    font-size: 11px;
+    letter-spacing: -0.05em;
+}
+
+.account-options button:hover,
+.account-options button:focus-visible {
+    color: var(--color-brand-dark);
+    background: #e9f6f1;
+    border-color: #b9ddd2;
+}
+
+.login-form {
+    display: grid;
+    gap: 8px;
+    margin-top: 23px;
+}
+
+.login-form .field + .field-label {
+    margin-top: 7px;
+}
+
+.login-form .status-message {
+    margin-top: 5px;
+}
+
+.login-return {
+    margin: 15px 0 0;
+    color: var(--color-muted-text);
+    font-size: 11px;
+    text-align: center;
 }
 
 .site-footer {
@@ -643,6 +853,12 @@ select:focus-visible {
         grid-column: 2;
         grid-row: 2;
     }
+
+    .login-layout {
+        grid-template-columns: 1fr;
+        gap: 36px;
+        max-width: 560px;
+    }
 }
 
 @media (max-width: 640px) {
@@ -667,6 +883,7 @@ select:focus-visible {
     }
 
     .portal-grid,
+    .product-grid,
     .support-grid {
         grid-template-columns: 1fr;
     }
@@ -691,6 +908,22 @@ select:focus-visible {
     .card {
         min-height: 230px;
         padding: 23px;
+    }
+
+    .product-panel {
+        min-height: 0;
+    }
+
+    .login-main {
+        padding: 42px 0 58px;
+    }
+
+    .login-copy h1 {
+        font-size: 31px;
+    }
+
+    .account-options {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
     }
 
     .section-heading-row {
