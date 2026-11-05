@@ -15,6 +15,7 @@ import com.mapinboot.core.evidence.Evidence;
 import com.mapinboot.core.evidence.Fact;
 import com.mapinboot.core.evidence.Relation;
 import com.mapinboot.core.graph.GraphBuilder;
+import com.mapinboot.core.graph.GraphFingerprintGenerator;
 import com.mapinboot.core.graph.model.SecurityGraph;
 import com.mapinboot.security.analyzer.EndpointChainMatchingAnalysisAdapter;
 import java.util.LinkedHashMap;
@@ -34,6 +35,235 @@ class EndpointChainMatchingAnalysisAdapterTest {
         assertEquals(AnalysisStatus.READY, status(report));
         assertEquals(1, report.relations().size());
         assertRelation(report.relations().get(0), endpoint, chain);
+    }
+
+    @Test
+    void mergesSecuredByEvidenceForTwoEndpointsSharingAHandlerAndPolicy() {
+        Fact getEndpoint = endpoint("orders-get", "GET", "/api/orders");
+        Fact postEndpoint = endpoint("orders-post", "POST", "/api/orders");
+        Fact chain = chain("api", 1, "PATH", "/api/**");
+        Fact policy = policy("authenticated", chain, 1, "AUTHENTICATED", "ANY", "ANY", null);
+
+        AnalysisReport report = execute(
+                List.of(getEndpoint, postEndpoint, chain, policy), readyStatuses());
+
+        assertEquals(AnalysisStatus.READY, status(report));
+        assertEquals(2, report.relations().stream()
+                .filter(relation -> relation.type() == EdgeType.MATCHED_BY)
+                .count());
+        List<Relation> securedBy = report.relations().stream()
+                .filter(relation -> relation.type() == EdgeType.SECURED_BY)
+                .toList();
+        assertEquals(1, securedBy.size());
+        assertEquals(List.of("endpoint-evidence-orders-get", "endpoint-evidence-orders-post",
+                        "policy-evidence-authenticated"),
+                securedBy.get(0).evidenceIds());
+        assertTrue(report.diagnostics().stream().noneMatch(diagnostic ->
+                diagnostic.summary().contains("Relation ID 충돌")));
+    }
+
+    @Test
+    void keepsSecuredByRelationsSeparateForDifferentPolicies() {
+        Fact getEndpoint = endpoint("orders-get", "GET", "/api/orders");
+        Fact postEndpoint = endpoint("orders-post", "POST", "/api/orders");
+        Fact chain = chain("api", 1, "PATH", "/api/**");
+        Fact getPolicy = policy("get-policy", chain, 1, "AUTHENTICATED", "METHOD_PATH",
+                "GET /api/orders", null);
+        Fact postPolicy = policy("post-policy", chain, 2, "AUTHORITY_REQUIRED", "METHOD_PATH",
+                "POST /api/orders", "ROLE_STAFF");
+
+        AnalysisReport report = execute(
+                List.of(getEndpoint, postEndpoint, chain, getPolicy, postPolicy), readyStatuses());
+
+        assertEquals(AnalysisStatus.READY, status(report));
+        List<Relation> securedBy = report.relations().stream()
+                .filter(relation -> relation.type() == EdgeType.SECURED_BY)
+                .toList();
+        assertEquals(2, securedBy.size());
+        assertTrue(securedBy.stream().anyMatch(relation ->
+                relation.targetKey().equals(getPolicy.subjectKey())
+                        && relation.attributes().get("policyKind").equals("AUTHENTICATED")
+                        && relation.evidenceIds().equals(List.of(
+                                "endpoint-evidence-orders-get", "policy-evidence-get-policy"))));
+        assertTrue(securedBy.stream().anyMatch(relation ->
+                relation.targetKey().equals(postPolicy.subjectKey())
+                        && relation.attributes().get("policyKind").equals("AUTHORITY_REQUIRED")
+                        && relation.evidenceIds().equals(List.of(
+                                "endpoint-evidence-orders-post", "policy-evidence-post-policy"))));
+    }
+
+    @Test
+    void keepsSecuredByIdEvidenceAndGraphFingerprintStableWhenEndpointOrderChanges() {
+        Fact getEndpoint = endpoint("orders-get", "GET", "/api/orders");
+        Fact postEndpoint = endpoint("orders-post", "POST", "/api/orders");
+        Fact chain = chain("api", 1, "PATH", "/api/**");
+        Fact policy = policy("authenticated", chain, 1, "AUTHENTICATED", "ANY", "ANY", null);
+
+        AnalysisReport first = execute(
+                List.of(getEndpoint, postEndpoint, chain, policy), readyStatuses());
+        AnalysisReport reordered = execute(
+                List.of(postEndpoint, getEndpoint, chain, policy), readyStatuses());
+
+        Relation firstSecuredBy = first.relations().stream()
+                .filter(relation -> relation.type() == EdgeType.SECURED_BY)
+                .findFirst().orElseThrow();
+        Relation reorderedSecuredBy = reordered.relations().stream()
+                .filter(relation -> relation.type() == EdgeType.SECURED_BY)
+                .findFirst().orElseThrow();
+        assertEquals(firstSecuredBy.id(), reorderedSecuredBy.id());
+        assertEquals(firstSecuredBy.evidenceIds(), reorderedSecuredBy.evidenceIds());
+
+        SecurityGraph firstGraph = new GraphBuilder().build("main", first);
+        SecurityGraph reorderedGraph = new GraphBuilder().build("main", reordered);
+        assertEquals(new GraphFingerprintGenerator().generate(firstGraph),
+                new GraphFingerprintGenerator().generate(reorderedGraph));
+    }
+
+    @Test
+    void reportsAnalyzerDiagnosticWhenSameSecuredByIdHasConflictingAttributes() {
+        Fact getEndpoint = endpoint("orders-get", "GET", "/api/orders");
+        Fact postEndpoint = endpoint("orders-post", "POST", "/api/orders");
+        Fact chain = chain("api", 1, "PATH", "/api/**");
+        Fact getPolicy = policy("shared-policy", chain, 1, "AUTHENTICATED", "METHOD_PATH",
+                "GET /api/orders", null);
+        Fact postPolicy = policy("shared-policy", chain, 2, "AUTHORITY_REQUIRED", "METHOD_PATH",
+                "POST /api/orders", "ROLE_STAFF");
+
+        AnalysisReport report = execute(
+                List.of(getEndpoint, postEndpoint, chain, getPolicy, postPolicy), readyStatuses());
+
+        assertEquals(AnalysisStatus.PARTIAL, status(report));
+        assertEquals(0, report.relations().stream()
+                .filter(relation -> relation.type() == EdgeType.SECURED_BY)
+                .count());
+        assertTrue(report.diagnostics().stream().anyMatch(diagnostic ->
+                diagnostic.summary().contains("SECURED_BY")));
+        assertTrue(report.diagnostics().stream().noneMatch(diagnostic ->
+                diagnostic.summary().contains("Relation ID 충돌")));
+    }
+
+    @Test
+    void connectsEndpointToTheFirstMatchingUrlPolicyOfTheSelectedChain() {
+        Fact endpoint = endpoint("orders", "GET", "/api/orders");
+        Fact chain = chain("api", 1, "PATH", "/api/**");
+        Fact publicPolicy = policy("public", chain, 1, "PERMIT_ALL", "PATH", "/api/public/**", null);
+        Fact staffPolicy = policy("staff", chain, 2, "AUTHORITY_REQUIRED", "METHOD_PATH",
+                "GET /api/orders", "ROLE_STAFF");
+        Fact fallbackPolicy = policy("fallback", chain, 3, "AUTHENTICATED", "ANY", "ANY", null);
+
+        AnalysisReport report = execute(
+                List.of(endpoint, chain, publicPolicy, staffPolicy, fallbackPolicy), readyStatuses());
+
+        assertEquals(2, report.relations().size());
+        Relation securedBy = report.relations().stream()
+                .filter(relation -> relation.type() == EdgeType.SECURED_BY)
+                .findFirst().orElseThrow();
+        assertEquals("Orders#handle", securedBy.sourceKey());
+        assertEquals(staffPolicy.subjectKey(), securedBy.targetKey());
+        assertEquals("AUTHORIZATION", securedBy.attributes().get("securityKind"));
+        assertEquals("URL", securedBy.attributes().get("policySource"));
+        assertEquals("AUTHORITY_REQUIRED", securedBy.attributes().get("policyKind"));
+        assertEquals("ROLE_STAFF", securedBy.attributes().get("requiredAuthority"));
+        assertEquals(Confidence.CONFIRMED, securedBy.confidence());
+
+        SecurityGraph graph = new GraphBuilder().build("main", report);
+        assertTrue(graph.edges().stream().anyMatch(edge -> edge.type() == EdgeType.SECURED_BY));
+    }
+
+    @Test
+    void preservesPermitAllAsUrlPolicyWithoutInferringSensitivity() {
+        Fact endpoint = endpoint("public", "GET", "/api/public");
+        Fact chain = chain("api", 1, "PATH", "/api/**");
+        Fact policy = policy("public", chain, 1, "PERMIT_ALL", "PATH", "/api/public", null);
+
+        AnalysisReport report = execute(List.of(endpoint, chain, policy), readyStatuses());
+
+        Relation securedBy = report.relations().stream()
+                .filter(relation -> relation.type() == EdgeType.SECURED_BY)
+                .findFirst().orElseThrow();
+        assertEquals("PERMIT_ALL", securedBy.attributes().get("policyKind"));
+        assertEquals(AnalysisStatus.READY, status(report));
+    }
+
+    @Test
+    void doesNotSkipUnknownUrlPolicyToConfirmALaterPolicy() {
+        Fact endpoint = endpoint("orders", "GET", "/api/orders");
+        Fact chain = chain("api", 1, "PATH", "/api/**");
+        Fact unknownPolicy = policy("unknown", chain, 1, "UNKNOWN", "PATH", "/api/orders", null);
+        Fact laterPolicy = policy("later", chain, 2, "AUTHENTICATED", "ANY", "ANY", null);
+
+        AnalysisReport report = execute(List.of(endpoint, chain, unknownPolicy, laterPolicy), readyStatuses());
+
+        assertTrue(report.relations().stream().noneMatch(relation -> relation.type() == EdgeType.SECURED_BY));
+        assertEquals(AnalysisStatus.PARTIAL, status(report));
+    }
+
+    @Test
+    void doesNotConfirmUrlPolicyWhenTheFirstPolicyOrderIsMissing() {
+        Fact endpoint = endpoint("orders", "GET", "/api/orders");
+        Fact chain = chain("api", 1, "PATH", "/api/**");
+        Fact secondPolicy = policy("second", chain, 2, "AUTHENTICATED", "ANY", "ANY", null);
+
+        AnalysisReport report = execute(List.of(endpoint, chain, secondPolicy), readyStatuses());
+
+        assertTrue(report.relations().stream().noneMatch(relation -> relation.type() == EdgeType.SECURED_BY));
+        assertEquals(AnalysisStatus.PARTIAL, status(report));
+    }
+
+    @Test
+    void doesNotConfirmLaterUrlPolicyWhenAnIntermediatePolicyOrderIsMissing() {
+        Fact endpoint = endpoint("orders", "GET", "/api/orders");
+        Fact chain = chain("api", 1, "PATH", "/api/**");
+        Fact firstPolicy = policy("first", chain, 1, "PERMIT_ALL", "PATH", "/api/other", null);
+        Fact thirdPolicy = policy("third", chain, 3, "AUTHENTICATED", "ANY", "ANY", null);
+
+        AnalysisReport report = execute(List.of(endpoint, chain, firstPolicy, thirdPolicy), readyStatuses());
+
+        assertTrue(report.relations().stream().noneMatch(relation -> relation.type() == EdgeType.SECURED_BY));
+        assertEquals(AnalysisStatus.PARTIAL, status(report));
+    }
+
+    @Test
+    void doesNotConfirmUrlPolicyWhenPolicyOrdersAreDuplicated() {
+        Fact endpoint = endpoint("orders", "GET", "/api/orders");
+        Fact chain = chain("api", 1, "PATH", "/api/**");
+        Fact firstPolicy = policy("first", chain, 1, "PERMIT_ALL", "PATH", "/api/orders", null);
+        Fact duplicatePolicy = policy("duplicate", chain, 1, "AUTHENTICATED", "ANY", "ANY", null);
+
+        AnalysisReport report = execute(List.of(endpoint, chain, firstPolicy, duplicatePolicy), readyStatuses());
+
+        assertTrue(report.relations().stream().noneMatch(relation -> relation.type() == EdgeType.SECURED_BY));
+        assertEquals(AnalysisStatus.PARTIAL, status(report));
+    }
+
+    @Test
+    void doesNotConnectPolicyWithMismatchedChainIdentity() {
+        Fact endpoint = endpoint("orders", "GET", "/api/orders");
+        Fact chain = chain("api", 1, "PATH", "/api/**");
+        Fact policy = policy("wrong-proxy", chain, 1, "AUTHENTICATED", "ANY", "ANY", null);
+        Map<String, String> attributes = new LinkedHashMap<>(policy.attributes());
+        attributes.put("proxyBeanName", "other-proxy");
+        policy = new Fact(policy.id(), policy.type(), policy.subjectKey(), attributes, policy.evidenceIds());
+
+        AnalysisReport report = execute(List.of(endpoint, chain, policy), readyStatuses());
+
+        assertTrue(report.relations().stream().noneMatch(relation -> relation.type() == EdgeType.SECURED_BY));
+        assertEquals(AnalysisStatus.PARTIAL, status(report));
+    }
+
+    @Test
+    void carriesAuthorityOperatorToSecuredByRelation() {
+        Fact endpoint = endpoint("orders", "GET", "/api/orders");
+        Fact chain = chain("api", 1, "PATH", "/api/**");
+        Fact policy = policy("any-authority", chain, 1, "COMPOSITE_AUTHORITY", "PATH",
+                "/api/orders", "ROLE_A,ROLE_B", "ANY");
+
+        AnalysisReport report = execute(List.of(endpoint, chain, policy), readyStatuses());
+
+        Relation securedBy = report.relations().stream()
+                .filter(relation -> relation.type() == EdgeType.SECURED_BY)
+                .findFirst().orElseThrow();
+        assertEquals("ANY", securedBy.attributes().get("authorityOperator"));
     }
 
     @Test
@@ -383,5 +613,49 @@ class EndpointChainMatchingAnalysisAdapterTest {
         return new Fact("chain-fact-" + proxyBeanName + "-" + key, "SECURITY_CHAIN",
                 "chain|" + proxyBeanName + "|" + key, attributes,
                 List.of("chain-evidence-" + proxyBeanName + "-" + key));
+    }
+
+    private Fact policy(
+            String key,
+            Fact chain,
+            int order,
+            String policyKind,
+            String matcherType,
+            String matcherCondition,
+            String requiredAuthority
+    ) {
+        return policy(key, chain, order, policyKind, matcherType, matcherCondition, requiredAuthority, null);
+    }
+
+    private Fact policy(
+            String key,
+            Fact chain,
+            int order,
+            String policyKind,
+            String matcherType,
+            String matcherCondition,
+            String requiredAuthority,
+            String authorityOperator
+    ) {
+        Map<String, String> attributes = new LinkedHashMap<>();
+        attributes.put("chainKey", chain.attributes().get("chainKey"));
+        attributes.put("chainOrder", chain.attributes().get("chainOrder"));
+        attributes.put("policyOrder", Integer.toString(order));
+        attributes.put("policyKind", policyKind);
+        attributes.put("policyMatcherType", matcherType);
+        attributes.put("policyMatcherCondition", matcherCondition);
+        attributes.put("policySource", "URL");
+        attributes.put("proxyBeanName", chain.attributes().get("proxyBeanName"));
+        if (requiredAuthority != null) {
+            attributes.put("requiredAuthority", requiredAuthority);
+        }
+        if (authorityOperator != null) {
+            attributes.put("authorityOperator", authorityOperator);
+        }
+        if (matcherCondition.contains("/")) {
+            attributes.put("pathPatternSettings", "DEFAULT");
+        }
+        return new Fact("policy-fact-" + key, "URL_AUTHORIZATION", "policy|" + key,
+                attributes, List.of("policy-evidence-" + key));
     }
 }

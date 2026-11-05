@@ -11,6 +11,10 @@ import com.mapinboot.core.collection.CollectionProvider;
 import com.mapinboot.core.collection.model.CollectionContext;
 import com.mapinboot.core.collection.model.CollectionReport;
 import com.mapinboot.core.common.status.AnalysisStatus;
+import com.mapinboot.core.common.type.EdgeType;
+import com.mapinboot.core.common.status.EvidenceSource;
+import com.mapinboot.core.evidence.Evidence;
+import com.mapinboot.core.evidence.Fact;
 import com.mapinboot.core.graph.GraphBuilder;
 import com.mapinboot.core.graph.model.SecurityGraph;
 import com.mapinboot.core.snapshot.Snapshot;
@@ -21,6 +25,7 @@ import com.mapinboot.starter.collector.EndpointMappingCollectorAdapter;
 import com.mapinboot.starter.snapshot.SnapshotAssembler;
 import java.util.List;
 import java.util.stream.IntStream;
+import java.util.stream.Stream;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.autoconfigure.EnableAutoConfiguration;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
@@ -32,6 +37,8 @@ import org.springframework.mock.web.MockHttpServletRequest;
 import org.springframework.security.web.DefaultSecurityFilterChain;
 import org.springframework.security.web.FilterChainProxy;
 import org.springframework.security.web.SecurityFilterChain;
+import org.springframework.security.web.access.intercept.AuthorizationFilter;
+import org.springframework.security.web.access.intercept.RequestMatcherDelegatingAuthorizationManager;
 import org.springframework.security.web.servlet.util.matcher.PathPatternRequestMatcher;
 import org.springframework.security.web.util.matcher.AnyRequestMatcher;
 import org.springframework.security.web.util.matcher.RequestMatcher;
@@ -55,23 +62,81 @@ class SecurityRuntimeSnapshotIntegrationTest {
             assertEquals(AnalysisStatus.READY, collection.statusByAdapter().get("security-chain"));
             assertTrue(collection.facts().stream().anyMatch(fact -> "ENDPOINT_MAPPING".equals(fact.type())));
             assertTrue(collection.facts().stream().anyMatch(fact -> "SECURITY_CHAIN".equals(fact.type())));
+            assertTrue(collection.facts().stream().anyMatch(fact -> "URL_AUTHORIZATION".equals(fact.type())));
 
             AnalysisReport analysis = new AnalysisProvider().execute(
                     new AnalysisContext(collection, "main"), List.of(analyzer));
             assertEquals(AnalysisStatus.READY, analysis.statusByAdapter().get(analyzer.id()));
-            assertEquals(1, analysis.relations().size());
+            assertEquals(2, analysis.relations().size());
+            assertTrue(analysis.relations().stream().anyMatch(relation -> relation.type() == EdgeType.MATCHED_BY));
+            assertTrue(analysis.relations().stream().anyMatch(relation -> relation.type() == EdgeType.SECURED_BY));
 
             SecurityGraph graph = new GraphBuilder().build("main", analysis);
-            assertEquals(1, graph.edges().size());
+            assertEquals(2, graph.edges().size());
             assertTrue(graph.edges().get(0).sourceId() != null);
             assertTrue(graph.edges().get(0).targetId() != null);
 
             Snapshot snapshot = new SnapshotAssembler(List.of(), "1")
                     .assemble(analysis, "main", "instance", "test");
-            assertEquals(1, snapshot.edges().size());
+            assertEquals(2, snapshot.edges().size());
             assertTrue(snapshot.analysisStatus().containsKey(analyzer.id()));
             assertTrue(snapshot.edges().get(0).evidenceIds().stream()
                     .allMatch(id -> snapshot.evidence().stream().anyMatch(evidence -> evidence.id().equals(id))));
+        }
+    }
+
+    @Test
+    void assemblesSharedHandlerSecuredByEvidenceThroughSnapshotPath() throws Exception {
+        try (AnnotationConfigApplicationContext context = context(SharedHandlerRuntimeConfiguration.class)) {
+            SecurityChainCollectorAdapter chainCollector = context.getBean(SecurityChainCollectorAdapter.class);
+            EndpointChainMatchingAnalysisAdapter analyzer = context.getBean(EndpointChainMatchingAnalysisAdapter.class);
+            CollectionReport collected = collect(context, chainCollector);
+            Fact getEndpoint = collected.facts().stream()
+                    .filter(fact -> "ENDPOINT_MAPPING".equals(fact.type()))
+                    .findFirst().orElseThrow();
+            String handler = getEndpoint.attributes().get("handler");
+            Fact postEndpoint = new Fact(
+                    "endpoint-fact-runtime-post",
+                    "ENDPOINT_MAPPING",
+                    "endpoint|runtime-post",
+                    java.util.Map.of(
+                            "httpMethod", "POST",
+                            "path", "/api/orders",
+                            "handler", handler,
+                            "mvcPathPatternSettings", "DEFAULT"),
+                    List.of("endpoint-evidence-runtime-post"));
+            Evidence postEvidence = new Evidence(
+                    "endpoint-evidence-runtime-post", EvidenceSource.RUNTIME, "test", "test endpoint");
+            CollectionReport collection = new CollectionReport(
+                    Stream.concat(collected.facts().stream(), Stream.of(postEndpoint)).toList(),
+                    Stream.concat(collected.evidence().stream(), Stream.of(postEvidence)).toList(),
+                    collected.statusByAdapter(), collected.diagnostics());
+
+            AnalysisReport analysis = new AnalysisProvider().execute(
+                    new AnalysisContext(collection, "main"), List.of(analyzer));
+            assertEquals(AnalysisStatus.READY, analysis.statusByAdapter().get(analyzer.id()));
+            assertEquals(2, analysis.relations().stream()
+                    .filter(relation -> relation.type() == EdgeType.MATCHED_BY)
+                    .count());
+            List<String> securedEvidence = analysis.relations().stream()
+                    .filter(relation -> relation.type() == EdgeType.SECURED_BY)
+                    .findFirst().orElseThrow().evidenceIds();
+            assertEquals(1, analysis.relations().stream()
+                    .filter(relation -> relation.type() == EdgeType.SECURED_BY)
+                    .count());
+            assertTrue(securedEvidence.contains("endpoint-evidence-runtime-post"));
+            assertTrue(securedEvidence.contains(getEndpoint.evidenceIds().get(0)));
+            assertTrue(analysis.diagnostics().stream().noneMatch(diagnostic ->
+                    diagnostic.summary().contains("Relation ID 충돌")));
+
+            SecurityGraph graph = new GraphBuilder().build("main", analysis);
+            assertEquals(3, graph.edges().size());
+            Snapshot snapshot = new SnapshotAssembler(List.of(), "1")
+                    .assemble(analysis, "main", "instance", "test");
+            assertEquals(3, snapshot.edges().size());
+            assertTrue(snapshot.edges().stream().flatMap(edge -> edge.evidenceIds().stream())
+                    .allMatch(id -> snapshot.evidence().stream()
+                            .anyMatch(evidence -> evidence.id().equals(id))));
         }
     }
 
@@ -114,8 +179,16 @@ class SecurityRuntimeSnapshotIntegrationTest {
             assertEquals("GET", collection.facts().stream()
                     .filter(fact -> "ENDPOINT_MAPPING".equals(fact.type()))
                     .findFirst().orElseThrow().attributes().get("httpMethod"));
-            assertEquals(1, analysis.relations().size());
-            assertEquals("1", analysis.relations().get(0).attributes().get("chainOrder"));
+            assertEquals(2, analysis.relations().size());
+            assertEquals(1, analysis.relations().stream()
+                    .filter(relation -> relation.type() == EdgeType.MATCHED_BY)
+                    .count());
+            assertEquals(1, analysis.relations().stream()
+                    .filter(relation -> relation.type() == EdgeType.SECURED_BY)
+                    .count());
+            assertEquals("1", analysis.relations().stream()
+                    .filter(relation -> relation.type() == EdgeType.MATCHED_BY)
+                    .findFirst().orElseThrow().attributes().get("chainOrder"));
         }
     }
 
@@ -164,8 +237,47 @@ class SecurityRuntimeSnapshotIntegrationTest {
         @Bean
         FilterChainProxy springSecurityFilterChain() {
             return new FilterChainProxy(List.of(
-                    chain(PathPatternRequestMatcher.pathPattern(HttpMethod.GET, "/api/orders")),
+                    chain(PathPatternRequestMatcher.pathPattern(HttpMethod.GET, "/api/orders"), authorizationFilter()),
                     chain(AnyRequestMatcher.INSTANCE)));
+        }
+
+        private AuthorizationFilter authorizationFilter() {
+            RequestMatcherDelegatingAuthorizationManager manager =
+                    RequestMatcherDelegatingAuthorizationManager.builder()
+                            .anyRequest()
+                            .authenticated()
+                            .build();
+            return new AuthorizationFilter(manager);
+        }
+
+        @Bean
+        RuntimeController runtimeController() {
+            return new RuntimeController();
+        }
+
+        @Bean
+        RequestMappingHandlerMapping requestMappingHandlerMapping() {
+            return new RequestMappingHandlerMapping();
+        }
+    }
+
+    @Configuration(proxyBeanMethods = false)
+    static class SharedHandlerRuntimeConfiguration {
+
+        @Bean
+        FilterChainProxy springSecurityFilterChain() {
+            return new FilterChainProxy(List.of(
+                    chain(PathPatternRequestMatcher.pathPattern("/api/orders"), authorizationFilter()),
+                    chain(AnyRequestMatcher.INSTANCE)));
+        }
+
+        private AuthorizationFilter authorizationFilter() {
+            RequestMatcherDelegatingAuthorizationManager manager =
+                    RequestMatcherDelegatingAuthorizationManager.builder()
+                            .anyRequest()
+                            .authenticated()
+                            .build();
+            return new AuthorizationFilter(manager);
         }
 
         @Bean
@@ -217,5 +329,9 @@ class SecurityRuntimeSnapshotIntegrationTest {
 
     private static SecurityFilterChain chain(RequestMatcher matcher) {
         return new DefaultSecurityFilterChain(matcher, List.of());
+    }
+
+    private static SecurityFilterChain chain(RequestMatcher matcher, AuthorizationFilter authorizationFilter) {
+        return new DefaultSecurityFilterChain(matcher, List.of(authorizationFilter));
     }
 }

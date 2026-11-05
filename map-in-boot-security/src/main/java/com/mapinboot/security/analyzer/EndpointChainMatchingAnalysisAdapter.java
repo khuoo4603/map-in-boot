@@ -19,6 +19,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.TreeMap;
 import java.util.TreeSet;
@@ -30,13 +31,15 @@ import org.springframework.web.util.pattern.PathPatternParser;
 public class EndpointChainMatchingAnalysisAdapter extends AbstractAnalysisAdapter {
     private static final String ENDPOINT_TYPE = "ENDPOINT_MAPPING";
     private static final String CHAIN_TYPE = "SECURITY_CHAIN";
+    private static final String POLICY_TYPE = "URL_AUTHORIZATION";
     private static final String ENDPOINT_COLLECTOR = "starter-endpoint-mapping";
     private static final String CHAIN_COLLECTOR = "security-chain";
 
     private final StableIdGenerator idGenerator = new StableIdGenerator();
 
     public EndpointChainMatchingAnalysisAdapter() {
-        super("security-endpoint-chain-matching", "Endpoint 최초 적용 SecurityFilterChain 분석", Set.of("MATCHED_BY"));
+        super("security-endpoint-chain-matching", "Endpoint 최초 적용 SecurityFilterChain 분석",
+                Set.of("MATCHED_BY", "SECURED_BY"));
     }
 
     @Override
@@ -51,6 +54,9 @@ public class EndpointChainMatchingAnalysisAdapter extends AbstractAnalysisAdapte
                 .toList();
         List<Fact> chains = report.facts().stream()
                 .filter(fact -> fact != null && CHAIN_TYPE.equals(fact.type()))
+                .toList();
+        List<Fact> policies = report.facts().stream()
+                .filter(fact -> fact != null && POLICY_TYPE.equals(fact.type()))
                 .toList();
 
         AnalysisStatus endpointStatus = report.statusByAdapter().get(ENDPOINT_COLLECTOR);
@@ -87,8 +93,10 @@ public class EndpointChainMatchingAnalysisAdapter extends AbstractAnalysisAdapte
             return result(List.of(), AnalysisStatus.UNKNOWN, diagnostics);
         }
 
+        PolicyCollection policyCollection = validatePolicyCollection(
+                orderPolicies(policies, diagnostics), policies, orderedChains, diagnostics);
         List<Relation> relations = new ArrayList<>();
-        boolean partial = partialCollection;
+        boolean partial = partialCollection || policyCollection.partial();
         for (Fact endpoint : endpoints) {
             EndpointRequest request = endpointRequest(endpoint);
             if (request == null) {
@@ -110,6 +118,14 @@ public class EndpointChainMatchingAnalysisAdapter extends AbstractAnalysisAdapte
                 Coverage coverage = coverage(chain.matcher(), request);
                 if (coverage == Coverage.ALL) {
                     relations.add(relation(context.serviceId(), endpoint, chain.fact()));
+                    PolicySelection policy = selectPolicy(policyCollection, chain, request);
+                    if (policy.coverage() == Coverage.ALL) {
+                        relations.add(securedBy(context.serviceId(), endpoint, policy.policy().fact()));
+                    } else if (policy.coverage() == Coverage.PARTIAL || policy.coverage() == Coverage.UNKNOWN) {
+                        partial = true;
+                        diagnostics.add(diagnostic("URL Authorization 정책 적용 여부 불확실: "
+                                + chain.fact().subjectKey()));
+                    }
                     resolved = true;
                     break;
                 }
@@ -125,7 +141,10 @@ public class EndpointChainMatchingAnalysisAdapter extends AbstractAnalysisAdapte
             }
         }
 
-        return result(relations, partial ? AnalysisStatus.PARTIAL : AnalysisStatus.READY, diagnostics);
+        RelationAggregation aggregation = aggregateSecuredBy(relations, diagnostics);
+        return result(aggregation.relations(),
+                partial || aggregation.partial() ? AnalysisStatus.PARTIAL : AnalysisStatus.READY,
+                diagnostics);
     }
 
     @Override
@@ -163,6 +182,155 @@ public class EndpointChainMatchingAnalysisAdapter extends AbstractAnalysisAdapte
         }
         result.sort(Comparator.comparingInt(ChainFact::order).thenComparing(chain -> chain.fact().subjectKey()));
         return result;
+    }
+
+    private PolicyCollection orderPolicies(List<Fact> facts, List<AdapterDiagnostic> diagnostics) {
+        Map<String, List<PolicyFact>> byChainKey = new TreeMap<>();
+        Set<String> orders = new LinkedHashSet<>();
+        boolean partial = false;
+        for (Fact fact : facts) {
+            String chainKey = fact.attributes().get("chainKey");
+            String proxyBeanName = fact.attributes().get("proxyBeanName");
+            String chainOrderValue = fact.attributes().get("chainOrder");
+            String policyOrderValue = fact.attributes().get("policyOrder");
+            String policyKind = fact.attributes().get("policyKind");
+            String matcherType = fact.attributes().get("policyMatcherType");
+            String policySource = fact.attributes().get("policySource");
+            if (isBlank(fact.subjectKey()) || isBlank(chainKey) || isBlank(proxyBeanName)
+                    || isBlank(chainOrderValue) || isBlank(policyOrderValue)
+                    || isBlank(policyKind) || isBlank(matcherType) || !"URL".equals(policySource)) {
+                diagnostics.add(diagnostic("URL Authorization Fact 구조 불완전: " + fact.subjectKey()));
+                partial = true;
+                continue;
+            }
+            int chainOrder;
+            int policyOrder;
+            try {
+                chainOrder = Integer.parseInt(chainOrderValue);
+                policyOrder = Integer.parseInt(policyOrderValue);
+            } catch (NumberFormatException exception) {
+                diagnostics.add(diagnostic("URL Authorization 순서 해석 실패: " + fact.subjectKey()));
+                partial = true;
+                continue;
+            }
+            String orderKey = chainKey + "|" + policyOrder;
+            if (chainOrder < 1 || policyOrder < 1 || !orders.add(orderKey)) {
+                diagnostics.add(diagnostic("URL Authorization 정책 순서 중복 또는 부적합: " + fact.subjectKey()));
+                partial = true;
+                continue;
+            }
+            byChainKey.computeIfAbsent(chainKey, ignored -> new ArrayList<>())
+                    .add(new PolicyFact(fact, proxyBeanName, chainOrder, policyOrder));
+        }
+        byChainKey.values().forEach(values -> values.sort(Comparator.comparingInt(PolicyFact::order)
+                .thenComparing(policy -> policy.fact().subjectKey())));
+        return new PolicyCollection(byChainKey, partial);
+    }
+
+    private PolicyCollection validatePolicyCollection(
+            PolicyCollection collection,
+            List<Fact> facts,
+            List<ChainFact> chains,
+            List<AdapterDiagnostic> diagnostics
+    ) {
+        Set<String> incompleteChainKeys = new LinkedHashSet<>(collection.incompleteChainKeys());
+        Map<String, ChainFact> chainsByKey = new TreeMap<>();
+        for (ChainFact chain : chains) {
+            chainsByKey.put(chain.fact().attributes().get("chainKey"), chain);
+        }
+
+        Set<String> orders = new LinkedHashSet<>();
+        for (Fact fact : facts) {
+            String chainKey = fact.attributes().get("chainKey");
+            if (isBlank(chainKey)) {
+                continue;
+            }
+            if (isBlank(fact.subjectKey())
+                    || isBlank(fact.attributes().get("proxyBeanName"))
+                    || isBlank(fact.attributes().get("chainOrder"))
+                    || isBlank(fact.attributes().get("policyOrder"))
+                    || isBlank(fact.attributes().get("policyKind"))
+                    || isBlank(fact.attributes().get("policyMatcherType"))
+                    || !"URL".equals(fact.attributes().get("policySource"))) {
+                incompleteChainKeys.add(chainKey);
+                continue;
+            }
+            String orderValue = fact.attributes().get("policyOrder");
+            int order;
+            try {
+                order = Integer.parseInt(orderValue);
+            } catch (NumberFormatException exception) {
+                incompleteChainKeys.add(chainKey);
+                continue;
+            }
+            if (!orders.add(chainKey + "|" + order)) {
+                incompleteChainKeys.add(chainKey);
+            }
+            ChainFact chain = chainsByKey.get(chainKey);
+            String proxyBeanName = fact.attributes().get("proxyBeanName");
+            String chainOrderValue = fact.attributes().get("chainOrder");
+            if (chain == null || proxyBeanName == null || chainOrderValue == null
+                    || !proxyBeanName.equals(chain.proxyBeanName())
+                    || !chainOrderValue.equals(Integer.toString(chain.order()))) {
+                incompleteChainKeys.add(chainKey);
+            }
+        }
+
+        for (Map.Entry<String, List<PolicyFact>> entry : collection.byChainKey().entrySet()) {
+            int expectedOrder = 1;
+            for (PolicyFact policy : entry.getValue()) {
+                if (policy.order() != expectedOrder) {
+                    incompleteChainKeys.add(entry.getKey());
+                    diagnostics.add(diagnostic("URL Authorization policy order is not contiguous: "
+                            + policy.fact().subjectKey()));
+                }
+                expectedOrder++;
+            }
+        }
+        return new PolicyCollection(collection.byChainKey(), incompleteChainKeys,
+                collection.partial() || !incompleteChainKeys.isEmpty());
+    }
+
+    private PolicySelection selectPolicy(
+            PolicyCollection collection,
+            ChainFact chain,
+            EndpointRequest endpoint
+    ) {
+        String chainKey = chain.fact().attributes().get("chainKey");
+        List<PolicyFact> policies = collection.byChainKey().get(chainKey);
+        if (policies == null || policies.isEmpty()) {
+            return new PolicySelection(Coverage.NONE, null);
+        }
+        if (collection.incompleteChainKeys().contains(chainKey)) {
+            return new PolicySelection(Coverage.UNKNOWN, null);
+        }
+        for (PolicyFact policy : policies) {
+            if (!policyMatchesChain(policy, chain)) {
+                return new PolicySelection(Coverage.UNKNOWN, null);
+            }
+            MatcherExpression matcher = policyMatcher(policy.fact());
+            Coverage coverage = coverage(matcher, endpoint);
+            if (coverage == Coverage.ALL) {
+                return knownPolicy(policy.fact().attributes().get("policyKind"))
+                        ? new PolicySelection(Coverage.ALL, policy)
+                        : new PolicySelection(Coverage.UNKNOWN, null);
+            }
+            if (coverage == Coverage.PARTIAL || coverage == Coverage.UNKNOWN) {
+                return new PolicySelection(Coverage.UNKNOWN, null);
+            }
+        }
+        return new PolicySelection(Coverage.NONE, null);
+    }
+
+    private boolean policyMatchesChain(PolicyFact policy, ChainFact chain) {
+        return policy.fact().attributes().get("chainKey").equals(chain.fact().attributes().get("chainKey"))
+                && policy.proxyBeanName().equals(chain.proxyBeanName())
+                && policy.chainOrder() == chain.order();
+    }
+
+    private boolean knownPolicy(String policyKind) {
+        return Set.of("PERMIT_ALL", "DENY_ALL", "AUTHENTICATED", "FULLY_AUTHENTICATED",
+                "AUTHORITY_REQUIRED", "COMPOSITE_AUTHORITY").contains(policyKind);
     }
 
     private EndpointRequest endpointRequest(Fact fact) {
@@ -208,6 +376,34 @@ public class EndpointChainMatchingAnalysisAdapter extends AbstractAnalysisAdapte
                 return MatcherExpression.invalid();
             }
             return new MatcherExpression("METHOD_PATH", method, path, List.of(), true);
+        }
+        MatcherExpression parsed = parseExpression(condition);
+        return parsed.valid() && type.equals(parsed.type()) ? parsed : MatcherExpression.invalid();
+    }
+
+    private MatcherExpression policyMatcher(Fact fact) {
+        String type = fact.attributes().get("policyMatcherType");
+        String condition = fact.attributes().get("policyMatcherCondition");
+        if (isBlank(type) || isBlank(condition)) {
+            return MatcherExpression.invalid();
+        }
+        if ("ANY".equals(type)) {
+            return "ANY".equals(condition) ? new MatcherExpression("ANY", null, null, List.of(), true)
+                    : MatcherExpression.invalid();
+        }
+        if (condition.contains("/") && !"DEFAULT".equals(fact.attributes().get("pathPatternSettings"))) {
+            return MatcherExpression.invalid();
+        }
+        if ("PATH".equals(type)) {
+            return new MatcherExpression("PATH", null, condition, List.of(), true);
+        }
+        if ("METHOD_PATH".equals(type)) {
+            int separator = condition.indexOf(' ');
+            if (separator <= 0 || isBlank(condition.substring(separator + 1))) {
+                return MatcherExpression.invalid();
+            }
+            return new MatcherExpression("METHOD_PATH", condition.substring(0, separator),
+                    condition.substring(separator + 1), List.of(), true);
         }
         MatcherExpression parsed = parseExpression(condition);
         return parsed.valid() && type.equals(parsed.type()) ? parsed : MatcherExpression.invalid();
@@ -447,6 +643,94 @@ public class EndpointChainMatchingAnalysisAdapter extends AbstractAnalysisAdapte
                 attributes, Confidence.CONFIRMED, List.copyOf(evidenceIds));
     }
 
+    private Relation securedBy(String serviceId, Fact endpoint, Fact policy) {
+        Map<String, String> attributes = new TreeMap<>();
+        attributes.put("securityKind", "AUTHORIZATION");
+        attributes.put("policySource", "URL");
+        attributes.put("chainKey", policy.attributes().get("chainKey"));
+        attributes.put("chainOrder", policy.attributes().get("chainOrder"));
+        attributes.put("policyOrder", policy.attributes().get("policyOrder"));
+        attributes.put("policyKind", policy.attributes().get("policyKind"));
+        attributes.put("policyMatcherType", policy.attributes().get("policyMatcherType"));
+        if (policy.attributes().get("policyMatcherCondition") != null) {
+            attributes.put("policyMatcherCondition", policy.attributes().get("policyMatcherCondition"));
+        }
+        if (policy.attributes().get("requiredAuthority") != null) {
+            attributes.put("requiredAuthority", policy.attributes().get("requiredAuthority"));
+        }
+        if (policy.attributes().get("authorityOperator") != null) {
+            attributes.put("authorityOperator", policy.attributes().get("authorityOperator"));
+        }
+        String handler = endpoint.attributes().get("handler");
+        String sourceId = idGenerator.generate(serviceId, NodeType.HANDLER, handler);
+        String targetId = idGenerator.generate(serviceId, NodeType.AUTHORIZATION, policy.subjectKey());
+        Map<String, String> identity = new TreeMap<>();
+        identity.put("securityKind", "AUTHORIZATION");
+        identity.put("policySource", "URL");
+        if (policy.attributes().get("authorityOperator") != null) {
+            identity.put("authorityOperator", policy.attributes().get("authorityOperator"));
+        }
+        String id = idGenerator.generateEdge(sourceId, targetId, EdgeType.SECURED_BY, identity);
+        Set<String> evidenceIds = new TreeSet<>();
+        evidenceIds.addAll(endpoint.evidenceIds());
+        evidenceIds.addAll(policy.evidenceIds());
+        return new Relation(id, handler, policy.subjectKey(), EdgeType.SECURED_BY,
+                attributes, Confidence.CONFIRMED, List.copyOf(evidenceIds));
+    }
+
+    private RelationAggregation aggregateSecuredBy(
+            List<Relation> relations,
+            List<AdapterDiagnostic> diagnostics
+    ) {
+        List<Relation> aggregated = new ArrayList<>();
+        Map<String, Integer> securedByPositions = new TreeMap<>();
+        Set<String> conflictingIds = new TreeSet<>();
+        boolean partial = false;
+        for (Relation relation : relations) {
+            if (relation.type() != EdgeType.SECURED_BY) {
+                aggregated.add(relation);
+                continue;
+            }
+
+            if (conflictingIds.contains(relation.id())) {
+                continue;
+            }
+
+            Integer position = securedByPositions.get(relation.id());
+            if (position == null) {
+                securedByPositions.put(relation.id(), aggregated.size());
+                aggregated.add(relation);
+                continue;
+            }
+
+            Relation existing = aggregated.get(position);
+            if (!sameSecuredByStructure(existing, relation)) {
+                partial = true;
+                conflictingIds.add(relation.id());
+                aggregated.set(position, null);
+                diagnostics.add(diagnostic("SECURED_BY 구조 불일치로 병합 불가: " + relation.id()));
+                continue;
+            }
+            aggregated.set(position, mergeRelationEvidence(existing, relation));
+        }
+        return new RelationAggregation(aggregated.stream().filter(Objects::nonNull).toList(), partial);
+    }
+
+    private boolean sameSecuredByStructure(Relation first, Relation second) {
+        return Objects.equals(first.sourceKey(), second.sourceKey())
+                && Objects.equals(first.targetKey(), second.targetKey())
+                && first.type() == second.type()
+                && Objects.equals(first.attributes(), second.attributes())
+                && first.confidence() == second.confidence();
+    }
+
+    private Relation mergeRelationEvidence(Relation first, Relation second) {
+        Set<String> evidenceIds = new TreeSet<>(first.evidenceIds());
+        evidenceIds.addAll(second.evidenceIds());
+        return new Relation(first.id(), first.sourceKey(), first.targetKey(), first.type(),
+                first.attributes(), first.confidence(), List.copyOf(evidenceIds));
+    }
+
     private AnalysisResult unknown(String summary) {
         return result(List.of(), AnalysisStatus.UNKNOWN, List.of(diagnostic(summary)));
     }
@@ -478,6 +762,25 @@ public class EndpointChainMatchingAnalysisAdapter extends AbstractAnalysisAdapte
     }
 
     private record ChainFact(Fact fact, String proxyBeanName, int order, MatcherExpression matcher) {
+    }
+
+    private record PolicyFact(Fact fact, String proxyBeanName, int chainOrder, int order) {
+    }
+
+    private record PolicyCollection(
+            Map<String, List<PolicyFact>> byChainKey,
+            Set<String> incompleteChainKeys,
+            boolean partial
+    ) {
+        private PolicyCollection(Map<String, List<PolicyFact>> byChainKey, boolean partial) {
+            this(byChainKey, Set.of(), partial);
+        }
+    }
+
+    private record PolicySelection(Coverage coverage, PolicyFact policy) {
+    }
+
+    private record RelationAggregation(List<Relation> relations, boolean partial) {
     }
 
     private record MatcherExpression(

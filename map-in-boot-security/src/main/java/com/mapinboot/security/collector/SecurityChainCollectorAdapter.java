@@ -22,23 +22,33 @@ import java.util.Set;
 import java.util.TreeMap;
 import java.util.stream.Collectors;
 import org.springframework.context.ApplicationContext;
+import org.springframework.security.authorization.AllAuthoritiesAuthorizationManager;
+import org.springframework.security.authorization.AuthenticatedAuthorizationManager;
+import org.springframework.security.authorization.AuthorizationManager;
+import org.springframework.security.authorization.AuthorizationResult;
+import org.springframework.security.authorization.AuthorityAuthorizationManager;
+import org.springframework.security.authorization.SingleResultAuthorizationManager;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.server.PathContainer;
 import org.springframework.security.web.DefaultSecurityFilterChain;
 import org.springframework.security.web.FilterChainProxy;
 import org.springframework.security.web.SecurityFilterChain;
+import org.springframework.security.web.access.intercept.AuthorizationFilter;
+import org.springframework.security.web.access.intercept.RequestMatcherDelegatingAuthorizationManager;
 import org.springframework.security.web.servlet.util.matcher.PathPatternRequestMatcher;
 import org.springframework.security.web.util.matcher.AndRequestMatcher;
 import org.springframework.security.web.util.matcher.AnyRequestMatcher;
 import org.springframework.security.web.util.matcher.NegatedRequestMatcher;
 import org.springframework.security.web.util.matcher.OrRequestMatcher;
 import org.springframework.security.web.util.matcher.RequestMatcher;
+import org.springframework.security.web.util.matcher.RequestMatcherEntry;
 import org.springframework.web.util.pattern.PathPattern;
 import org.springframework.web.util.pattern.PathPatternParser;
 
 // Spring Security Runtime FilterChain 및 RequestMatcher 수집기
 public class SecurityChainCollectorAdapter extends AbstractCollectorAdapter {
     private static final String TYPE = "SECURITY_CHAIN";
+    private static final String URL_AUTHORIZATION_TYPE = "URL_AUTHORIZATION";
     private static final int MAX_MATCHER_DEPTH = 32;
     private static final String HTTP_METHOD_MATCHER =
             "org.springframework.security.web.servlet.util.matcher.PathPatternRequestMatcher$HttpMethodRequestMatcher";
@@ -46,7 +56,7 @@ public class SecurityChainCollectorAdapter extends AbstractCollectorAdapter {
     private final StableIdGenerator idGenerator = new StableIdGenerator();
 
     public SecurityChainCollectorAdapter() {
-        super("security-chain", "Spring Security FilterChain 및 Matcher 수집", Set.of(TYPE));
+        super("security-chain", "Spring Security FilterChain 및 Matcher 수집", Set.of(TYPE, URL_AUTHORIZATION_TYPE));
     }
 
     @Override
@@ -124,6 +134,9 @@ public class SecurityChainCollectorAdapter extends AbstractCollectorAdapter {
                     evidence.add(new Evidence(evidenceId, EvidenceSource.RUNTIME,
                             "FilterChainProxy:" + proxyEntry.getKey() + "[" + chainOrder + "]",
                             "SecurityFilterChain Matcher 수집: " + matcher.type()));
+                    partial |= collectUrlAuthorizationPolicies(
+                            context.serviceId(), proxyEntry.getKey(), chainOrder, chainKey, chain,
+                            facts, evidence, diagnostics);
                 } catch (RuntimeException exception) {
                     partial = true;
                     diagnostics.add(new AdapterDiagnostic(id(), ErrorCode.ADAPTER_FAILED,
@@ -137,6 +150,193 @@ public class SecurityChainCollectorAdapter extends AbstractCollectorAdapter {
         }
         return new CollectionResult(id(), facts, evidence,
                 partial ? AnalysisStatus.PARTIAL : AnalysisStatus.READY, diagnostics);
+    }
+
+    private boolean collectUrlAuthorizationPolicies(
+            String serviceId,
+            String proxyBeanName,
+            String chainOrder,
+            String chainKey,
+            SecurityFilterChain chain,
+            List<Fact> facts,
+            List<Evidence> evidence,
+            List<AdapterDiagnostic> diagnostics
+    ) {
+        if (!(chain instanceof DefaultSecurityFilterChain defaultChain)) {
+            return false;
+        }
+
+        List<AuthorizationFilter> authorizationFilters = defaultChain.getFilters().stream()
+                .filter(AuthorizationFilter.class::isInstance)
+                .map(AuthorizationFilter.class::cast)
+                .toList();
+        if (authorizationFilters.isEmpty()) {
+            return false;
+        }
+
+        boolean partial = false;
+        if (authorizationFilters.size() > 1) {
+            partial = true;
+            addUnknownPolicyFact(serviceId, proxyBeanName, chainOrder, chainKey, 1,
+                    "AuthorizationFilter 중복으로 URL Authorization 분석 불가", facts, evidence);
+            diagnostics.add(new AdapterDiagnostic(id(), ErrorCode.INVALID_STATE,
+                    "SecurityFilterChain 내 AuthorizationFilter 중복 등록"));
+            return true;
+        }
+        AuthorizationManager<?> manager = authorizationFilters.get(0).getAuthorizationManager();
+        if (!(manager instanceof RequestMatcherDelegatingAuthorizationManager delegatingManager)) {
+            addUnknownPolicyFact(serviceId, proxyBeanName, chainOrder, chainKey, 1,
+                    "AuthorizationManager 유형 미지원", facts, evidence);
+            diagnostics.add(new AdapterDiagnostic(id(), ErrorCode.INVALID_STATE,
+                    "URL AuthorizationManager 구조 미지원"));
+            return true;
+        }
+
+        List<?> mappings = readField(delegatingManager, "mappings", List.class);
+        if (mappings == null || mappings.isEmpty()) {
+            addUnknownPolicyFact(serviceId, proxyBeanName, chainOrder, chainKey, 1,
+                    "URL Authorization 정책 목록 확인 실패", facts, evidence);
+            diagnostics.add(new AdapterDiagnostic(id(), ErrorCode.INVALID_STATE,
+                    "URL Authorization 정책 목록 확인 실패"));
+            return true;
+        }
+
+        int policyOrder = 0;
+        for (Object mapping : mappings) {
+            policyOrder++;
+            if (!(mapping instanceof RequestMatcherEntry<?> entry) || entry.getRequestMatcher() == null) {
+                addUnknownPolicyFact(serviceId, proxyBeanName, chainOrder, chainKey, policyOrder,
+                        "URL Authorization Matcher 확인 실패", facts, evidence);
+                diagnostics.add(new AdapterDiagnostic(id(), ErrorCode.INVALID_STATE,
+                        "URL Authorization Matcher 확인 실패"));
+                partial = true;
+                continue;
+            }
+
+            RequestMatcher requestMatcher = entry.getRequestMatcher();
+            MatcherInfo matcher = matcherInfo(requestMatcher, Collections.newSetFromMap(new IdentityHashMap<>()), 0);
+            PolicyInfo policy = policyInfo(entry.getEntry());
+            if (matcher.diagnostic() != null || policy.diagnostic() != null) {
+                partial = true;
+                if (matcher.diagnostic() != null) {
+                    diagnostics.add(new AdapterDiagnostic(id(), ErrorCode.INVALID_STATE, matcher.diagnostic()));
+                }
+                if (policy.diagnostic() != null) {
+                    diagnostics.add(new AdapterDiagnostic(id(), ErrorCode.INVALID_STATE, policy.diagnostic()));
+                }
+            }
+            addPolicyFact(serviceId, proxyBeanName, chainOrder, chainKey, policyOrder, matcher, policy,
+                    facts, evidence);
+        }
+        return partial;
+    }
+
+    private void addUnknownPolicyFact(
+            String serviceId,
+            String proxyBeanName,
+            String chainOrder,
+            String chainKey,
+            int policyOrder,
+            String diagnostic,
+            List<Fact> facts,
+            List<Evidence> evidence
+    ) {
+        MatcherInfo matcher = new MatcherInfo(
+                "UNKNOWN", null, "UNKNOWN|" + chainKey + "|" + policyOrder,
+                "UNKNOWN", diagnostic, null, "UNKNOWN");
+        addPolicyFact(serviceId, proxyBeanName, chainOrder, chainKey, policyOrder, matcher,
+                new PolicyInfo("UNKNOWN", null, null, diagnostic), facts, evidence);
+    }
+
+    private void addPolicyFact(
+            String serviceId,
+            String proxyBeanName,
+            String chainOrder,
+            String chainKey,
+            int policyOrder,
+            MatcherInfo matcher,
+            PolicyInfo policy,
+            List<Fact> facts,
+            List<Evidence> evidence
+    ) {
+        String policyMatcherType = matcher.type();
+        String subjectKey = "policy|" + chainKey + "|" + policyOrder + "|"
+                + matcher.structuralKey() + "|" + policy.kind() + "|"
+                + String.valueOf(policy.requiredAuthority()) + "|"
+                + String.valueOf(policy.authorityOperator());
+        String evidenceId = idGenerator.generate(serviceId, NodeType.AUTHORIZATION, "evidence|" + subjectKey);
+        Map<String, String> attributes = new TreeMap<>();
+        attributes.put("chainKey", chainKey);
+        attributes.put("chainOrder", chainOrder);
+        attributes.put("policyOrder", Integer.toString(policyOrder));
+        attributes.put("policyKind", policy.kind());
+        attributes.put("policyMatcherType", policyMatcherType);
+        attributes.put("policySource", "URL");
+        attributes.put("proxyBeanName", proxyBeanName);
+        if (matcher.condition() != null) {
+            attributes.put("policyMatcherCondition", matcher.condition());
+        }
+        if (policy.requiredAuthority() != null) {
+            attributes.put("requiredAuthority", policy.requiredAuthority());
+        }
+        if (policy.authorityOperator() != null) {
+            attributes.put("authorityOperator", policy.authorityOperator());
+        }
+        if (matcher.pathPatternSettings() != null) {
+            attributes.put("pathPatternSettings", matcher.pathPatternSettings());
+        }
+        facts.add(new Fact(
+                idGenerator.generate(serviceId, NodeType.AUTHORIZATION, "fact|" + subjectKey),
+                URL_AUTHORIZATION_TYPE, subjectKey, attributes, List.of(evidenceId)));
+        evidence.add(new Evidence(evidenceId, EvidenceSource.RUNTIME,
+                "FilterChainProxy:" + proxyBeanName + "[" + chainOrder + "]",
+                "URL Authorization 정책 수집: " + policy.kind()));
+    }
+
+    private PolicyInfo policyInfo(Object manager) {
+        if (manager instanceof SingleResultAuthorizationManager<?> singleResultManager) {
+            AuthorizationResult result = readField(singleResultManager, "result", AuthorizationResult.class);
+            if (result == null) {
+                return new PolicyInfo("UNKNOWN", null, "SingleResultAuthorizationManager 결과 확인 실패");
+            }
+            return result.isGranted()
+                    ? new PolicyInfo("PERMIT_ALL", null, null)
+                    : new PolicyInfo("DENY_ALL", null, null);
+        }
+        if (manager instanceof AuthenticatedAuthorizationManager<?> authenticatedManager) {
+            Object strategy = readField(authenticatedManager, "authorizationStrategy", Object.class);
+            String strategyName = strategy == null ? null : strategy.getClass().getSimpleName();
+            if (strategyName == null) {
+                return new PolicyInfo("UNKNOWN", null, "AuthenticatedAuthorizationManager 전략 확인 실패");
+            }
+            if (strategyName.contains("FullyAuthenticated")) {
+                return new PolicyInfo("FULLY_AUTHENTICATED", null, null);
+            }
+            if (strategyName.contains("Authenticated")) {
+                return new PolicyInfo("AUTHENTICATED", null, null);
+            }
+            return new PolicyInfo("UNKNOWN", null, "지원하지 않는 AuthenticatedAuthorizationManager 전략");
+        }
+        if (manager instanceof AuthorityAuthorizationManager<?> authorityManager) {
+            Set<String> authorities = readField(authorityManager, "authorities", Set.class);
+            if (authorities == null || authorities.isEmpty()) {
+                return new PolicyInfo("UNKNOWN", null, null, "Authority list could not be confirmed");
+            }
+            String requiredAuthority = authorities.stream().sorted().collect(Collectors.joining(","));
+            return new PolicyInfo(authorities.size() == 1 ? "AUTHORITY_REQUIRED" : "COMPOSITE_AUTHORITY",
+                    requiredAuthority, authorities.size() == 1 ? null : "ANY", null);
+        }
+        if (manager instanceof AllAuthoritiesAuthorizationManager<?> allAuthoritiesManager) {
+            List<String> authorities = readField(allAuthoritiesManager, "requiredAuthorities", List.class);
+            if (authorities == null || authorities.isEmpty()) {
+                return new PolicyInfo("UNKNOWN", null, null, "All-authority list could not be confirmed");
+            }
+            return new PolicyInfo("COMPOSITE_AUTHORITY", authorities.stream().sorted().collect(Collectors.joining(",")),
+                    "ALL", null);
+        }
+        return new PolicyInfo("UNKNOWN", null,
+                "지원하지 않는 AuthorizationManager 유형: "
+                        + (manager == null ? "null" : manager.getClass().getName()));
     }
 
     private MatcherInfo matcherInfo(SecurityFilterChain chain) {
@@ -369,6 +569,12 @@ public class SecurityChainCollectorAdapter extends AbstractCollectorAdapter {
     ) {
         private MatcherInfo(String type, String condition, String structuralKey, String matcherClass, String diagnostic) {
             this(type, condition, structuralKey, matcherClass, diagnostic, null, null);
+        }
+    }
+
+    private record PolicyInfo(String kind, String requiredAuthority, String authorityOperator, String diagnostic) {
+        private PolicyInfo(String kind, String requiredAuthority, String diagnostic) {
+            this(kind, requiredAuthority, null, diagnostic);
         }
     }
 

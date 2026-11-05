@@ -6,10 +6,13 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.mapinboot.core.analysis.model.AnalysisReport;
+import com.mapinboot.core.analysis.AnalysisProvider;
+import com.mapinboot.core.analysis.model.AnalysisContext;
 import com.mapinboot.core.collection.model.CollectionContext;
 import com.mapinboot.core.collection.model.CollectionReport;
 import com.mapinboot.core.collection.model.CollectionResult;
 import com.mapinboot.core.common.status.AnalysisStatus;
+import com.mapinboot.core.common.type.EdgeType;
 import com.mapinboot.core.evidence.Fact;
 import com.mapinboot.core.graph.GraphBuilder;
 import com.mapinboot.core.graph.model.SecurityGraph;
@@ -25,9 +28,14 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.core.env.MapPropertySource;
 import org.springframework.http.HttpMethod;
+import org.springframework.security.authorization.AllAuthoritiesAuthorizationManager;
+import org.springframework.security.authorization.AuthorizationDecision;
+import org.springframework.security.authorization.AuthorizationManager;
 import org.springframework.security.web.DefaultSecurityFilterChain;
 import org.springframework.security.web.FilterChainProxy;
 import org.springframework.security.web.SecurityFilterChain;
+import org.springframework.security.web.access.intercept.AuthorizationFilter;
+import org.springframework.security.web.access.intercept.RequestMatcherDelegatingAuthorizationManager;
 import org.springframework.security.web.servlet.util.matcher.PathPatternRequestMatcher;
 import org.springframework.security.web.util.matcher.AndRequestMatcher;
 import org.springframework.security.web.util.matcher.NegatedRequestMatcher;
@@ -55,8 +63,122 @@ class SecurityChainCollectorAdapterTest {
             assertEquals("NEGATED", result.facts().get(2).attributes().get("matcherType"));
             assertEquals("DEFAULT", result.facts().get(0).attributes().get("pathPatternSettings"));
             assertEquals("DEFAULT", result.facts().get(1).attributes().get("pathPatternSettings"));
+            assertTrue(result.facts().stream().noneMatch(fact -> "URL_AUTHORIZATION".equals(fact.type())));
             assertEquals(3, result.evidence().size());
             assertTrue(result.diagnostics().isEmpty());
+        }
+    }
+
+    @Test
+    void collectsUrlAuthorizationPoliciesFromRuntimeAuthorizationFilter() {
+        try (AnnotationConfigApplicationContext context = context(UrlAuthorizationSecurityConfiguration.class)) {
+            SecurityChainCollectorAdapter adapter = new SecurityChainCollectorAdapter();
+
+            CollectionResult result = adapter.collect(new CollectionContext(context, "main", "instance"));
+
+            List<Fact> policies = result.facts().stream()
+                    .filter(fact -> "URL_AUTHORIZATION".equals(fact.type()))
+                    .toList();
+            assertEquals(AnalysisStatus.READY, result.status());
+            assertTrue(adapter.getSupportedTypes().containsAll(Set.of("SECURITY_CHAIN", "URL_AUTHORIZATION")));
+            assertEquals(4, policies.size());
+            assertEquals(List.of("PERMIT_ALL", "COMPOSITE_AUTHORITY", "AUTHORITY_REQUIRED", "AUTHENTICATED"), policies.stream()
+                    .map(fact -> fact.attributes().get("policyKind"))
+                    .toList());
+            assertEquals(List.of("1", "2", "3", "4"), policies.stream()
+                    .map(fact -> fact.attributes().get("policyOrder"))
+                    .toList());
+            assertTrue(policies.stream().allMatch(fact -> "URL".equals(fact.attributes().get("policySource"))));
+            assertEquals(5, result.evidence().size());
+            assertTrue(result.diagnostics().isEmpty());
+        }
+    }
+
+    @Test
+    void preservesAnyAndAllAuthorityOperatorsFromRuntimeAuthorizationManagers() {
+        try (AnnotationConfigApplicationContext context = context(AuthorityOperatorSecurityConfiguration.class)) {
+            CollectionResult result = new SecurityChainCollectorAdapter().collect(
+                    new CollectionContext(context, "main", "instance"));
+
+            List<Fact> policies = result.facts().stream()
+                    .filter(fact -> "URL_AUTHORIZATION".equals(fact.type()))
+                    .toList();
+
+            assertEquals(AnalysisStatus.READY, result.status());
+            assertEquals(3, policies.size());
+            assertEquals("ANY", policies.get(0).attributes().get("authorityOperator"));
+            assertEquals("ALL", policies.get(1).attributes().get("authorityOperator"));
+            assertEquals("ROLE_A,ROLE_B", policies.get(0).attributes().get("requiredAuthority"));
+            assertEquals("ROLE_A,ROLE_B", policies.get(1).attributes().get("requiredAuthority"));
+            assertTrue(!policies.get(0).subjectKey().equals(policies.get(1).subjectKey()));
+        }
+    }
+
+    @Test
+    void doesNotUseTheFirstAuthorizationFilterWhenAChainContainsMultipleFilters() {
+        try (AnnotationConfigApplicationContext context = context(DuplicateAuthorizationFilterSecurityConfiguration.class)) {
+            CollectionResult result = new SecurityChainCollectorAdapter().collect(
+                    new CollectionContext(context, "main", "instance"));
+
+            List<Fact> policies = result.facts().stream()
+                    .filter(fact -> "URL_AUTHORIZATION".equals(fact.type()))
+                    .toList();
+
+            assertEquals(AnalysisStatus.PARTIAL, result.status());
+            assertEquals(1, policies.size());
+            assertEquals("UNKNOWN", policies.get(0).attributes().get("policyKind"));
+            assertTrue(result.diagnostics().stream().anyMatch(diagnostic ->
+                    diagnostic.summary().contains("AuthorizationFilter")));
+        }
+    }
+
+    @Test
+    void doesNotCreateSecuredByFromDuplicateAuthorizationFilters() {
+        try (AnnotationConfigApplicationContext context = context(DuplicateAuthorizationFilterSecurityConfiguration.class)) {
+            SecurityChainCollectorAdapter adapter = new SecurityChainCollectorAdapter();
+            CollectionResult collection = adapter.collect(new CollectionContext(context, "main", "instance"));
+            Fact endpoint = new Fact("endpoint-fact-orders", "ENDPOINT_MAPPING", "endpoint|orders",
+                    Map.of(
+                            "httpMethod", "GET",
+                            "path", "/api/orders",
+                            "handler", "Orders#handle",
+                            "mvcPathPatternSettings", "DEFAULT"),
+                    List.of("endpoint-evidence-orders"));
+            List<Fact> facts = new java.util.ArrayList<>(collection.facts());
+            facts.add(endpoint);
+            CollectionReport report = new CollectionReport(
+                    facts,
+                    collection.evidence(),
+                    Map.of(
+                            adapter.id(), collection.status(),
+                            "starter-endpoint-mapping", AnalysisStatus.READY),
+                    collection.diagnostics());
+
+            AnalysisReport analysis = new AnalysisProvider().execute(
+                    new AnalysisContext(report, "main"),
+                    List.of(new EndpointChainMatchingAnalysisAdapter()));
+
+            assertEquals(AnalysisStatus.PARTIAL,
+                    analysis.statusByAdapter().get("security-endpoint-chain-matching"));
+            assertTrue(analysis.relations().stream().anyMatch(relation -> relation.type() == EdgeType.MATCHED_BY));
+            assertTrue(analysis.relations().stream().noneMatch(relation -> relation.type() == EdgeType.SECURED_BY));
+        }
+    }
+
+    @Test
+    void downgradesCollectionWhenAuthorizationManagerIsUnsupported() {
+        try (AnnotationConfigApplicationContext context = context(UnsupportedAuthorizationManagerSecurityConfiguration.class)) {
+            SecurityChainCollectorAdapter adapter = new SecurityChainCollectorAdapter();
+
+            CollectionResult result = adapter.collect(new CollectionContext(context, "main", "instance"));
+
+            Fact policy = result.facts().stream()
+                    .filter(fact -> "URL_AUTHORIZATION".equals(fact.type()))
+                    .findFirst().orElseThrow();
+            assertEquals(AnalysisStatus.PARTIAL, result.status());
+            assertEquals("UNKNOWN", policy.attributes().get("policyKind"));
+            assertTrue(result.diagnostics().stream().anyMatch(diagnostic ->
+                    diagnostic.summary().contains("AuthorizationManager")));
         }
     }
 
@@ -240,6 +362,77 @@ class SecurityChainCollectorAdapterTest {
                     chain(PathPatternRequestMatcher.pathPattern(HttpMethod.POST, "/api/orders")),
                     chain(new NegatedRequestMatcher(PathPatternRequestMatcher.pathPattern("/api/admin/**"))));
             return new FilterChainProxy(chains);
+        }
+    }
+
+    @Configuration(proxyBeanMethods = false)
+    static class UrlAuthorizationSecurityConfiguration {
+
+        @Bean
+        FilterChainProxy springSecurityFilterChain() {
+            RequestMatcherDelegatingAuthorizationManager manager =
+                    RequestMatcherDelegatingAuthorizationManager.builder()
+                            .requestMatchers(PathPatternRequestMatcher.pathPattern(HttpMethod.GET, "/api/public/**"))
+                            .permitAll()
+                            .requestMatchers(PathPatternRequestMatcher.pathPattern(HttpMethod.GET, "/api/manager/**"))
+                            .hasAnyAuthority("ROLE_STAFF", "ROLE_MANAGER")
+                            .requestMatchers(PathPatternRequestMatcher.pathPattern(HttpMethod.GET, "/api/staff/**"))
+                            .hasAuthority("ROLE_STAFF")
+                            .anyRequest()
+                            .authenticated()
+                            .build();
+            return new FilterChainProxy(List.of(new DefaultSecurityFilterChain(
+                    PathPatternRequestMatcher.pathPattern("/api/**"),
+                    List.of(new AuthorizationFilter(manager)))));
+        }
+    }
+
+    @Configuration(proxyBeanMethods = false)
+    static class AuthorityOperatorSecurityConfiguration {
+
+        @Bean
+        FilterChainProxy springSecurityFilterChain() {
+            RequestMatcherDelegatingAuthorizationManager manager =
+                    RequestMatcherDelegatingAuthorizationManager.builder()
+                            .requestMatchers(PathPatternRequestMatcher.pathPattern("/api/same"))
+                            .hasAnyAuthority("ROLE_A", "ROLE_B")
+                            .add(PathPatternRequestMatcher.pathPattern("/api/same"),
+                                    AllAuthoritiesAuthorizationManager.hasAllAuthorities("ROLE_A", "ROLE_B"))
+                            .anyRequest()
+                            .permitAll()
+                            .build();
+            return new FilterChainProxy(List.of(new DefaultSecurityFilterChain(
+                    PathPatternRequestMatcher.pathPattern("/api/**"),
+                    List.of(new AuthorizationFilter(manager)))));
+        }
+    }
+
+    @Configuration(proxyBeanMethods = false)
+    static class DuplicateAuthorizationFilterSecurityConfiguration {
+
+        @Bean
+        FilterChainProxy springSecurityFilterChain() {
+            RequestMatcherDelegatingAuthorizationManager manager =
+                    RequestMatcherDelegatingAuthorizationManager.builder()
+                            .anyRequest()
+                            .authenticated()
+                            .build();
+            return new FilterChainProxy(List.of(new DefaultSecurityFilterChain(
+                    PathPatternRequestMatcher.pathPattern("/api/**"),
+                    List.of(new AuthorizationFilter(manager), new AuthorizationFilter(manager)))));
+        }
+    }
+
+    @Configuration(proxyBeanMethods = false)
+    static class UnsupportedAuthorizationManagerSecurityConfiguration {
+
+        @Bean
+        FilterChainProxy springSecurityFilterChain() {
+            AuthorizationManager<jakarta.servlet.http.HttpServletRequest> manager =
+                    (authentication, request) -> new AuthorizationDecision(true);
+            return new FilterChainProxy(List.of(new DefaultSecurityFilterChain(
+                    PathPatternRequestMatcher.pathPattern("/api/**"),
+                    List.of(new AuthorizationFilter(manager)))));
         }
     }
 
