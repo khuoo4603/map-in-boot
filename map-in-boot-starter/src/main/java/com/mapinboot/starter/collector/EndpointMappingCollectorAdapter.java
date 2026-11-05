@@ -11,6 +11,7 @@ import com.mapinboot.core.common.type.NodeType;
 import com.mapinboot.core.evidence.Evidence;
 import com.mapinboot.core.evidence.Fact;
 import com.mapinboot.core.graph.StableIdGenerator;
+import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -20,10 +21,14 @@ import java.util.Set;
 import java.util.TreeMap;
 import java.util.stream.Collectors;
 import org.springframework.context.ApplicationContext;
+import org.springframework.http.server.PathContainer;
 import org.springframework.web.bind.annotation.RequestMethod;
 import org.springframework.web.method.HandlerMethod;
 import org.springframework.web.servlet.mvc.method.RequestMappingInfo;
+import org.springframework.web.servlet.mvc.condition.PathPatternsRequestCondition;
 import org.springframework.web.servlet.mvc.method.annotation.RequestMappingHandlerMapping;
+import org.springframework.web.util.pattern.PathPattern;
+import org.springframework.web.util.pattern.PathPatternParser;
 
 // Spring MVC Runtime Endpoint 수집기
 public class EndpointMappingCollectorAdapter extends AbstractCollectorAdapter {
@@ -97,6 +102,11 @@ public class EndpointMappingCollectorAdapter extends AbstractCollectorAdapter {
             diagnostics.add(new AdapterDiagnostic(id(), ErrorCode.INVALID_STATE, "Endpoint 필수 등록 정보 부재"));
             return true;
         }
+        String pathPatternSettings = mvcPathPatternSettings(mapping);
+        if ("UNKNOWN".equals(pathPatternSettings)) {
+            diagnostics.add(new AdapterDiagnostic(id(), ErrorCode.INVALID_STATE,
+                    "MVC PathPattern 설정 확인 실패"));
+        }
         if (methods.isEmpty()) {
             methods = List.of("ANY");
         }
@@ -114,6 +124,7 @@ public class EndpointMappingCollectorAdapter extends AbstractCollectorAdapter {
                 attributes.put("path", path);
                 attributes.put("handler", handler);
                 attributes.put("handlerMapping", mappingName);
+                attributes.put("mvcPathPatternSettings", pathPatternSettings);
                 facts.add(new Fact(
                         idGenerator.generate(serviceId, NodeType.ENDPOINT, "fact|" + subjectKey),
                         TYPE, subjectKey, attributes, List.of(evidenceId)));
@@ -121,7 +132,61 @@ public class EndpointMappingCollectorAdapter extends AbstractCollectorAdapter {
                         "등록 Endpoint: " + method + " " + path));
             }
         }
-        return false;
+        return "UNKNOWN".equals(pathPatternSettings);
+    }
+
+    private String mvcPathPatternSettings(RequestMappingInfo mapping) {
+        PathPatternsRequestCondition condition = mapping.getPathPatternsCondition();
+        if (condition == null || condition.getPatterns().isEmpty()) {
+            return "UNKNOWN";
+        }
+
+        boolean nonDefault = false;
+        for (PathPattern pattern : condition.getPatterns()) {
+            PathPatternValues actual = pathPatternValues(pattern);
+            if (actual == null) {
+                return "UNKNOWN";
+            }
+            PathPatternValues defaults;
+            try {
+                PathPattern defaultPattern = PathPatternParser.defaultInstance.parse(pattern.getPatternString());
+                defaults = pathPatternValues(defaultPattern);
+            } catch (RuntimeException exception) {
+                return "UNKNOWN";
+            }
+            if (defaults == null) {
+                return "UNKNOWN";
+            }
+            if (!actual.equals(defaults)) {
+                nonDefault = true;
+            }
+        }
+        return nonDefault ? "NON_DEFAULT" : "DEFAULT";
+    }
+
+    private PathPatternValues pathPatternValues(PathPattern pattern) {
+        Boolean caseSensitive = readField(pattern, "caseSensitive", Boolean.class);
+        PathContainer.Options options = readField(pattern, "pathOptions", PathContainer.Options.class);
+        if (caseSensitive == null || options == null) {
+            return null;
+        }
+        return new PathPatternValues(caseSensitive, options.separator(), options.shouldDecodeAndParseSegments());
+    }
+
+    private <T> T readField(Object target, String name, Class<T> type) {
+        if (target == null) {
+            return null;
+        }
+        try {
+            Field field = target.getClass().getDeclaredField(name);
+            if (!field.trySetAccessible()) {
+                return null;
+            }
+            Object value = field.get(target);
+            return type.isInstance(value) ? type.cast(value) : null;
+        } catch (ReflectiveOperationException | SecurityException exception) {
+            return null;
+        }
     }
 
     private Map<String, String> conditions(RequestMappingInfo mapping) {
@@ -163,5 +228,8 @@ public class EndpointMappingCollectorAdapter extends AbstractCollectorAdapter {
 
     private boolean isBlank(String value) {
         return value == null || value.isBlank();
+    }
+
+    private record PathPatternValues(boolean caseSensitive, char separator, boolean decodeAndParseSegments) {
     }
 }
