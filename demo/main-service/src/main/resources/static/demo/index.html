@@ -29,8 +29,8 @@
             <a class="nav-link" href="/demo/savings/index.html" data-route="true">상품</a>
             <a class="nav-link" href="/demo/my/index.html" data-route="true">개인뱅킹</a>
             <a class="nav-link" href="/demo/loans/index.html" data-route="true">대출</a>
-            <span class="nav-link is-disabled" aria-disabled="true">영업점</span>
-            <span class="nav-link is-disabled" aria-disabled="true">은행 관리자</span>
+            <a class="nav-link" href="/demo/staff/index.html" data-route="true" data-role-nav="staff" hidden>영업점</a>
+            <a class="nav-link" href="/demo/admin/index.html" data-route="true" data-role-nav="admin" hidden>은행 관리자</a>
             <span class="nav-link is-disabled" aria-disabled="true">개발자 검증</span>
         </nav>
 
@@ -151,14 +151,14 @@
                 <span class="service-icon" aria-hidden="true"><svg viewBox="0 0 24 24" role="img"><circle cx="12" cy="8" fill="none" r="3.2" stroke="currentColor" stroke-width="1.7"/><path d="M5.5 19c.8-3 3-4.5 6.5-4.5s5.7 1.5 6.5 4.5" fill="none" stroke="currentColor" stroke-linecap="round" stroke-width="1.7"/></svg></span>
                 <span>내 정보</span>
             </a>
-            <button class="service-tile" type="button" disabled>
+            <a class="service-tile" href="/demo/staff/index.html" data-route="true" data-role-service="staff" hidden>
                 <span class="service-icon" aria-hidden="true"><svg viewBox="0 0 24 24" role="img"><path d="M4.5 19.5h15M6.5 19.5v-8h11v8M4.5 11.5 12 6l7.5 5.5M9 15h6" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.7"/></svg></span>
                 <span>직원 업무</span>
-            </button>
-            <button class="service-tile" type="button" disabled>
+            </a>
+            <a class="service-tile" href="/demo/admin/index.html" data-route="true" data-role-service="admin" hidden>
                 <span class="service-icon" aria-hidden="true"><svg viewBox="0 0 24 24" role="img"><path d="M5 6.5h14v11H5zM8 4.5v4M16 4.5v4M8 12h2M12 12h2M16 12h.1M8 15h2M12 15h2" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.7"/></svg></span>
                 <span>상품 관리</span>
-            </button>
+            </a>
             <button class="service-tile" type="button" disabled>
                 <span class="service-icon" aria-hidden="true"><svg viewBox="0 0 24 24" role="img"><path d="M12 3.8 19 6v5.1c0 4.2-2.7 7.4-7 9.1-4.3-1.7-7-4.9-7-9.1V6l7-2.2Z" fill="none" stroke="currentColor" stroke-linejoin="round" stroke-width="1.7"/><path d="m8.8 12 2.1 2.1 4.4-4.4" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.7"/></svg></span>
                 <span>보안 검증</span>

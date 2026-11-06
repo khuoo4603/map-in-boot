@@ -10,7 +10,8 @@
         enrollment: null,
         pendingEnrollments: [],
         loanDraft: null,
-        pendingLoanApplications: []
+        pendingLoanApplications: [],
+        pendingAdminProductCreations: []
     };
 
     const roleLabels = {
@@ -42,7 +43,15 @@
         "/demo/loans/complete.html",
         "/demo/my/loans.html",
         "/demo/my/loan-detail.html",
-        "/demo/my/security.html"
+        "/demo/my/security.html",
+        "/demo/staff/index.html",
+        "/demo/staff/customers.html",
+        "/demo/staff/customer.html",
+        "/demo/staff/reports.html",
+        "/demo/admin/index.html",
+        "/demo/admin/savings.html",
+        "/demo/admin/subscriptions.html",
+        "/demo/admin/loans.html"
     ]);
     const routeQueryKeys = new Map([
         ["/demo/accounts/detail.html", new Set(["accountId"])],
@@ -54,7 +63,8 @@
         ["/demo/loans/apply.html", new Set(["productId"])],
         ["/demo/identity/verify.html", new Set(["returnTo", "applicationId"])],
         ["/demo/loans/complete.html", new Set(["applicationId"])],
-        ["/demo/my/loan-detail.html", new Set(["applicationId"])]
+        ["/demo/my/loan-detail.html", new Set(["applicationId"])],
+        ["/demo/staff/customer.html", new Set(["id"])]
     ]);
 
     // 현재 Main Origin 기준 Identity·Account Origin 계산
@@ -151,6 +161,24 @@
         return role ? roleLabels[role] : "사용자";
     }
 
+    function findPendingAdminProduct(userId) {
+        return state.pendingAdminProductCreations.find((attempt) => attempt.userId === userId);
+    }
+
+    function removePendingAdminProduct(attempt) {
+        const index = state.pendingAdminProductCreations.indexOf(attempt);
+        if (index >= 0) {
+            state.pendingAdminProductCreations.splice(index, 1);
+        }
+    }
+
+    function appendStaffTabStatus(panel, variant, title, detail) {
+        const status = document.createElement("div");
+        showStatus(status, variant, title, detail);
+        panel.append(status);
+        return status;
+    }
+
     function clearAuthState() {
         state.accessToken = null;
         state.sessionUser = null;
@@ -159,6 +187,7 @@
         state.pendingEnrollments = [];
         state.loanDraft = null;
         state.pendingLoanApplications = [];
+        state.pendingAdminProductCreations = [];
     }
 
     function isCurrentScreen(root, requestId) {
@@ -274,6 +303,40 @@
         return body;
     }
 
+    // Main 서비스 직원 보고서 보호 API 요청
+    async function mainRequest(path, options = {}) {
+        const requestId = state.requestId;
+        if (!state.accessToken) {
+            throw new ApiError(401, "로그인이 필요합니다.", requestId);
+        }
+        const expectedStatus = options.expectedStatus;
+        const fetchOptions = { ...options };
+        delete fetchOptions.expectedStatus;
+        const headers = new Headers(options.headers || {});
+        headers.set("Authorization", `Bearer ${state.accessToken}`);
+        const response = await fetch(`${window.location.origin}${path}`, {
+            ...fetchOptions,
+            headers,
+            credentials: "omit",
+            cache: "no-store"
+        });
+        const body = await readBody(response);
+        if (!response.ok) {
+            throw new ApiError(
+                response.status,
+                body?.error?.message || "Main 업무 API 요청에 실패했습니다.",
+                requestId,
+                body?.error?.code || null
+            );
+        }
+        if (expectedStatus && response.status !== expectedStatus) {
+            const error = new ApiError(response.status, "Main 업무 API 응답 상태를 확인하지 못했습니다.", requestId);
+            error.resultUnknown = true;
+            throw error;
+        }
+        return body;
+    }
+
     // Identity 업무 응답의 오류 코드와 메시지 보존
     async function identityApiRequest(path, options = {}) {
         const requestId = state.requestId;
@@ -348,12 +411,51 @@
             || path.startsWith("/demo/identity/");
     }
 
-    function resolveLoginDestination(user, requestedPath) {
+    function isStaffPath(path) {
+        return path.startsWith("/demo/staff/");
+    }
+
+    function isAdminPath(path) {
+        return path.startsWith("/demo/admin/");
+    }
+
+    function defaultLandingPath(user) {
         const roles = Array.isArray(user?.roles) ? user.roles : [];
-        if (!roles.includes("ROLE_CUSTOMER")) {
-            return "/demo/";
+        if (roles.includes("ROLE_BANK_ADMIN")) {
+            return "/demo/admin/index.html";
         }
-        return normalizePath(requestedPath) || "/demo/my/index.html";
+        if (roles.includes("ROLE_STAFF")) {
+            return "/demo/staff/index.html";
+        }
+        if (roles.includes("ROLE_CUSTOMER")) {
+            return "/demo/my/index.html";
+        }
+        return "/demo/";
+    }
+
+    function canAccessPath(user, path) {
+        if (path === "/demo/" || path === "/demo/index.html"
+                || path === "/demo/loans/index.html" || path === "/demo/loans/product.html") {
+            return true;
+        }
+        const roles = Array.isArray(user?.roles) ? user.roles : [];
+        if (isCustomerPath(path)) {
+            return roles.includes("ROLE_CUSTOMER");
+        }
+        if (isStaffPath(path)) {
+            return roles.includes("ROLE_STAFF");
+        }
+        if (isAdminPath(path)) {
+            return roles.includes("ROLE_BANK_ADMIN");
+        }
+        return false;
+    }
+
+    function resolveLoginDestination(user, requestedPath) {
+        const normalized = normalizePath(requestedPath);
+        return normalized && canAccessPath(user, normalized)
+            ? normalized
+            : defaultLandingPath(user);
     }
 
     function setPageTitle(title) {
@@ -426,6 +528,33 @@
         if (syncAuth) {
             syncHeaderAuth(requestId);
         }
+    }
+
+    // 직원·관리자 업무 화면 공통 프레임 구성
+    function renderBusinessFrame(area) {
+        document.body.className = "bank-page customer-page business-page";
+        document.body.dataset.page = "screen";
+        document.body.replaceChildren();
+        const isStaff = area === "staff";
+        const nav = isStaff
+            ? `<a href="/demo/staff/index.html" data-route="true">업무센터</a><a href="/demo/staff/customers.html" data-route="true">고객 검색</a><a href="/demo/staff/reports.html" data-route="true">업무 보고서</a>`
+            : `<a href="/demo/admin/index.html" data-route="true">관리자 홈</a><a href="/demo/admin/savings.html" data-route="true">상품 관리</a><a href="/demo/admin/subscriptions.html" data-route="true">가입 현황</a><a href="/demo/admin/loans.html" data-route="true">대출·담당 배정</a>`;
+        const header = document.createElement("header");
+        header.className = "site-header customer-header";
+        header.innerHTML = `<div class="shell header-inner">
+            <a class="brand" href="/demo/" data-route="true" aria-label="Demo Bank 홈"><span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 32 32"><path d="M6 14.5 16 7l10 7.5" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2.4"/><path d="M8.5 14.5v9h15v-9M5.5 25.5h21" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2.4"/><path d="M12 17v4.5M16 17v4.5M20 17v4.5" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"/></svg></span><span class="brand-text"><strong>Demo Bank</strong><small>금융 Demo 포털</small></span></a>
+            <nav class="customer-nav" aria-label="${isStaff ? "직원 업무 메뉴" : "은행 관리자 메뉴"}">${nav}</nav>
+            <div class="header-tools" data-header-auth><a class="utility-link" data-header-login href="/demo/login.html">로그인</a><span class="user-label" data-header-user hidden></span><button class="button button-quiet button-small" type="button" data-logout hidden>로그아웃</button></div>
+        </div>`;
+        const main = document.createElement("main");
+        main.className = "customer-main";
+        main.innerHTML = `<div class="shell customer-content"><div data-screen-root></div></div>`;
+        const footer = document.createElement("footer");
+        footer.className = "site-footer";
+        footer.innerHTML = `<div class="shell footer-inner"><div><strong>Demo Bank</strong><p>금융 서비스 포털</p></div><p>${isStaff ? "영업점 직원 업무" : "은행 관리자 업무"}</p></div>`;
+        document.body.append(header, main, footer);
+        updateHeaderAuth(state.sessionUser);
+        bindLogout();
     }
 
     function screenRoot() {
@@ -596,6 +725,13 @@
         const loginLinks = queryAll("[data-login-link]");
         const logoutButtons = queryAll("[data-logout]");
         const userLabels = queryAll("[data-user-label]");
+        const roleLinks = queryAll("[data-role-nav], [data-role-service]");
+        const roles = Array.isArray(user?.roles) ? user.roles : [];
+        roleLinks.forEach((element) => {
+            const role = element.dataset.roleNav || element.dataset.roleService;
+            element.hidden = !((role === "staff" && roles.includes("ROLE_STAFF"))
+                || (role === "admin" && roles.includes("ROLE_BANK_ADMIN")));
+        });
         if (user) {
             const label = roleLabel(user);
             showStatus(authState, "is-auth", `${user.userId}님, 환영합니다`, `${label} 권한으로 로그인되었습니다.`);
@@ -739,8 +875,8 @@
         root.append(message);
     }
 
-    // 보호 화면 진입 전 Session·JWT 상태 확인
-    async function ensureCustomerAccess(root, requestId) {
+    // 보호 업무 화면 진입 전 Session·JWT·역할 상태 확인
+    async function ensureRoleAccess(root, requestId, requiredRole, roleName) {
         if (!isCurrentScreen(root, requestId)) {
             return false;
         }
@@ -762,12 +898,25 @@
             renderInlineLogin(currentPath(), "현재 사용자와 이전 인증 상태가 일치하지 않습니다.");
             return false;
         }
-        if (!Array.isArray(currentUser.body.roles) || !currentUser.body.roles.includes("ROLE_CUSTOMER")) {
-            renderError(root, "고객 권한이 필요한 화면입니다.", "현재 계정으로는 이 금융 기능을 이용할 수 없습니다.");
+        if (!Array.isArray(currentUser.body.roles) || !currentUser.body.roles.includes(requiredRole)) {
+            renderError(root, `${roleName} 권한이 필요한 화면입니다.`, "현재 계정으로는 이 업무 기능을 이용할 수 없습니다.", "is-forbidden");
             return false;
         }
         state.sessionUser = currentUser.body;
+        updateHeaderAuth(currentUser.body);
         return true;
+    }
+
+    async function ensureCustomerAccess(root, requestId) {
+        return ensureRoleAccess(root, requestId, "ROLE_CUSTOMER", "고객");
+    }
+
+    async function ensureStaffAccess(root, requestId) {
+        return ensureRoleAccess(root, requestId, "ROLE_STAFF", "직원");
+    }
+
+    async function ensureAdminAccess(root, requestId) {
+        return ensureRoleAccess(root, requestId, "ROLE_BANK_ADMIN", "은행 관리자");
     }
 
     function handleScreenError(root, error, requestId) {
@@ -820,6 +969,27 @@
             grid.append(card);
         });
         parent.append(grid);
+    }
+
+    function appendTable(parent, headers, rows) {
+        const wrap = document.createElement("div");
+        wrap.className = "table-wrap";
+        const table = document.createElement("table");
+        table.className = "data-table";
+        const head = document.createElement("thead");
+        const headRow = document.createElement("tr");
+        headers.forEach((header) => appendText(headRow, "th", header));
+        head.append(headRow);
+        const body = document.createElement("tbody");
+        rows.forEach((values) => {
+            const row = document.createElement("tr");
+            values.forEach((value) => appendText(row, "td", value ?? "정보 없음"));
+            body.append(row);
+        });
+        table.append(head, body);
+        wrap.append(table);
+        parent.append(wrap);
+        return wrap;
     }
 
     function renderAccountCard(account) {
@@ -2390,6 +2560,934 @@
         }
     }
 
+    function createLoadingStatus(title = "업무 정보를 불러오는 중입니다") {
+        const status = document.createElement("div");
+        showStatus(status, "is-loading", title, "잠시만 기다려 주세요.");
+        return status;
+    }
+
+    function renderStaffCustomerCard(customer) {
+        const card = document.createElement("a");
+        card.className = "catalog-card";
+        card.href = `/demo/staff/customer.html?id=${encodeURIComponent(customer.customerId)}`;
+        card.dataset.route = "true";
+        appendText(card, "span", customer.status || "상태 정보 없음", "section-label");
+        appendText(card, "h2", customer.displayName || customer.customerId || "고객 정보 없음");
+        appendDetailGrid(card, [["고객 ID", customer.customerId]]);
+        return card;
+    }
+
+    async function renderStaffHome(root, requestId) {
+        if (!await ensureStaffAccess(root, requestId)) {
+            return;
+        }
+        root.replaceChildren();
+        renderHeading(root, "영업점 업무센터", "영업점 업무센터", `${state.sessionUser.userId} 직원의 담당 고객 업무입니다.`);
+        const status = createLoadingStatus("담당 고객 목록을 불러오는 중입니다");
+        const section = document.createElement("section");
+        section.className = "card data-section";
+        appendText(section, "h2", "내 담당 고객");
+        section.append(status);
+        root.append(section);
+        try {
+            const customers = await accountRequest("/api/staff/assigned-customers");
+            if (!isCurrentScreen(root, requestId)) {
+                return;
+            }
+            if (!Array.isArray(customers)) {
+                throw new Error("담당 고객 응답 형식 오류");
+            }
+            status.remove();
+            appendStatGrid(root, [["담당 고객", `${customers.length}명`, "서버가 반환한 현재 배정 목록"]]);
+            if (customers.length === 0) {
+                showStatus(status, "is-empty", "담당 고객이 없습니다", "현재 직원에게 배정된 고객이 없습니다.");
+                section.append(status);
+            } else {
+                const grid = document.createElement("div");
+                grid.className = "catalog-grid";
+                customers.forEach((customer) => grid.append(renderStaffCustomerCard(customer)));
+                section.append(grid);
+            }
+            const actions = document.createElement("div");
+            actions.className = "page-actions";
+            appendAction(actions, "/demo/staff/customers.html", "고객 검색", "button-primary");
+            appendAction(actions, "/demo/staff/reports.html", "업무 보고서");
+            root.append(actions);
+        } catch (error) {
+            handleScreenError(root, error, requestId);
+        }
+    }
+
+    async function renderStaffCustomers(root, requestId) {
+        if (!await ensureStaffAccess(root, requestId)) {
+            return;
+        }
+        root.replaceChildren();
+        renderHeading(root, "고객 검색", "고객 검색", "고객명 또는 고객 ID로 담당 여부와 기본정보를 확인합니다.");
+        const form = document.createElement("form");
+        form.className = "card customer-form";
+        const label = document.createElement("label");
+        label.className = "field-label";
+        label.htmlFor = "staff-customer-query";
+        label.textContent = "고객명 또는 고객 ID";
+        const input = document.createElement("input");
+        input.className = "field";
+        input.id = "staff-customer-query";
+        input.name = "q";
+        input.type = "search";
+        input.autocomplete = "off";
+        const submit = document.createElement("button");
+        submit.className = "button button-primary";
+        submit.type = "submit";
+        submit.textContent = "검색";
+        form.append(label, input, submit);
+        const resultSection = document.createElement("section");
+        resultSection.className = "data-section";
+        appendText(resultSection, "h2", "검색 결과");
+        const resultState = createLoadingStatus("고객 검색 결과를 불러오는 중입니다");
+        resultSection.append(resultState);
+        root.append(form, resultSection);
+        let searchVersion = 0;
+
+        const loadResults = async () => {
+            const version = ++searchVersion;
+            submit.disabled = true;
+            resultState.replaceChildren();
+            showStatus(resultState, "is-loading", "고객 검색 결과를 불러오는 중입니다", "잠시만 기다려 주세요.");
+            resultState.hidden = false;
+            queryAll(".catalog-grid", resultSection).forEach((element) => element.remove());
+            const params = new URLSearchParams();
+            const keyword = input.value.trim();
+            if (keyword) {
+                params.set("q", keyword);
+            }
+            try {
+                const suffix = params.toString() ? `?${params}` : "";
+                const body = await accountRequest(`/api/staff/secured/customers/search${suffix}`);
+                if (!isCurrentScreen(root, requestId) || version !== searchVersion) {
+                    return;
+                }
+                if (!Array.isArray(body?.customers)) {
+                    throw new Error("고객 검색 응답 형식 오류");
+                }
+                resultState.hidden = true;
+                if (body.customers.length === 0) {
+                    showStatus(resultState, "is-empty", "검색 결과가 없습니다", "검색어와 일치하는 고객이 없습니다.");
+                    return;
+                }
+                const grid = document.createElement("div");
+                grid.className = "catalog-grid";
+                body.customers.forEach((customer) => grid.append(renderStaffCustomerCard(customer)));
+                resultSection.append(grid);
+            } catch (error) {
+                if (!isCurrentScreen(root, requestId) || version !== searchVersion) {
+                    return;
+                }
+                if (error.status === 401 || error.status === 403) {
+                    handleScreenError(root, error, requestId);
+                    return;
+                }
+                showStatus(resultState, "is-server-error", "고객 검색에 실패했습니다", "네트워크 상태를 확인한 뒤 다시 시도해 주세요.");
+            } finally {
+                if (isCurrentScreen(root, requestId) && version === searchVersion) {
+                    submit.disabled = false;
+                }
+            }
+        };
+
+        form.addEventListener("submit", (event) => {
+            event.preventDefault();
+            if (!state.busy) {
+                loadResults();
+            }
+        });
+        await loadResults();
+    }
+
+    function renderStaffTabError(panel, error, sensitive) {
+        panel.replaceChildren();
+        if (error.status === 403 && sensitive) {
+            appendStaffTabStatus(panel, "is-forbidden", "담당 고객 정보가 아닙니다", "현재 직원에게 배정되지 않은 고객의 정보입니다.");
+            return;
+        }
+        if (error.status === 404) {
+            appendStaffTabStatus(panel, "is-empty", "고객 정보를 찾지 못했습니다", "고객 ID를 확인한 뒤 다시 시도해 주세요.");
+            return;
+        }
+        appendStaffTabStatus(panel, "is-server-error", "고객 정보를 불러오지 못했습니다", "권한과 네트워크 상태를 확인한 뒤 다시 시도해 주세요.");
+    }
+
+    async function renderStaffCustomer(root, requestId) {
+        if (!await ensureStaffAccess(root, requestId)) {
+            return;
+        }
+        const customerId = new URLSearchParams(window.location.search).get("id");
+        root.replaceChildren();
+        renderHeading(root, "고객 상세", "고객 업무 상세", customerId ? `${customerId} 고객의 업무 정보를 확인합니다.` : "고객 ID가 필요합니다.");
+        if (!customerId) {
+            renderError(root, "고객 ID가 없습니다.", "고객 검색 또는 담당 고객 목록에서 고객을 선택해 주세요.");
+            return;
+        }
+        const tabs = document.createElement("div");
+        tabs.className = "tab-list";
+        const panel = document.createElement("section");
+        panel.className = "card data-section";
+        let tabVersion = 0;
+
+        const loadTab = async (kind) => {
+            const version = ++tabVersion;
+            panel.replaceChildren();
+            panel.append(createLoadingStatus("고객 업무 정보를 불러오는 중입니다"));
+            const encodedId = encodeURIComponent(customerId);
+            const paths = {
+                profile: `/api/staff/secured/customers/${encodedId}`,
+                contact: `/api/staff/secured/customers/${encodedId}/contact`,
+                savings: `/api/staff/assigned-customers/${encodedId}/savings`,
+                loans: `/api/staff/assigned-customers/${encodedId}/loans`
+            };
+            try {
+                const body = await accountRequest(paths[kind]);
+                if (!isCurrentScreen(root, requestId) || version !== tabVersion) {
+                    return;
+                }
+                panel.replaceChildren();
+                if (kind === "profile") {
+                    appendText(panel, "h2", "기본정보");
+                    appendDetailGrid(panel, [["고객 ID", body.customerId], ["고객명", body.displayName], ["고객 상태", body.status]]);
+                } else if (kind === "contact") {
+                    appendText(panel, "h2", "연락처");
+                    appendDetailGrid(panel, [["고객 ID", body.customerId], ["연락처", body.contact]]);
+                } else if (kind === "savings") {
+                    appendText(panel, "h2", "담당 고객 예적금");
+                    if (!Array.isArray(body?.subscriptions) || body.subscriptions.length === 0) {
+                        appendStaffTabStatus(panel, "is-empty", "예적금 가입 내역이 없습니다", "서버가 반환한 가입 내역이 없습니다.");
+                    } else {
+                        appendTable(panel, ["가입번호", "상품", "가입 원금", "가입 상태"], body.subscriptions.map((item) => [
+                            item.subscriptionId,
+                            item.productName || "상품 정보 없음",
+                            formatMoney(item.principal),
+                            item.status
+                        ]));
+                    }
+                } else {
+                    appendText(panel, "h2", "담당 고객 대출");
+                    if (!Array.isArray(body) || body.length === 0) {
+                        appendStaffTabStatus(panel, "is-empty", "대출 신청 내역이 없습니다", "서버가 반환한 대출 신청 내역이 없습니다.");
+                    } else {
+                        appendTable(panel, ["신청번호", "상품번호", "신청 금액", "신청 상태", "신청일"], body.map((item) => [
+                            item.applicationId,
+                            item.productId,
+                            formatMoney(item.amount),
+                            item.status,
+                            formatDate(item.createdAt)
+                        ]));
+                    }
+                }
+            } catch (error) {
+                if (!isCurrentScreen(root, requestId) || version !== tabVersion) {
+                    return;
+                }
+                if (error.status === 401) {
+                    handleScreenError(root, error, requestId);
+                    return;
+                }
+                panel.replaceChildren();
+                renderStaffTabError(panel, error, kind !== "profile");
+            }
+        };
+
+        [["profile", "기본정보"], ["contact", "연락처"], ["savings", "예적금"], ["loans", "대출"]].forEach(([kind, label], index) => {
+            const button = document.createElement("button");
+            button.type = "button";
+            button.className = "tab-button";
+            button.textContent = label;
+            button.addEventListener("click", () => {
+                queryAll(".tab-button", tabs).forEach((item) => item.classList.remove("is-current"));
+                button.classList.add("is-current");
+                loadTab(kind);
+            });
+            tabs.append(button);
+            if (index === 0) {
+                button.classList.add("is-current");
+            }
+        });
+        root.append(tabs, panel);
+        await loadTab("profile");
+    }
+
+    function renderStaffReportCard(report) {
+        const card = document.createElement("article");
+        card.className = "card data-section";
+        appendText(card, "span", report.visibility || "업무 보고서", "section-label");
+        appendText(card, "h2", report.title || report.reportId || "보고서");
+        appendText(card, "p", report.summary || "요약 정보 없음");
+        appendDetailGrid(card, [["보고서 ID", report.reportId]]);
+        return card;
+    }
+
+    async function renderStaffReports(root, requestId) {
+        if (!await ensureStaffAccess(root, requestId)) {
+            return;
+        }
+        root.replaceChildren();
+        renderHeading(root, "업무 보고서", "직원 업무 보고서", "현재 직원이 조회할 수 있는 Main 업무 보고서입니다.");
+        const status = createLoadingStatus("업무 보고서를 불러오는 중입니다");
+        root.append(status);
+        try {
+            const reports = await mainRequest("/api/staff/protected/reports/summary");
+            if (!isCurrentScreen(root, requestId)) {
+                return;
+            }
+            if (!Array.isArray(reports)) {
+                throw new Error("보고서 응답 형식 오류");
+            }
+            status.remove();
+            if (reports.length === 0) {
+                showStatus(status, "is-empty", "조회할 보고서가 없습니다", "현재 직원 보고서가 없습니다.");
+                root.append(status);
+            } else {
+                const grid = document.createElement("div");
+                grid.className = "catalog-grid";
+                reports.forEach((report) => grid.append(renderStaffReportCard(report)));
+                root.append(grid);
+            }
+            const actions = document.createElement("div");
+            actions.className = "page-actions";
+            appendAction(actions, "/demo/staff/index.html", "업무센터로 돌아가기", "button-primary");
+            root.append(actions);
+        } catch (error) {
+            handleScreenError(root, error, requestId);
+        }
+    }
+
+    function renderAdminHomePanel(title, body, error) {
+        const card = document.createElement("section");
+        card.className = "card data-section";
+        appendText(card, "h2", title);
+        if (error) {
+            showStatus(card, error.status === 403 ? "is-forbidden" : "is-server-error", "이 업무 영역을 조회하지 못했습니다", error.status === 403 ? "은행 관리자 권한을 확인해 주세요." : "서버 응답을 확인한 뒤 다시 조회해 주세요.");
+            return card;
+        }
+        body(card);
+        return card;
+    }
+
+    async function renderAdminHome(root, requestId) {
+        if (!await ensureAdminAccess(root, requestId)) {
+            return;
+        }
+        root.replaceChildren();
+        renderHeading(root, "은행 관리자", "은행 관리자 홈", `${state.sessionUser.userId} 관리자의 운영 조회 화면입니다.`);
+        const status = createLoadingStatus("관리자 현황을 불러오는 중입니다");
+        root.append(status);
+        const resources = [
+            ["products", () => accountRequest("/api/admin/savings/products")],
+            ["subscriptions", () => accountRequest("/api/admin/savings/subscriptions")],
+            ["loans", () => accountRequest("/api/admin/loans/summary")],
+            ["assignments", () => accountRequest("/api/admin/assignments")]
+        ];
+        try {
+            const results = await Promise.all(resources.map(async ([key, request]) => {
+                try {
+                    return [key, await request(), null];
+                } catch (error) {
+                    return [key, null, error];
+                }
+            }));
+            if (!isCurrentScreen(root, requestId)) {
+                return;
+            }
+            const failedAuth = results.find(([, , error]) => error?.status === 401);
+            if (failedAuth) {
+                handleScreenError(root, failedAuth[2], requestId);
+                return;
+            }
+            status.remove();
+            const values = new Map(results.map(([key, body, error]) => [key, { body, error }]));
+            const stats = [];
+            if (!values.get("products").error && Array.isArray(values.get("products").body)) {
+                const products = values.get("products").body;
+                stats.push(["전체 상품", `${products.length}개`, "판매 중·중단 상품 전체"]);
+                stats.push(["판매 중 상품", `${products.filter((product) => product.active).length}개`, "서버 active 값 기준"]);
+            }
+            if (!values.get("subscriptions").error && Number.isInteger(values.get("subscriptions").body?.totalCount)) {
+                stats.push(["예적금 가입", `${values.get("subscriptions").body.totalCount}건`, "전체 가입 현황 조회 결과"]);
+            }
+            if (!values.get("loans").error && Number.isInteger(values.get("loans").body?.totalCount)) {
+                stats.push(["대출 신청", `${values.get("loans").body.totalCount}건`, "전체 대출 신청 집계"]);
+            }
+            if (stats.length > 0) {
+                appendStatGrid(root, stats);
+            }
+            root.append(renderAdminHomePanel("예적금 상품 현황", (card) => {
+                const products = values.get("products").body;
+                if (!Array.isArray(products)) {
+                    showStatus(card, "is-empty", "상품 현황이 없습니다", "상품 API가 반환한 목록이 없습니다.");
+                    return;
+                }
+                appendDetailGrid(card, [["전체 상품", `${products.length}개`], ["판매 중", `${products.filter((product) => product.active).length}개`]]);
+                appendAction(card, "/demo/admin/savings.html", "상품 관리", "button-primary");
+            }, values.get("products").error));
+            root.append(renderAdminHomePanel("예적금 가입 현황", (card) => {
+                const subscriptions = values.get("subscriptions").body;
+                if (!subscriptions || !Array.isArray(subscriptions.items)) {
+                    showStatus(card, "is-empty", "가입 현황이 없습니다", "가입 현황 API 응답을 확인해 주세요.");
+                    return;
+                }
+                appendDetailGrid(card, [["조회 건수", `${subscriptions.totalCount}건`], ["표시 항목", `${subscriptions.items.length}건`]]);
+                appendAction(card, "/demo/admin/subscriptions.html", "가입 현황 보기");
+            }, values.get("subscriptions").error));
+            root.append(renderAdminHomePanel("대출 신청 집계", (card) => {
+                const loans = values.get("loans").body;
+                if (!loans || !Number.isInteger(loans.totalCount)) {
+                    showStatus(card, "is-empty", "대출 집계가 없습니다", "대출 집계 API 응답을 확인해 주세요.");
+                    return;
+                }
+                appendDetailGrid(card, [["전체 신청", `${loans.totalCount}건`], ["상태 분류", `${Object.keys(loans.statusCounts || {}).length}개`]]);
+                appendAction(card, "/demo/admin/loans.html", "대출 현황 보기");
+            }, values.get("loans").error));
+            root.append(renderAdminHomePanel("직원 담당 고객 배정", (card) => {
+                const assignments = values.get("assignments").body;
+                if (!Array.isArray(assignments)) {
+                    showStatus(card, "is-empty", "배정 현황이 없습니다", "배정 현황 API 응답을 확인해 주세요.");
+                    return;
+                }
+                appendDetailGrid(card, [["배정 정보", `${assignments.length}건`]]);
+                appendAction(card, "/demo/admin/loans.html", "담당 배정 현황 보기");
+            }, values.get("assignments").error));
+        } catch (error) {
+            handleScreenError(root, error, requestId);
+        }
+    }
+
+    function setSelectOptions(select, options, selectedValue) {
+        select.replaceChildren();
+        options.forEach(([value, label]) => {
+            const option = document.createElement("option");
+            option.value = value;
+            option.textContent = label;
+            option.selected = value === selectedValue;
+            select.append(option);
+        });
+    }
+
+    async function renderAdminSubscriptions(root, requestId) {
+        if (!await ensureAdminAccess(root, requestId)) {
+            return;
+        }
+        root.replaceChildren();
+        renderHeading(root, "가입 현황", "예적금 가입 현황", "상품과 가입 상태 조건으로 서버의 가입 내역을 조회합니다.");
+        const form = document.createElement("form");
+        form.className = "card customer-form";
+        const productLabel = document.createElement("label");
+        productLabel.className = "field-label";
+        productLabel.htmlFor = "admin-subscription-product";
+        productLabel.textContent = "상품";
+        const productSelect = document.createElement("select");
+        productSelect.className = "select-control";
+        productSelect.id = "admin-subscription-product";
+        const statusLabel = document.createElement("label");
+        statusLabel.className = "field-label";
+        statusLabel.htmlFor = "admin-subscription-status";
+        statusLabel.textContent = "가입 상태";
+        const statusSelect = document.createElement("select");
+        statusSelect.className = "select-control";
+        statusSelect.id = "admin-subscription-status";
+        setSelectOptions(productSelect, [["", "전체 상품"]], "");
+        setSelectOptions(statusSelect, [["", "전체 상태"]], "");
+        const submit = document.createElement("button");
+        submit.className = "button button-primary";
+        submit.type = "submit";
+        submit.textContent = "조회";
+        form.append(productLabel, productSelect, statusLabel, statusSelect, submit);
+        const stateElement = createLoadingStatus("가입 현황을 불러오는 중입니다");
+        const resultSection = document.createElement("section");
+        resultSection.className = "data-section";
+        appendText(resultSection, "h2", "조회 결과");
+        resultSection.append(stateElement);
+        root.append(form, resultSection);
+        let queryVersion = 0;
+        let statusOptions = new Set();
+
+        const loadSubscriptions = async () => {
+            const version = ++queryVersion;
+            submit.disabled = true;
+            resultSection.replaceChildren();
+            appendText(resultSection, "h2", "조회 결과");
+            const loading = createLoadingStatus("가입 현황을 불러오는 중입니다");
+            resultSection.append(loading);
+            const params = new URLSearchParams();
+            if (productSelect.value) {
+                params.set("productId", productSelect.value);
+            }
+            if (statusSelect.value) {
+                params.set("status", statusSelect.value);
+            }
+            try {
+                const suffix = params.toString() ? `?${params}` : "";
+                const body = await accountRequest(`/api/admin/savings/subscriptions${suffix}`);
+                if (!isCurrentScreen(root, requestId) || version !== queryVersion) {
+                    return;
+                }
+                if (!Array.isArray(body?.items) || !Number.isInteger(body.totalCount)) {
+                    throw new Error("가입 현황 응답 형식 오류");
+                }
+                body.items.forEach((item) => statusOptions.add(item.status));
+                const selectedStatus = statusSelect.value;
+                setSelectOptions(statusSelect, [["", "전체 상태"], ...[...statusOptions].map((value) => [value, value])], selectedStatus);
+                loading.remove();
+                appendText(resultSection, "p", `현재 조회 결과 ${body.totalCount}건`, "status-inline");
+                if (body.items.length === 0) {
+                    const empty = document.createElement("div");
+                    showStatus(empty, "is-empty", "가입 내역이 없습니다", "현재 조건과 일치하는 가입 내역이 없습니다.");
+                    resultSection.append(empty);
+                } else {
+                    appendTable(resultSection, ["가입번호", "상품번호", "가입 원금", "가입 상태"], body.items.map((item) => [
+                        item.subscriptionId,
+                        item.productId,
+                        formatMoney(item.principal),
+                        item.status
+                    ]));
+                }
+            } catch (error) {
+                if (!isCurrentScreen(root, requestId) || version !== queryVersion) {
+                    return;
+                }
+                if (error.status === 401 || error.status === 403) {
+                    handleScreenError(root, error, requestId);
+                    return;
+                }
+                resultSection.replaceChildren();
+                appendText(resultSection, "h2", "조회 결과");
+                const failure = document.createElement("div");
+                showStatus(failure, "is-server-error", "가입 현황을 조회하지 못했습니다", "네트워크 상태를 확인한 뒤 다시 조회해 주세요.");
+                resultSection.append(failure);
+            } finally {
+                if (isCurrentScreen(root, requestId) && version === queryVersion) {
+                    submit.disabled = false;
+                }
+            }
+        };
+
+        try {
+            const products = await accountRequest("/api/admin/savings/products");
+            if (!isCurrentScreen(root, requestId)) {
+                return;
+            }
+            if (Array.isArray(products)) {
+                setSelectOptions(productSelect, [["", "전체 상품"], ...products.map((product) => [product.productId, `${product.name || "상품명 없음"} (${product.productId})`])], "");
+            }
+        } catch (error) {
+            if (error.status === 401 || error.status === 403) {
+                handleScreenError(root, error, requestId);
+                return;
+            }
+        }
+        form.addEventListener("submit", (event) => {
+            event.preventDefault();
+            if (!state.busy) {
+                loadSubscriptions();
+            }
+        });
+        await loadSubscriptions();
+    }
+
+    async function renderAdminLoans(root, requestId) {
+        if (!await ensureAdminAccess(root, requestId)) {
+            return;
+        }
+        root.replaceChildren();
+        renderHeading(root, "대출·담당 배정", "대출 집계 및 담당 배정", "대출 신청 상태와 직원 담당 고객 배정을 서버 응답으로 확인합니다.");
+        const loading = createLoadingStatus("대출 집계와 배정 현황을 불러오는 중입니다");
+        root.append(loading);
+        try {
+            const [loans, assignments] = await Promise.all([
+                accountRequest("/api/admin/loans/summary"),
+                accountRequest("/api/admin/assignments")
+            ]);
+            if (!isCurrentScreen(root, requestId)) {
+                return;
+            }
+            if (!Number.isInteger(loans?.totalCount) || typeof loans.statusCounts !== "object" || !Array.isArray(assignments)) {
+                throw new Error("관리자 대출 응답 형식 오류");
+            }
+            loading.remove();
+            const summary = document.createElement("section");
+            summary.className = "card data-section";
+            appendText(summary, "h2", "대출 신청 집계");
+            const entries = [["전체 신청", `${loans.totalCount}건`]];
+            Object.entries(loans.statusCounts).forEach(([status, count]) => entries.push([status, `${count}건`]));
+            appendDetailGrid(summary, entries);
+            root.append(summary);
+            const assignmentSection = document.createElement("section");
+            assignmentSection.className = "card data-section";
+            appendText(assignmentSection, "h2", "직원 담당 고객 배정");
+            if (assignments.length === 0) {
+                showStatus(assignmentSection, "is-empty", "배정 정보가 없습니다", "서버가 반환한 담당 배정 정보가 없습니다.");
+            } else {
+                appendTable(assignmentSection, ["직원 ID", "고객 ID", "배정 여부", "배정 범위"], assignments.map((item) => [
+                    item.staffId,
+                    item.customerId,
+                    item.assigned ? "배정" : "미배정",
+                    item.scope
+                ]));
+            }
+            root.append(assignmentSection);
+        } catch (error) {
+            handleScreenError(root, error, requestId);
+        }
+    }
+
+    function showAdminMutationError(element, error) {
+        if (error.status === 400) {
+            showStatus(element, "is-error", "입력값을 확인해 주세요", "상품명·종류·기간·표시금리 조건을 확인해 주세요.");
+            return;
+        }
+        if (error.status === 401) {
+            showStatus(element, "is-error", "관리자 인증이 필요합니다", "다시 로그인한 뒤 시도해 주세요.");
+            return;
+        }
+        if (error.status === 403) {
+            showStatus(element, "is-forbidden", "관리자 권한이 없습니다", "은행 관리자 계정으로 다시 확인해 주세요.");
+            return;
+        }
+        if (error.status === 404) {
+            showStatus(element, "is-empty", "상품을 찾지 못했습니다", "상품 목록을 새로 조회해 주세요.");
+            return;
+        }
+        if (error.status >= 400 && error.status < 500) {
+            showStatus(element, "is-error", "서버가 상품 변경을 거부했습니다", "입력값과 현재 상품 상태를 확인한 뒤 다시 시도해 주세요.");
+            return;
+        }
+        showStatus(element, "is-server-error", "변경 결과를 확정하지 못했습니다", "상품 목록을 다시 조회해 실제 서버 상태를 확인해 주세요.");
+    }
+
+    function renderAdminProductCard(product, onMutation, cardIndex) {
+        const card = document.createElement("article");
+        card.className = "catalog-card product-management-card";
+        appendText(card, "span", `${savingsKind(product.kind)} · ${product.productId}`, "section-label");
+        appendText(card, "h2", product.name || "상품명 없음");
+        appendDetailGrid(card, [
+            ["기간", `${product.termMonths}개월`],
+            ["표시금리", `${product.displayRate}%`],
+            ["판매 상태", product.active ? "판매 중" : "판매 중단"]
+        ]);
+        const nameForm = document.createElement("form");
+        nameForm.className = "customer-form";
+        const productKey = String(product.productId || "product").replace(/[^A-Za-z0-9_-]/g, "-");
+        const inputId = `admin-product-name-${cardIndex}-${productKey}`;
+        const nameLabel = document.createElement("label");
+        nameLabel.className = "field-label";
+        nameLabel.htmlFor = inputId;
+        nameLabel.textContent = "상품명 수정";
+        const nameInput = document.createElement("input");
+        nameInput.className = "field";
+        nameInput.id = inputId;
+        nameInput.name = "name";
+        nameInput.value = product.name || "";
+        nameInput.required = true;
+        const nameSubmit = document.createElement("button");
+        nameSubmit.className = "button button-secondary";
+        nameSubmit.type = "submit";
+        nameSubmit.textContent = "상품명 저장";
+        nameForm.append(nameLabel, nameInput, nameSubmit);
+        nameForm.addEventListener("submit", (event) => {
+            event.preventDefault();
+            onMutation({ name: nameInput.value.trim() }, nameSubmit);
+        });
+        const statusButton = document.createElement("button");
+        statusButton.className = "button button-primary";
+        statusButton.type = "button";
+        statusButton.textContent = product.active ? "판매 중단" : "판매 재개";
+        statusButton.addEventListener("click", () => {
+            if (window.confirm(`${product.name || product.productId} 상품을 ${product.active ? "판매 중단" : "판매 재개"}하시겠습니까?`)) {
+                onMutation({ active: !product.active }, statusButton);
+            }
+        });
+        const actions = document.createElement("div");
+        actions.className = "page-actions";
+        actions.append(statusButton);
+        card.append(nameForm, actions);
+        return card;
+    }
+
+    async function renderAdminSavings(root, requestId) {
+        if (!await ensureAdminAccess(root, requestId)) {
+            return;
+        }
+        root.replaceChildren();
+        renderHeading(root, "상품 관리", "예적금 상품 관리", "판매 중·중단 상품을 확인하고 관리자 권한으로 운영 상태를 변경합니다.");
+        const adminUserId = state.sessionUser.userId;
+        const createSection = document.createElement("section");
+        createSection.className = "card data-section";
+        appendText(createSection, "h2", "신규 상품 등록");
+        const createForm = document.createElement("form");
+        createForm.className = "customer-form";
+        const createFields = [
+            ["상품명", "name", "text", "상품명을 입력해 주세요", "admin-new-product-name"],
+            ["기간(개월)", "termMonths", "number", "12", "admin-new-product-term-months"],
+            ["표시금리(%)", "displayRate", "number", "3.5", "admin-new-product-rate"]
+        ];
+        const createInputs = new Map();
+        createFields.forEach(([labelText, name, type, placeholder, inputId]) => {
+            const label = document.createElement("label");
+            label.className = "field-label";
+            label.htmlFor = inputId;
+            label.textContent = labelText;
+            const input = document.createElement("input");
+            input.className = "field";
+            input.id = inputId;
+            input.name = name;
+            input.type = type;
+            input.placeholder = placeholder;
+            input.required = true;
+            if (type === "number") {
+                input.min = name === "termMonths" ? "1" : "0";
+                input.step = name === "termMonths" ? "1" : "0.01";
+            }
+            createForm.append(label, input);
+            createInputs.set(name, input);
+        });
+        const kindLabel = document.createElement("label");
+        kindLabel.className = "field-label";
+        kindLabel.htmlFor = "admin-new-product-kind";
+        kindLabel.textContent = "상품 종류";
+        const kind = document.createElement("select");
+        kind.className = "select-control";
+        kind.id = "admin-new-product-kind";
+        kind.name = "kind";
+        setSelectOptions(kind, [["DEPOSIT", "예금"], ["INSTALLMENT", "적금"]], "INSTALLMENT");
+        const createButton = document.createElement("button");
+        createButton.className = "button button-primary";
+        createButton.type = "submit";
+        createButton.textContent = "상품 등록";
+        const mutationState = document.createElement("div");
+        mutationState.hidden = true;
+        createForm.append(kindLabel, kind, createButton, mutationState);
+        createSection.append(createForm);
+        const listSection = document.createElement("section");
+        listSection.className = "data-section";
+        appendText(listSection, "h2", "상품 목록");
+        const listState = createLoadingStatus("관리자 상품 목록을 불러오는 중입니다");
+        listSection.append(listState);
+        root.append(createSection, listSection);
+        let mutationBusy = false;
+        let productListLoaded = false;
+
+        const renderPendingAdminProduct = (pending) => {
+            if (!pending) {
+                createButton.disabled = mutationBusy;
+                return;
+            }
+            createButton.disabled = true;
+            const isUnknown = pending.status === "UNKNOWN";
+            showStatus(
+                mutationState,
+                "is-error",
+                isUnknown ? "상품 등록 결과를 확정할 수 없습니다" : "상품 등록 처리 중입니다",
+                isUnknown
+                    ? "상품 목록을 확인한 뒤 중복 등록 가능성을 인지하고 재신청을 선택해 주세요."
+                    : "기존 등록 요청의 서버 결과를 확인하는 중입니다. 다시 등록하지 마세요."
+            );
+            mutationState.hidden = false;
+            const refreshButton = document.createElement("button");
+            refreshButton.className = "button button-secondary";
+            refreshButton.type = "button";
+            refreshButton.textContent = isUnknown ? "상품 목록 확인 후 재신청" : "상품 목록 새로 조회";
+            refreshButton.addEventListener("click", async () => {
+                refreshButton.disabled = true;
+                await loadProducts();
+                if (!isCurrentScreen(root, requestId)) {
+                    return;
+                }
+                const current = findPendingAdminProduct(adminUserId);
+                if (!current || !productListLoaded) {
+                    renderPendingAdminProduct(current);
+                    return;
+                }
+                if (current.status === "UNKNOWN" && window.confirm("상품 목록을 확인했습니다. 이전 등록이 서버에 반영되었을 가능성을 인지하고 중복 등록을 감수하여 다시 신청하시겠습니까?")) {
+                    removePendingAdminProduct(current);
+                    mutationState.replaceChildren();
+                    mutationState.hidden = true;
+                    createButton.disabled = false;
+                    return;
+                }
+                renderPendingAdminProduct(current);
+            });
+            mutationState.append(refreshButton);
+        };
+
+        const applyAdminProductState = () => {
+            renderPendingAdminProduct(findPendingAdminProduct(adminUserId));
+        };
+
+        const loadProducts = async () => {
+            productListLoaded = false;
+            listSection.replaceChildren();
+            appendText(listSection, "h2", "상품 목록");
+            const loading = createLoadingStatus("관리자 상품 목록을 불러오는 중입니다");
+            listSection.append(loading);
+            try {
+                const products = await accountRequest("/api/admin/savings/products");
+                if (!isCurrentScreen(root, requestId)) {
+                    return [];
+                }
+                if (!Array.isArray(products)) {
+                    throw new Error("관리자 상품 응답 형식 오류");
+                }
+                productListLoaded = true;
+                loading.remove();
+                if (products.length === 0) {
+                    showStatus(loading, "is-empty", "등록된 상품이 없습니다", "현재 관리자 상품 목록이 비어 있습니다.");
+                    listSection.append(loading);
+                    return products;
+                }
+                const grid = document.createElement("div");
+                grid.className = "catalog-grid";
+                products.forEach((product, index) => {
+                    grid.append(renderAdminProductCard(product, async (payload, button) => {
+                        if (mutationBusy) {
+                            return;
+                        }
+                        mutationBusy = true;
+                        button.disabled = true;
+                        try {
+                            const response = await accountRequest(`/api/admin/savings/products/${encodeURIComponent(product.productId)}`, {
+                                method: "PATCH",
+                                headers: { "Content-Type": "application/json" },
+                                body: JSON.stringify(payload),
+                                expectedStatus: 200
+                            });
+                            if (!response?.productId || typeof response.active !== "boolean") {
+                                const unknown = new Error("상품 수정 응답 형식 오류");
+                                unknown.resultUnknown = true;
+                                throw unknown;
+                            }
+                            showStatus(mutationState, "is-success", "상품 정보가 변경되었습니다", "서버 상품 목록을 다시 조회합니다.");
+                            mutationState.hidden = false;
+                            await loadProducts();
+                        } catch (error) {
+                            if (!isCurrentScreen(root, requestId)) {
+                                return;
+                            }
+                            if (error.status === 401) {
+                                clearAuthState();
+                                renderInlineLogin(currentPath(), "관리자 인증이 만료되었습니다. 다시 로그인해 주세요.");
+                                return;
+                            }
+                            showAdminMutationError(mutationState, error);
+                            mutationState.hidden = false;
+                            if (error.status >= 500 || error.resultUnknown || !error.status) {
+                                await loadProducts();
+                                if (isCurrentScreen(root, requestId)) {
+                                    showAdminMutationError(mutationState, error);
+                                    mutationState.hidden = false;
+                                }
+                            }
+                        } finally {
+                            mutationBusy = false;
+                            if (button.isConnected) {
+                                button.disabled = false;
+                            }
+                        }
+                    }, index));
+                });
+                listSection.append(grid);
+                return products;
+            } catch (error) {
+                if (error.status === 401 || error.status === 403) {
+                    handleScreenError(root, error, requestId);
+                    return [];
+                }
+                listSection.replaceChildren();
+                appendText(listSection, "h2", "상품 목록");
+                const failure = document.createElement("div");
+                showStatus(failure, "is-server-error", "상품 목록을 조회하지 못했습니다", "네트워크 상태를 확인한 뒤 다시 조회해 주세요.");
+                listSection.append(failure);
+                return [];
+            }
+        };
+
+        createForm.addEventListener("submit", async (event) => {
+            event.preventDefault();
+            const pending = findPendingAdminProduct(adminUserId);
+            if (mutationBusy || pending) {
+                renderPendingAdminProduct(pending);
+                return;
+            }
+            const name = createInputs.get("name").value.trim();
+            const termMonths = Number(createInputs.get("termMonths").value);
+            const displayRate = Number(createInputs.get("displayRate").value);
+            if (!name || !Number.isInteger(termMonths) || termMonths <= 0 || !Number.isFinite(displayRate) || displayRate < 0) {
+                showStatus(mutationState, "is-error", "입력값을 확인해 주세요", "상품명·기간·표시금리를 올바르게 입력해 주세요.");
+                mutationState.hidden = false;
+                return;
+            }
+            const attempt = {
+                userId: adminUserId,
+                name,
+                kind: kind.value,
+                termMonths,
+                displayRate,
+                status: "IN_FLIGHT"
+            };
+            state.pendingAdminProductCreations.push(attempt);
+            mutationBusy = true;
+            createButton.disabled = true;
+            try {
+                const response = await accountRequest("/api/admin/savings/products", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ name, kind: kind.value, termMonths, displayRate }),
+                    expectedStatus: 201
+                });
+                if (typeof response?.productId !== "string" || !response.productId || response.active !== true) {
+                    const unknown = new Error("상품 등록 응답 형식 오류");
+                    unknown.resultUnknown = true;
+                    throw unknown;
+                }
+                removePendingAdminProduct(attempt);
+                createForm.reset();
+                kind.value = "INSTALLMENT";
+                showStatus(mutationState, "is-success", "상품이 등록되었습니다", "서버 상품 목록을 다시 조회합니다.");
+                mutationState.hidden = false;
+                await loadProducts();
+            } catch (error) {
+                const definitiveRejection = Number.isInteger(error?.status)
+                    && error.status >= 400
+                    && error.status < 500
+                    && !error.resultUnknown;
+                if (definitiveRejection) {
+                    removePendingAdminProduct(attempt);
+                } else {
+                    attempt.status = "UNKNOWN";
+                }
+                if (!isCurrentScreen(root, requestId)) {
+                    return;
+                }
+                if (error.status === 401) {
+                    clearAuthState();
+                    renderInlineLogin(currentPath(), "관리자 인증이 만료되었습니다. 다시 로그인해 주세요.");
+                    return;
+                }
+                showAdminMutationError(mutationState, error);
+                mutationState.hidden = false;
+                if (error.status >= 500 || error.resultUnknown || !error.status) {
+                    await loadProducts();
+                }
+            } finally {
+                mutationBusy = false;
+                if (isCurrentScreen(root, requestId)) {
+                    applyAdminProductState();
+                }
+            }
+        });
+        await loadProducts();
+        if (isCurrentScreen(root, requestId)) {
+            applyAdminProductState();
+        }
+    }
+
     function renderLoginDocument() {
         document.body.className = "bank-page login-page";
         document.body.dataset.page = "login";
@@ -2430,7 +3528,13 @@
     async function initScreen(path) {
         const requestId = ++state.requestId;
         const publicLoanScreen = path === "/demo/loans/index.html" || path === "/demo/loans/product.html";
-        renderCustomerFrame(requestId, publicLoanScreen);
+        if (isStaffPath(path)) {
+            renderBusinessFrame("staff");
+        } else if (isAdminPath(path)) {
+            renderBusinessFrame("admin");
+        } else {
+            renderCustomerFrame(requestId, publicLoanScreen);
+        }
         const root = screenRoot();
         const screen = {
             "/demo/my/index.html": ["나의 금융", renderMyHome],
@@ -2451,10 +3555,18 @@
             "/demo/loans/complete.html": ["신청 접수", renderLoanComplete],
             "/demo/my/loans.html": ["내 대출", renderMyLoans],
             "/demo/my/loan-detail.html": ["대출 신청 상세", renderLoanDetail],
-            "/demo/my/security.html": ["인증 관리", renderSecurity]
+            "/demo/my/security.html": ["인증 관리", renderSecurity],
+            "/demo/staff/index.html": ["영업점 업무센터", renderStaffHome],
+            "/demo/staff/customers.html": ["고객 검색", renderStaffCustomers],
+            "/demo/staff/customer.html": ["고객 상세", renderStaffCustomer],
+            "/demo/staff/reports.html": ["업무 보고서", renderStaffReports],
+            "/demo/admin/index.html": ["은행 관리자 홈", renderAdminHome],
+            "/demo/admin/savings.html": ["예적금 상품 관리", renderAdminSavings],
+            "/demo/admin/subscriptions.html": ["예적금 가입 현황", renderAdminSubscriptions],
+            "/demo/admin/loans.html": ["대출·담당 배정", renderAdminLoans]
         }[path];
         if (!screen) {
-            renderError(root, "화면 경로를 확인할 수 없습니다.", "Demo Bank 고객 화면 경로가 아닙니다.");
+            renderError(root, "화면 경로를 확인할 수 없습니다.", "Demo Bank 업무 화면 경로가 아닙니다.");
             return;
         }
         setPageTitle(screen[0]);
@@ -2479,7 +3591,7 @@
             }
             return;
         }
-        if (isCustomerPath(path)) {
+        if (isCustomerPath(path) || isStaffPath(path) || isAdminPath(path)) {
             await initScreen(path);
         }
     }
