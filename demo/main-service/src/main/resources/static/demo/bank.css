@@ -1372,6 +1372,79 @@ select:focus-visible {
     margin-top: 18px;
 }
 
+.lab-context-grid,
+.lab-run-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 14px;
+    margin-top: 18px;
+}
+
+.lab-run-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.lab-context-item,
+.lab-result-panel {
+    display: grid;
+    gap: 8px;
+    padding: 18px;
+    border: 1px solid var(--line);
+    border-radius: 16px;
+    background: var(--surface-muted);
+}
+
+.lab-context-item > span,
+.lab-result-panel > p,
+.lab-intro-card > p,
+.lab-sdk-card > p {
+    color: var(--text-muted);
+    font-size: 13px;
+    line-height: 1.65;
+}
+
+.lab-context-item .page-actions {
+    margin-top: 5px;
+}
+
+.lab-context-item .status-message,
+.lab-result-body .status-message,
+.lab-comparison-panel .status-message {
+    margin-top: 5px;
+}
+
+.lab-result-panel h3 {
+    margin: 0;
+    color: var(--text-strong);
+    font-size: 17px;
+}
+
+.lab-result-body,
+.lab-comparison-panel {
+    margin-top: 14px;
+}
+
+.lab-comparison-panel {
+    padding-top: 18px;
+    border-top: 1px solid var(--line);
+}
+
+.lab-scenario-card > p {
+    min-height: 64px;
+    margin: 0;
+    color: var(--text-muted);
+    font-size: 13px;
+    line-height: 1.65;
+}
+
+.lab-scenario-card .detail-grid {
+    margin-top: 18px;
+}
+
+.lab-sdk-card {
+    margin-bottom: 0;
+}
+
 @media (max-width: 860px) {
     .customer-nav {
         gap: 10px;
@@ -1385,8 +1458,13 @@ select:focus-visible {
     .stats-grid,
     .account-grid,
     .catalog-grid,
-    .subscription-grid {
+    .subscription-grid,
+    .lab-context-grid {
         grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .lab-run-grid {
+        grid-template-columns: 1fr;
     }
 }
 
@@ -1417,7 +1495,8 @@ select:focus-visible {
     .account-grid,
     .catalog-grid,
     .subscription-grid,
-    .detail-grid {
+    .detail-grid,
+    .lab-context-grid {
         grid-template-columns: 1fr;
     }
 

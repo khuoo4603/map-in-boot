@@ -11,7 +11,15 @@
         pendingEnrollments: [],
         loanDraft: null,
         pendingLoanApplications: [],
-        pendingAdminProductCreations: []
+        pendingAdminProductCreations: [],
+        labContexts: {
+            customer: null,
+            staff: null,
+            unverifiedCustomer: null
+        },
+        labContextSequence: 0,
+        labRuns: new Map(),
+        labSubmissions: new Map()
     };
 
     const roleLabels = {
@@ -51,7 +59,9 @@
         "/demo/admin/index.html",
         "/demo/admin/savings.html",
         "/demo/admin/subscriptions.html",
-        "/demo/admin/loans.html"
+        "/demo/admin/loans.html",
+        "/demo/lab/index.html",
+        "/demo/lab/scenario.html"
     ]);
     const routeQueryKeys = new Map([
         ["/demo/accounts/detail.html", new Set(["accountId"])],
@@ -64,7 +74,134 @@
         ["/demo/identity/verify.html", new Set(["returnTo", "applicationId"])],
         ["/demo/loans/complete.html", new Set(["applicationId"])],
         ["/demo/my/loan-detail.html", new Set(["applicationId"])],
-        ["/demo/staff/customer.html", new Set(["id"])]
+        ["/demo/staff/customer.html", new Set(["id"])],
+        ["/demo/lab/scenario.html", new Set(["id"])]
+    ]);
+
+    const labScenarios = new Map([
+        ["01", {
+            id: "01",
+            title: "레거시 계좌 요약 조회",
+            service: "Main",
+            authContext: "anonymous",
+            business: "계좌 상세 업무에서 기존 요약 API의 보호 적용 여부를 비교합니다.",
+            normal: { method: "GET", path: "/api/secured/legacy/account-summary/ACC001" },
+            vulnerable: { method: "GET", path: "/api/legacy/account-summary/ACC001" },
+            expected: { normal: [401], vulnerable: [200] },
+            relatedPath: "/demo/accounts/detail.html?accountId=ACC001",
+            rule: "SecurityFilterChain Matcher 적용 범위"
+        }],
+        ["02", {
+            id: "02",
+            title: "직원 보고서 조회",
+            service: "Main",
+            authContext: "anonymous",
+            business: "영업점 보고서 API에 선행 Chain이 어떻게 적용되는지 비교합니다.",
+            normal: { method: "GET", path: "/api/staff/protected/reports/summary" },
+            vulnerable: { method: "GET", path: "/api/staff/reports/summary" },
+            expected: { normal: [401], vulnerable: [200] },
+            relatedPath: "/demo/staff/reports.html",
+            rule: "SecurityFilterChain 순서와 Matcher"
+        }],
+        ["03", {
+            id: "03",
+            title: "직원 고객 검색",
+            service: "Account",
+            authContext: "anonymous",
+            business: "직원 고객 검색 화면의 Role 보호 여부를 익명 요청으로 비교합니다.",
+            normal: { method: "GET", path: "/api/staff/secured/customers/search?q=CUST" },
+            vulnerable: { method: "GET", path: "/api/staff/customers/search?q=CUST" },
+            expected: { normal: [401], vulnerable: [200] },
+            relatedPath: "/demo/staff/customers.html",
+            rule: "Role 기반 접근 제어와 permitAll 경계"
+        }],
+        ["04", {
+            id: "04",
+            title: "직원 고객 기본 상세",
+            service: "Account",
+            authContext: "customer",
+            business: "고객 A JWT로 고객 B의 직원 상세를 요청해 Method Security의 소유 범위를 비교합니다.",
+            normal: { method: "GET", path: "/api/staff/secured/customers/CUST002" },
+            vulnerable: { method: "GET", path: "/api/staff/customers/CUST002" },
+            expected: { normal: [403], vulnerable: [200] },
+            relatedPath: "/demo/staff/customers.html",
+            rule: "Method Security Proxy 적용과 self-invocation"
+        }],
+        ["05", {
+            id: "05",
+            title: "타인 계좌 상세 조회",
+            service: "Account",
+            authContext: "customer",
+            business: "고객 A JWT로 고객 B의 계좌를 조회해 JWT 주체와 Account Owner 비교를 확인합니다.",
+            normal: { method: "GET", path: "/api/secured/accounts/ACC002" },
+            vulnerable: { method: "GET", path: "/api/accounts/ACC002" },
+            expected: { normal: [403], vulnerable: [200] },
+            relatedPath: "/demo/accounts/detail.html?accountId=ACC002",
+            rule: "JWT Principal과 리소스 Owner 비교"
+        }],
+        ["06", {
+            id: "06",
+            title: "Session 프로필 소유권 조회",
+            service: "Identity",
+            authContext: "customerSession",
+            business: "고객 A의 Session으로 고객 B 프로필을 요청해 Session 주체 비교를 확인합니다.",
+            normal: { method: "GET", path: "/api/session/secured/customers/CUST002/profile" },
+            vulnerable: { method: "GET", path: "/api/session/customers/CUST002/profile" },
+            expected: { normal: [403], vulnerable: [200] },
+            relatedPath: "/demo/my/profile.html",
+            rule: "Session Principal과 프로필 Owner 비교"
+        }],
+        ["07", {
+            id: "07",
+            title: "미담당 고객 연락처 조회",
+            service: "Account",
+            authContext: "staff",
+            business: "직원 A JWT와 다른 직원 식별 Header를 함께 사용해 담당 범위 검사를 비교합니다.",
+            normal: { method: "GET", path: "/api/staff/secured/customers/CUST002/contact" },
+            vulnerable: { method: "GET", path: "/api/staff/customers/CUST002/contact" },
+            expected: { normal: [403], vulnerable: [200] },
+            relatedPath: "/demo/staff/customer.html?id=CUST002",
+            rule: "JWT 직원 주체와 담당 Assignment 비교",
+            forgedStaffId: "STAFF002"
+        }],
+        ["08", {
+            id: "08",
+            title: "인증 갱신 Filter 순서",
+            service: "Identity",
+            authContext: "customer",
+            business: "같은 고객 JWT로 정상·취약 Refresh 경로의 실제 응답 차이를 확인합니다.",
+            normal: { method: "POST", path: "/api/auth/secured/refresh" },
+            vulnerable: { method: "POST", path: "/api/auth/refresh" },
+            expected: { normal: [200], vulnerable: [401] },
+            relatedPath: "/demo/my/security.html",
+            rule: "RefreshTokenFilter와 Bearer 인증 Filter 순서"
+        }],
+        ["09", {
+            id: "09",
+            title: "본인확인 전 대출 신청",
+            service: "Account",
+            authContext: "unverifiedCustomer",
+            business: "본인확인 전 고객 JWT로 같은 대출 신청을 정상·취약 경로에 각각 요청합니다.",
+            normal: { method: "POST", path: "/api/secured/loans/applications" },
+            vulnerable: { method: "POST", path: "/api/loans/applications" },
+            expected: { normal: [403], vulnerable: [201] },
+            relatedPath: "/demo/loans/apply.html?productId=LOAN-BASIC",
+            rule: "JWT identity_verified 상태 검사",
+            sideEffect: true,
+            body: { productId: "LOAN-BASIC", amount: 1000000, purpose: "LIVING_COST" }
+        }],
+        ["10", {
+            id: "10",
+            title: "내부 계좌 요약 Owner 검사",
+            service: "Main",
+            authContext: "customer",
+            business: "Main 포털을 통해 고객 A가 고객 B 계좌 요약을 요청할 때 최종 Owner 검사를 비교합니다.",
+            normal: { method: "GET", path: "/api/portal/secured/accounts/ACC002/summary" },
+            vulnerable: { method: "GET", path: "/api/portal/accounts/ACC002/summary" },
+            expected: { normal: [403], vulnerable: [200] },
+            relatedPath: "/demo/accounts/detail.html?accountId=ACC002",
+            rule: "Main 사용자 주체와 Account 내부 Owner 비교"
+        }]
     ]);
 
     // 현재 Main Origin 기준 Identity·Account Origin 계산
@@ -188,6 +325,14 @@
         state.loanDraft = null;
         state.pendingLoanApplications = [];
         state.pendingAdminProductCreations = [];
+        state.labContexts = {
+            customer: null,
+            staff: null,
+            unverifiedCustomer: null
+        };
+        state.labContextSequence = 0;
+        state.labRuns = new Map();
+        state.labSubmissions = new Map();
     }
 
     function isCurrentScreen(root, requestId) {
@@ -386,6 +531,12 @@
                     return null;
                 }
             }
+            if (url.pathname === "/demo/lab/scenario.html") {
+                const scenarioIds = url.searchParams.getAll("id");
+                if (scenarioIds.length !== 1 || !/^(0[1-9]|10)$/.test(scenarioIds[0])) {
+                    return null;
+                }
+            }
             return `${url.pathname}${url.search}`;
         } catch {
             return null;
@@ -419,8 +570,15 @@
         return path.startsWith("/demo/admin/");
     }
 
+    function isLabPath(path) {
+        return path.startsWith("/demo/lab/");
+    }
+
     function defaultLandingPath(user) {
         const roles = Array.isArray(user?.roles) ? user.roles : [];
+        if (roles.includes("MAP_IN_BOOT_ADMIN")) {
+            return "/demo/lab/index.html";
+        }
         if (roles.includes("ROLE_BANK_ADMIN")) {
             return "/demo/admin/index.html";
         }
@@ -447,6 +605,9 @@
         }
         if (isAdminPath(path)) {
             return roles.includes("ROLE_BANK_ADMIN");
+        }
+        if (isLabPath(path)) {
+            return roles.includes("MAP_IN_BOOT_ADMIN");
         }
         return false;
     }
@@ -536,14 +697,19 @@
         document.body.dataset.page = "screen";
         document.body.replaceChildren();
         const isStaff = area === "staff";
+        const isLab = area === "lab";
         const nav = isStaff
             ? `<a href="/demo/staff/index.html" data-route="true">업무센터</a><a href="/demo/staff/customers.html" data-route="true">고객 검색</a><a href="/demo/staff/reports.html" data-route="true">업무 보고서</a>`
-            : `<a href="/demo/admin/index.html" data-route="true">관리자 홈</a><a href="/demo/admin/savings.html" data-route="true">상품 관리</a><a href="/demo/admin/subscriptions.html" data-route="true">가입 현황</a><a href="/demo/admin/loans.html" data-route="true">대출·담당 배정</a>`;
+            : isLab
+                ? `<a href="/demo/lab/index.html" data-route="true">검증 Lab</a><a href="/demo/" data-route="true">금융 포털</a>`
+                : `<a href="/demo/admin/index.html" data-route="true">관리자 홈</a><a href="/demo/admin/savings.html" data-route="true">상품 관리</a><a href="/demo/admin/subscriptions.html" data-route="true">가입 현황</a><a href="/demo/admin/loans.html" data-route="true">대출·담당 배정</a>`;
+        const navLabel = isStaff ? "직원 업무 메뉴" : isLab ? "개발자 검증 메뉴" : "은행 관리자 메뉴";
+        const footerLabel = isStaff ? "영업점 직원 업무" : isLab ? "개발자 보안 검증" : "은행 관리자 업무";
         const header = document.createElement("header");
         header.className = "site-header customer-header";
         header.innerHTML = `<div class="shell header-inner">
             <a class="brand" href="/demo/" data-route="true" aria-label="Demo Bank 홈"><span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 32 32"><path d="M6 14.5 16 7l10 7.5" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2.4"/><path d="M8.5 14.5v9h15v-9M5.5 25.5h21" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2.4"/><path d="M12 17v4.5M16 17v4.5M20 17v4.5" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"/></svg></span><span class="brand-text"><strong>Demo Bank</strong><small>금융 Demo 포털</small></span></a>
-            <nav class="customer-nav" aria-label="${isStaff ? "직원 업무 메뉴" : "은행 관리자 메뉴"}">${nav}</nav>
+            <nav class="customer-nav" aria-label="${navLabel}">${nav}</nav>
             <div class="header-tools" data-header-auth><a class="utility-link" data-header-login href="/demo/login.html">로그인</a><span class="user-label" data-header-user hidden></span><button class="button button-quiet button-small" type="button" data-logout hidden>로그아웃</button></div>
         </div>`;
         const main = document.createElement("main");
@@ -551,7 +717,7 @@
         main.innerHTML = `<div class="shell customer-content"><div data-screen-root></div></div>`;
         const footer = document.createElement("footer");
         footer.className = "site-footer";
-        footer.innerHTML = `<div class="shell footer-inner"><div><strong>Demo Bank</strong><p>금융 서비스 포털</p></div><p>${isStaff ? "영업점 직원 업무" : "은행 관리자 업무"}</p></div>`;
+        footer.innerHTML = `<div class="shell footer-inner"><div><strong>Demo Bank</strong><p>금융 서비스 포털</p></div><p>${footerLabel}</p></div>`;
         document.body.append(header, main, footer);
         updateHeaderAuth(state.sessionUser);
         bindLogout();
@@ -730,7 +896,8 @@
         roleLinks.forEach((element) => {
             const role = element.dataset.roleNav || element.dataset.roleService;
             element.hidden = !((role === "staff" && roles.includes("ROLE_STAFF"))
-                || (role === "admin" && roles.includes("ROLE_BANK_ADMIN")));
+                || (role === "admin" && roles.includes("ROLE_BANK_ADMIN"))
+                || (role === "developer" && roles.includes("MAP_IN_BOOT_ADMIN")));
         });
         if (user) {
             const label = roleLabel(user);
@@ -917,6 +1084,10 @@
 
     async function ensureAdminAccess(root, requestId) {
         return ensureRoleAccess(root, requestId, "ROLE_BANK_ADMIN", "은행 관리자");
+    }
+
+    async function ensureLabAccess(root, requestId) {
+        return ensureRoleAccess(root, requestId, "MAP_IN_BOOT_ADMIN", "개발자");
     }
 
     function handleScreenError(root, error, requestId) {
@@ -3525,6 +3696,641 @@
         bindLoginForm(document, destination);
     }
 
+    const labContextRules = {
+        customer: {
+            label: "고객 A JWT",
+            role: "ROLE_CUSTOMER",
+            userId: "USER001",
+            description: "고객 A(USER001)의 실제 JWT를 메모리에 준비합니다."
+        },
+        staff: {
+            label: "직원 A JWT",
+            role: "ROLE_STAFF",
+            userId: "STAFF001",
+            description: "직원 A(STAFF001)의 실제 JWT를 메모리에 준비합니다."
+        },
+        unverifiedCustomer: {
+            label: "본인확인 전 고객 JWT",
+            role: "ROLE_CUSTOMER",
+            description: "identity_verified가 false인 실제 고객 JWT를 메모리에 준비합니다."
+        }
+    };
+
+    function labContextFor(scenario) {
+        return scenario.authContext === "anonymous" || scenario.authContext === "customerSession"
+            ? null
+            : state.labContexts[scenario.authContext];
+    }
+
+    function labContextReady(key) {
+        return Boolean(state.labContexts[key]?.token);
+    }
+
+    function labContextDisplay(key) {
+        const context = state.labContexts[key];
+        if (!context) {
+            return "준비되지 않음";
+        }
+        return `${context.userId} · ${context.identityVerified ? "본인확인 완료" : "본인확인 전"}`;
+    }
+
+    function labContextKey(scenario) {
+        return scenario.authContext === "anonymous" || scenario.authContext === "customerSession"
+            ? null
+            : scenario.authContext;
+    }
+
+    function createLabRun(scenario) {
+        const contextKey = labContextKey(scenario);
+        const context = contextKey ? state.labContexts[contextKey] : null;
+        return {
+            normal: null,
+            vulnerable: null,
+            running: false,
+            status: "NOT_RUN",
+            contextKey,
+            contextGeneration: context?.generation || 0,
+            contextUserId: context?.userId || null
+        };
+    }
+
+    function labRunMatchesContext(scenario, run) {
+        const contextKey = labContextKey(scenario);
+        if (!contextKey) {
+            return !run.contextKey;
+        }
+        const context = state.labContexts[contextKey];
+        return Boolean(context
+            && run.contextKey === contextKey
+            && run.contextGeneration === context.generation
+            && run.contextUserId === context.userId);
+    }
+
+    function currentLabRun(scenario) {
+        const existing = state.labRuns.get(scenario.id);
+        if (existing && labRunMatchesContext(scenario, existing)) {
+            return existing;
+        }
+        const fresh = createLabRun(scenario);
+        state.labRuns.set(scenario.id, fresh);
+        return fresh;
+    }
+
+    function resetLabRunsForContext(key) {
+        labScenarios.forEach((scenario) => {
+            if (labContextKey(scenario) === key) {
+                state.labRuns.set(scenario.id, createLabRun(scenario));
+            }
+        });
+    }
+
+    function labSubmissionKey(scenario, userId) {
+        return userId ? `${scenario.id}:${userId}` : null;
+    }
+
+    function hasLabSubmission(scenario, userId) {
+        const key = labSubmissionKey(scenario, userId);
+        return Boolean(key && state.labSubmissions.has(key));
+    }
+
+    function recordLabSubmission(scenario, run, result) {
+        if (!scenario.sideEffect || !result.requestStarted || !run.contextUserId) {
+            return;
+        }
+        const key = labSubmissionKey(scenario, run.contextUserId);
+        if (key) {
+            state.labSubmissions.set(key, {
+                scenarioId: scenario.id,
+                userId: run.contextUserId,
+                contextGeneration: run.contextGeneration,
+                status: result.status
+            });
+        }
+    }
+
+    function resetLabRunView(root) {
+        if (!root || typeof root.querySelectorAll !== "function") {
+            return;
+        }
+        queryAll("[data-lab-result-body]", root).forEach((panel) => panel.replaceChildren());
+        queryAll("[data-lab-comparison]", root).forEach((panel) => {
+            panel.replaceChildren();
+            showStatus(panel, "is-empty", "비교 대기", "인증 문맥이 교체되어 이전 비교 결과를 폐기했습니다.");
+        });
+        const stateElement = query("[data-lab-run-state]", root);
+        if (stateElement) {
+            showStatus(stateElement, "is-empty", "실행 대기", "인증 문맥이 교체되어 이전 결과를 폐기했습니다. 정상·취약 경로를 다시 실행해 주세요.");
+        }
+    }
+
+    function isLabServiceError(status) {
+        return Number.isInteger(status) && status >= 500 && status <= 599;
+    }
+
+    async function prepareLabContext(key, statusElement, requestId, root, input) {
+        const rule = labContextRules[key];
+        if (!rule || !identityOrigin) {
+            if (input) {
+                input.value = "";
+            }
+            showStatus(statusElement, "is-error", "인증 문맥을 준비하지 못했습니다", "Identity 서비스 주소를 확인해 주세요.");
+            return;
+        }
+        const token = typeof input?.value === "string" ? input.value.trim() : "";
+        if (!token?.trim()) {
+            if (input) {
+                input.value = "";
+            }
+            return;
+        }
+        try {
+            const response = await fetch(`${identityOrigin}/api/auth/me`, {
+                headers: { Authorization: `Bearer ${token.trim()}` },
+                credentials: "omit",
+                cache: "no-store"
+            });
+            const body = await readBody(response);
+            if (!isCurrentScreen(root, requestId)) {
+                return;
+            }
+            const roles = Array.isArray(body?.roles) ? body.roles : [];
+            if (!response.ok || !body?.userId || !roles.includes(rule.role)
+                    || (rule.userId && body.userId !== rule.userId)
+                    || (key === "unverifiedCustomer" && body.identityVerified === true)) {
+                showStatus(statusElement, "is-error", "인증 문맥 교체 실패", "실제 사용자·역할·본인확인 상태가 조건과 일치하지 않습니다. 기존에 검증된 문맥은 유지합니다.");
+                return;
+            }
+            const previousGeneration = Number(state.labContexts[key]?.generation) || 0;
+            state.labContextSequence = Math.max(state.labContextSequence, previousGeneration) + 1;
+            state.labContexts[key] = {
+                token: token.trim(),
+                userId: body.userId,
+                roles,
+                identityVerified: body.identityVerified === true,
+                generation: state.labContextSequence
+            };
+            resetLabRunsForContext(key);
+            resetLabRunView(root);
+            showStatus(statusElement, "is-success", `${rule.label} 준비 완료`, labContextDisplay(key));
+        } catch {
+            if (isCurrentScreen(root, requestId)) {
+                showStatus(statusElement, "is-server-error", "인증 문맥 교체 실패", "네트워크 상태를 확인한 뒤 다시 준비해 주세요. 기존에 검증된 문맥은 유지합니다.");
+            }
+        } finally {
+            if (input) {
+                input.value = "";
+            }
+        }
+    }
+
+    function appendLabContextAction(parent, key, requestId, root) {
+        const rule = labContextRules[key];
+        const item = document.createElement("div");
+        item.className = "lab-context-item";
+        appendText(item, "strong", rule.label);
+        appendText(item, "span", rule.description);
+        const inputId = `lab-token-${key}`;
+        const label = document.createElement("label");
+        label.className = "field-label";
+        label.htmlFor = inputId;
+        label.textContent = "테스트 JWT";
+        const input = document.createElement("input");
+        input.className = "field lab-token-input";
+        input.id = inputId;
+        input.name = inputId;
+        input.type = "password";
+        input.autocomplete = "off";
+        input.spellcheck = false;
+        input.placeholder = "실제 Access Token 입력";
+        const actions = document.createElement("div");
+        actions.className = "page-actions";
+        const button = document.createElement("button");
+        button.className = "button button-secondary";
+        button.type = "button";
+        button.textContent = labContextReady(key) ? "인증 문맥 다시 준비" : "인증 문맥 준비";
+        const status = document.createElement("div");
+        showStatus(status, labContextReady(key) ? "is-success" : "is-empty", labContextReady(key) ? "현재 문맥" : "준비 필요", labContextDisplay(key));
+        button.addEventListener("click", async () => {
+            button.disabled = true;
+            await prepareLabContext(key, status, requestId, root, input);
+            if (button.isConnected) {
+                button.disabled = false;
+                button.textContent = labContextReady(key) ? "인증 문맥 다시 준비" : "인증 문맥 준비";
+            }
+        });
+        actions.append(button);
+        item.append(label, input, actions, status);
+        parent.append(item);
+        return item;
+    }
+
+    function renderLabContextManager(root, requestId, requiredKey = null) {
+        const section = document.createElement("section");
+        section.className = "card data-section lab-context-card";
+        appendText(section, "h2", requiredKey ? "시나리오 사전 준비" : "테스트 인증 문맥");
+        appendText(section, "p", requiredKey
+            ? "테스트 대상에 맞는 실제 인증 문맥을 준비해야 요청을 실행할 수 있습니다. Token은 메모리에만 보관합니다."
+            : "Lab은 인증을 우회하거나 Token을 생성하지 않습니다. 외부에서 발급한 실제 테스트 Token만 일시적으로 준비합니다.");
+        if (requiredKey === "customerSession") {
+            const status = document.createElement("div");
+            showStatus(status, "is-empty", "Session 문맥은 자동 준비하지 않습니다", "Cookie를 복사하거나 수동 Cookie Header를 만들지 않습니다. 별도 HTTP 클라이언트에서 고객 A Session으로 N06/V06을 실행한 뒤 실제 결과를 기록해 주세요.");
+            section.append(status);
+        } else if (requiredKey === "anonymous") {
+            const status = document.createElement("div");
+            showStatus(status, "is-auth", "익명 요청", "Session Cookie와 Authorization 없이 실행합니다.");
+            section.append(status);
+        } else if (requiredKey) {
+            appendLabContextAction(section, requiredKey, requestId, root);
+        } else {
+            const grid = document.createElement("div");
+            grid.className = "lab-context-grid";
+            ["customer", "staff", "unverifiedCustomer"].forEach((key) => appendLabContextAction(grid, key, requestId, root));
+            section.append(grid);
+        }
+        root.append(section);
+        return section;
+    }
+
+    function labServiceOrigin(service) {
+        if (service === "Identity") {
+            return identityOrigin;
+        }
+        if (service === "Account") {
+            return accountOrigin;
+        }
+        return window.location.origin;
+    }
+
+    function summarizeLabResponse(scenario, result, body, rawBody) {
+        if (result.networkError) {
+            return "응답을 받지 못했습니다. 자동 재요청하지 말고 관련 금융 화면에서 저장 여부를 확인해 주세요.";
+        }
+        if (isLabServiceError(result.status)) {
+            return "내부 서비스 설정 또는 실행 환경 오류로 보안 비교를 확정할 수 없습니다.";
+        }
+        if (scenario.id === "08" && result.status === 200) {
+            return "인증 갱신 응답을 받았습니다. 새 JWT는 표시하거나 일반 인증 상태에 저장하지 않습니다.";
+        }
+        if (scenario.id === "09" && typeof body?.applicationId === "string") {
+            return `신청번호 ${body.applicationId}가 반환되었습니다. 실제 저장 결과는 내 대출 목록에서 확인할 수 있습니다.`;
+        }
+        if (body?.error?.code) {
+            return `오류 코드 ${body.error.code} 응답입니다.`;
+        }
+        if (body && typeof body === "object") {
+            return "JSON 응답을 받았습니다. 민감한 본문은 표시하지 않습니다.";
+        }
+        return rawBody ? "JSON이 아닌 응답 본문입니다." : "응답 본문이 없습니다.";
+    }
+
+    async function executeLabRequest(scenario, variant) {
+        const endpoint = scenario[variant];
+        const context = labContextFor(scenario);
+        if (scenario.authContext === "customerSession") {
+            return { blocked: true, requestStarted: false, summary: "Session Cookie를 자동 구성하지 않으므로 별도 HTTP 클라이언트 검증이 필요합니다." };
+        }
+        if (scenario.authContext !== "anonymous" && !context) {
+            return { blocked: true, requestStarted: false, summary: "필요한 실제 인증 문맥을 먼저 준비해 주세요." };
+        }
+        const origin = labServiceOrigin(scenario.service);
+        if (!origin) {
+            return { networkError: true, requestStarted: false, summary: "서비스 주소를 계산하지 못했습니다." };
+        }
+        const headers = new Headers({ Accept: "application/json" });
+        if (context?.token) {
+            headers.set("Authorization", `Bearer ${context.token}`);
+        }
+        if (variant === "vulnerable" && scenario.forgedStaffId) {
+            headers.set("X-Staff-Id", scenario.forgedStaffId);
+        }
+        const options = {
+            method: endpoint.method,
+            headers,
+            credentials: "omit",
+            cache: "no-store"
+        };
+        if (scenario.body) {
+            headers.set("Content-Type", "application/json");
+            options.body = JSON.stringify(scenario.body);
+        }
+        try {
+            const response = await fetch(`${origin}${endpoint.path}`, options);
+            const rawBody = await response.text();
+            let body = null;
+            try {
+                body = rawBody ? JSON.parse(rawBody) : null;
+            } catch {
+                body = null;
+            }
+            const result = {
+                status: response.status,
+                ok: response.ok,
+                networkError: false,
+                blocked: false,
+                requestStarted: true,
+                summary: ""
+            };
+            result.summary = summarizeLabResponse(scenario, result, body, rawBody);
+            return result;
+        } catch {
+            return {
+                status: null,
+                ok: false,
+                networkError: true,
+                blocked: false,
+                requestStarted: true,
+                summary: "네트워크 응답을 받지 못했습니다. 자동 재요청하지 않습니다."
+            };
+        }
+    }
+
+    function labStatusLabel(status) {
+        return status === null || status === undefined ? "응답 없음" : String(status);
+    }
+
+    function labExpectedResult(scenario, variant, result) {
+        return !result?.blocked && !result?.networkError
+            && scenario.expected[variant].includes(result.status);
+    }
+
+    function updateLabRunStatus(scenario, run) {
+        if (run.running) {
+            run.status = "RUNNING";
+            return;
+        }
+        if (run.normal && run.vulnerable) {
+            if (run.normal.blocked || run.vulnerable.blocked) {
+                run.status = "BLOCKED";
+            } else if (run.normal.networkError || run.vulnerable.networkError
+                    || isLabServiceError(run.normal.status) || isLabServiceError(run.vulnerable.status)) {
+                run.status = "ERROR";
+            } else if (labExpectedResult(scenario, "normal", run.normal)
+                    && labExpectedResult(scenario, "vulnerable", run.vulnerable)) {
+                run.status = "PASSED";
+            } else {
+                run.status = "MISMATCH";
+            }
+            return;
+        }
+        const latest = run.normal || run.vulnerable;
+        run.status = latest?.blocked
+            ? "BLOCKED"
+            : latest?.networkError || isLabServiceError(latest?.status)
+                ? "ERROR"
+                : latest
+                    ? "READY"
+                    : "NOT_RUN";
+    }
+
+    function renderLabResult(panel, scenario, variant, result) {
+        panel.replaceChildren();
+        const expected = scenario.expected[variant].join(" 또는 ");
+        const status = document.createElement("div");
+        if (result.blocked) {
+            showStatus(status, "is-empty", "실행 차단", result.summary);
+        } else if (result.networkError) {
+            showStatus(status, "is-server-error", "실제 HTTP 결과 미확정", result.summary);
+        } else if (isLabServiceError(result.status)) {
+            showStatus(status, "is-server-error", `HTTP ${result.status} 서비스 오류`, result.summary);
+        } else if (labExpectedResult(scenario, variant, result)) {
+            showStatus(status, "is-success", `HTTP ${result.status} 응답`, result.summary);
+        } else {
+            showStatus(status, "is-error", `예상과 다른 HTTP ${result.status} 응답`, result.summary);
+        }
+        panel.append(status);
+        appendDetailGrid(panel, [
+            ["기대 상태", expected],
+            ["실제 상태", labStatusLabel(result.status)],
+            ["응답 요약", result.summary]
+        ]);
+    }
+
+    function renderLabComparison(panel, scenario, run) {
+        panel.replaceChildren();
+        if (!run.normal || !run.vulnerable) {
+            showStatus(panel, "is-empty", "비교 대기", "정상·취약 요청을 모두 실행하면 실제 HTTP 결과를 비교합니다.");
+            return;
+        }
+        if (run.status === "BLOCKED") {
+            showStatus(panel, "is-empty", "비교 차단", "필요한 인증 문맥 또는 Session 실행 조건이 준비되지 않았습니다.");
+        } else if (run.status === "ERROR") {
+            const hasServiceError = isLabServiceError(run.normal.status) || isLabServiceError(run.vulnerable.status);
+            showStatus(panel, "is-server-error", "비교 미완료", hasServiceError
+                ? "내부 서비스 설정 또는 실행 환경을 확인한 뒤 다시 검증해 주세요. 보안 검증 성공으로 처리하지 않습니다."
+                : "네트워크 결과가 확정되지 않아 안전하게 성공 처리하지 않습니다.");
+        } else if (run.status === "PASSED") {
+            showStatus(panel, "is-success", "기대 상태 비교 완료", "정상·취약 경로의 실제 응답이 시나리오 계약과 일치합니다.");
+        } else {
+            showStatus(panel, "is-error", "기대 상태와 불일치", "실제 Backend 응답을 확인하고 사전조건과 실행 환경을 점검해 주세요.");
+        }
+        appendDetailGrid(panel, [
+            ["정상 경로", `${labStatusLabel(run.normal.status)} · ${run.normal.summary}`],
+            ["취약 경로", `${labStatusLabel(run.vulnerable.status)} · ${run.vulnerable.summary}`],
+            ["비교 상태", run.status]
+        ]);
+    }
+
+    async function runLabVariant(scenario, variant, root, requestId, button, panel, comparisonPanel, stateElement) {
+        const run = currentLabRun(scenario);
+        if (run.running) {
+            return;
+        }
+        const context = labContextFor(scenario);
+        if (variant === "vulnerable" && scenario.sideEffect
+                && hasLabSubmission(scenario, context?.userId)) {
+            showStatus(stateElement, "is-empty", "재실행 차단", "같은 사용자의 상태 변경 요청이 이미 실행되었습니다. 내 대출 목록에서 먼저 결과를 확인해 주세요.");
+            return;
+        }
+        if (scenario.sideEffect && run[variant] && !run[variant].blocked) {
+            showStatus(stateElement, "is-empty", "재실행 차단", "실제 저장 결과가 확정되지 않았을 수 있어 같은 취약 POST를 자동 또는 반복 실행하지 않습니다. 내 대출 목록에서 먼저 확인해 주세요.");
+            return;
+        }
+        if (variant === "vulnerable" && scenario.sideEffect
+                && !window.confirm("취약 경로는 실제 대출 신청을 저장할 수 있습니다. 중복 신청 가능성을 이해했고 이 작업을 직접 실행하시겠습니까?")) {
+            return;
+        }
+        run.running = true;
+        updateLabRunStatus(scenario, run);
+        button.disabled = true;
+        showStatus(stateElement, "is-loading", `${variant === "normal" ? "정상" : "취약"} 경로 실행 중`, "실제 Backend 응답을 기다리는 중입니다.");
+        let result;
+        try {
+            result = await executeLabRequest(scenario, variant);
+        } catch {
+            result = {
+                status: null,
+                ok: false,
+                networkError: true,
+                blocked: false,
+                requestStarted: true,
+                summary: "요청 결과를 확정하지 못했습니다. 자동 재요청하지 않습니다."
+            };
+        }
+        result.contextKey = run.contextKey;
+        result.contextGeneration = run.contextGeneration;
+        if (variant === "vulnerable" && scenario.sideEffect) {
+            recordLabSubmission(scenario, run, result);
+        }
+        if (state.labRuns.get(scenario.id) !== run || !labRunMatchesContext(scenario, run)) {
+            if (button.isConnected) {
+                button.disabled = false;
+            }
+            return;
+        }
+        run[variant] = result;
+        run.running = false;
+        updateLabRunStatus(scenario, run);
+        if (isCurrentScreen(root, requestId)) {
+            renderLabResult(panel, scenario, variant, result);
+            renderLabComparison(comparisonPanel, scenario, run);
+            showStatus(stateElement, run.status === "PASSED" ? "is-success" : run.status === "ERROR" ? "is-server-error" : "is-auth", `현재 실행 상태 ${run.status}`, "정상·취약 결과를 각각 확인하세요.");
+        }
+        if (button.isConnected) {
+            button.disabled = false;
+        }
+    }
+
+    function renderLabSdkPanel(root, scenario) {
+        const section = document.createElement("section");
+        section.className = "card data-section lab-sdk-card";
+        appendText(section, "h2", "SDK에서 확인할 구조");
+        appendText(section, "p", "Demo 화면은 SDK Finding을 생성하거나 보안성을 확정하지 않습니다. 아래는 해당 N/V 차이를 확인할 구조 안내입니다.");
+        appendDetailGrid(section, [
+            ["대상 서비스", `${scenario.service} · /mapinboot/`],
+            ["대응 Rule", scenario.rule],
+            ["SDK 상태", "현재 Demo 환경의 SDK 분석 UI와 연결되지 않음"]
+        ]);
+        root.append(section);
+    }
+
+    async function renderLabHome(root, requestId) {
+        if (!await ensureLabAccess(root, requestId)) {
+            return;
+        }
+        root.replaceChildren();
+        renderHeading(root, "개발자 검증 Lab", "보안 시나리오 Lab", "실제 Demo API의 정상·취약 경로를 비교하고 응답 근거를 확인합니다.");
+        const intro = document.createElement("section");
+        intro.className = "card data-section lab-intro-card";
+        appendText(intro, "h2", "실행 전 안내");
+        appendText(intro, "p", "이 화면은 개발자 역할 전용 프론트 안내 화면입니다. Backend 권한 검사를 대신하지 않으며, 토큰·Session Cookie·응답 본문을 화면에 노출하지 않습니다.");
+        appendText(intro, "p", "N09/V09는 실제 대출 신청 저장을 발생시킬 수 있어 취약 요청 직전에 별도 확인을 요구합니다.");
+        root.append(intro);
+        renderLabContextManager(root, requestId);
+        const section = document.createElement("section");
+        section.className = "data-section";
+        appendText(section, "h2", "N/V 시나리오");
+        const grid = document.createElement("div");
+        grid.className = "catalog-grid lab-scenario-grid";
+        labScenarios.forEach((scenario) => {
+            const card = document.createElement("article");
+            card.className = "catalog-card lab-scenario-card";
+            appendText(card, "span", `N${scenario.id} / V${scenario.id}`, "card-icon");
+            appendText(card, "h2", scenario.title);
+            appendText(card, "p", scenario.business);
+            appendDetailGrid(card, [
+                ["서비스", scenario.service],
+                ["인증 문맥", scenario.authContext === "anonymous" ? "익명" : scenario.authContext === "customerSession" ? "고객 Session" : labContextRules[scenario.authContext].label],
+                ["기대 상태", `${scenario.expected.normal.join("/")} / ${scenario.expected.vulnerable.join("/")}`]
+            ]);
+            const actions = document.createElement("div");
+            actions.className = "page-actions";
+            appendAction(actions, `/demo/lab/scenario.html?id=${scenario.id}`, "상세 실행", "button button-primary");
+            card.append(actions);
+            grid.append(card);
+        });
+        section.append(grid);
+        root.append(section);
+    }
+
+    async function renderLabScenario(root, requestId) {
+        if (!await ensureLabAccess(root, requestId)) {
+            return;
+        }
+        const scenarioId = new URLSearchParams(window.location.search).get("id");
+        const scenario = labScenarios.get(scenarioId);
+        if (!scenario) {
+            renderError(root, "시나리오를 찾을 수 없습니다.", "01부터 10까지의 허용된 시나리오를 선택해 주세요.");
+            return;
+        }
+        root.replaceChildren();
+        renderHeading(root, `N${scenario.id} / V${scenario.id}`, scenario.title, scenario.business);
+        const overview = document.createElement("section");
+        overview.className = "card data-section lab-overview-card";
+        appendText(overview, "h2", "요청 계약");
+        appendDetailGrid(overview, [
+            ["서비스", scenario.service],
+            ["인증 문맥", scenario.authContext === "anonymous" ? "익명" : scenario.authContext === "customerSession" ? "고객 A Session" : labContextRules[scenario.authContext].label],
+            ["정상 API", `${scenario.normal.method} ${scenario.normal.path}`],
+            ["취약 API", `${scenario.vulnerable.method} ${scenario.vulnerable.path}`],
+            ["기대 상태", `${scenario.expected.normal.join("/")} / ${scenario.expected.vulnerable.join("/")}`],
+            ["부작용", scenario.sideEffect ? "취약 경로가 실제 신청을 저장할 수 있음" : "조회 또는 인증 응답 비교"]
+        ]);
+        const relatedActions = document.createElement("div");
+        relatedActions.className = "page-actions";
+        appendAction(relatedActions, scenario.relatedPath, "관련 금융 화면", "button button-secondary");
+        if (scenario.sideEffect) {
+            appendAction(relatedActions, "/demo/my/loans.html", "내 대출 목록에서 확인", "button button-secondary");
+        }
+        appendAction(relatedActions, "/demo/lab/index.html", "Lab 목록", "button button-quiet");
+        overview.append(relatedActions);
+        root.append(overview);
+        renderLabContextManager(root, requestId, scenario.authContext);
+
+        const actionSection = document.createElement("section");
+        actionSection.className = "card data-section lab-run-card";
+        appendText(actionSection, "h2", "실제 요청 실행");
+        const stateElement = document.createElement("div");
+        stateElement.dataset.labRunState = "true";
+        showStatus(stateElement, "is-empty", "실행 대기", "정상·취약 버튼을 각각 눌러 실제 응답을 확인하세요.");
+        actionSection.append(stateElement);
+        const actionGrid = document.createElement("div");
+        actionGrid.className = "lab-run-grid";
+        const normalPanel = document.createElement("article");
+        normalPanel.className = "lab-result-panel";
+        appendText(normalPanel, "h3", "정상 API");
+        const normalButton = document.createElement("button");
+        normalButton.className = "button button-primary";
+        normalButton.type = "button";
+        normalButton.textContent = "정상 경로 실행";
+        normalPanel.append(normalButton);
+        const normalResult = document.createElement("div");
+        normalResult.className = "lab-result-body";
+        normalResult.dataset.labResultBody = "true";
+        normalPanel.append(normalResult);
+        const vulnerablePanel = document.createElement("article");
+        vulnerablePanel.className = "lab-result-panel";
+        appendText(vulnerablePanel, "h3", "취약 API");
+        const vulnerableButton = document.createElement("button");
+        vulnerableButton.className = "button button-secondary";
+        vulnerableButton.type = "button";
+        vulnerableButton.textContent = "취약 경로 실행";
+        vulnerablePanel.append(vulnerableButton);
+        const vulnerableResult = document.createElement("div");
+        vulnerableResult.className = "lab-result-body";
+        vulnerableResult.dataset.labResultBody = "true";
+        vulnerablePanel.append(vulnerableResult);
+        actionGrid.append(normalPanel, vulnerablePanel);
+        actionSection.append(actionGrid);
+        const comparison = document.createElement("div");
+        comparison.className = "lab-comparison-panel";
+        actionSection.append(comparison);
+        root.append(actionSection);
+
+        const run = currentLabRun(scenario);
+        normalButton.addEventListener("click", () => runLabVariant(scenario, "normal", root, requestId, normalButton, normalResult, comparison, stateElement));
+        vulnerableButton.addEventListener("click", () => runLabVariant(scenario, "vulnerable", root, requestId, vulnerableButton, vulnerableResult, comparison, stateElement));
+        if (run.normal) {
+            renderLabResult(normalResult, scenario, "normal", run.normal);
+        }
+        if (run.vulnerable) {
+            renderLabResult(vulnerableResult, scenario, "vulnerable", run.vulnerable);
+        }
+        updateLabRunStatus(scenario, run);
+        comparison.dataset.labComparison = "true";
+        renderLabComparison(comparison, scenario, run);
+        renderLabSdkPanel(root, scenario);
+    }
+
     async function initScreen(path) {
         const requestId = ++state.requestId;
         const publicLoanScreen = path === "/demo/loans/index.html" || path === "/demo/loans/product.html";
@@ -3532,6 +4338,8 @@
             renderBusinessFrame("staff");
         } else if (isAdminPath(path)) {
             renderBusinessFrame("admin");
+        } else if (isLabPath(path)) {
+            renderBusinessFrame("lab");
         } else {
             renderCustomerFrame(requestId, publicLoanScreen);
         }
@@ -3563,7 +4371,9 @@
             "/demo/admin/index.html": ["은행 관리자 홈", renderAdminHome],
             "/demo/admin/savings.html": ["예적금 상품 관리", renderAdminSavings],
             "/demo/admin/subscriptions.html": ["예적금 가입 현황", renderAdminSubscriptions],
-            "/demo/admin/loans.html": ["대출·담당 배정", renderAdminLoans]
+            "/demo/admin/loans.html": ["대출·담당 배정", renderAdminLoans],
+            "/demo/lab/index.html": ["보안 시나리오 Lab", renderLabHome],
+            "/demo/lab/scenario.html": ["시나리오 실행", renderLabScenario]
         }[path];
         if (!screen) {
             renderError(root, "화면 경로를 확인할 수 없습니다.", "Demo Bank 업무 화면 경로가 아닙니다.");
@@ -3574,7 +4384,13 @@
     }
 
     async function initializePage() {
-        const path = currentPath().split("?")[0];
+        const current = currentPath();
+        const path = current.split("?")[0];
+        if (isLabPath(path) && !normalizePath(current)) {
+            window.history.replaceState({}, "", "/demo/lab/index.html");
+            await initScreen("/demo/lab/index.html");
+            return;
+        }
         if (path === "/demo/" || path === "/demo/index.html") {
             if (document.body.dataset.page !== "home") {
                 window.location.assign(path);
@@ -3591,7 +4407,7 @@
             }
             return;
         }
-        if (isCustomerPath(path) || isStaffPath(path) || isAdminPath(path)) {
+        if (isCustomerPath(path) || isStaffPath(path) || isAdminPath(path) || isLabPath(path)) {
             await initScreen(path);
         }
     }
