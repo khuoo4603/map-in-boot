@@ -262,8 +262,7 @@ select:focus-visible {
 }
 
 .card-heading h2,
-.section-heading-row h2,
-.support-card h2 {
+.section-heading-row h2 {
     margin: 0;
     color: #29423d;
     font-size: 20px;
@@ -272,8 +271,7 @@ select:focus-visible {
     line-height: 1.38;
 }
 
-.heading-icon,
-.support-icon {
+.heading-icon {
     display: grid;
     flex: 0 0 auto;
     width: 42px;
@@ -284,8 +282,7 @@ select:focus-visible {
     border-radius: 14px;
 }
 
-.heading-icon svg,
-.support-icon svg {
+.heading-icon svg {
     width: 23px;
     height: 23px;
 }
@@ -567,27 +564,6 @@ select:focus-visible {
     height: 25px;
 }
 
-.support-grid {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: var(--content-gap);
-    margin-top: 42px;
-}
-
-.support-card {
-    display: flex;
-    min-height: 150px;
-    align-items: start;
-    gap: 18px;
-}
-
-.support-card p:last-child {
-    margin: 10px 0 0;
-    color: var(--color-muted-text);
-    font-size: 12px;
-    letter-spacing: -0.04em;
-}
-
 .product-grid {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -632,6 +608,21 @@ select:focus-visible {
 
 .login-main {
     padding: 72px 0 92px;
+}
+
+body[data-page="login"] {
+    display: flex;
+    min-height: 100vh;
+    min-height: 100dvh;
+    flex-direction: column;
+}
+
+body[data-page="login"] > .login-main {
+    flex: 1 0 auto;
+}
+
+.login-header .utility-link {
+    margin-left: auto;
 }
 
 .login-layout {
@@ -730,7 +721,7 @@ select:focus-visible {
 
 .site-footer {
     color: #6b7d78;
-    background: #e2eeea;
+    background: #FFFFFF;
 }
 
 .footer-inner {
@@ -894,8 +885,7 @@ select:focus-visible {
     }
 
     .portal-grid,
-    .product-grid,
-    .support-grid {
+    .product-grid {
         grid-template-columns: 1fr;
     }
 
@@ -1372,6 +1362,425 @@ select:focus-visible {
     margin-top: 18px;
 }
 
+/* 레퍼런스 계좌 카드 기반 고객 금융 행 */
+.customer-finance-card,
+.customer-profile-card {
+    margin-top: 24px;
+    padding: 14px 20px;
+    border: 1px solid var(--line);
+    border-radius: 28px;
+    background: var(--surface);
+    box-shadow: var(--shadow-card);
+}
+
+.customer-finance-list,
+.customer-product-list {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 0;
+}
+
+.catalog-grid.customer-product-list {
+    grid-template-columns: 1fr;
+}
+
+.customer-finance-row {
+    display: grid;
+    grid-template-columns: 48px minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 16px;
+    min-height: 84px;
+    padding: 14px 0;
+    border-bottom: 1px solid var(--line-soft);
+}
+
+.customer-finance-row:last-child {
+    border-bottom: 0;
+}
+
+.customer-finance-icon {
+    display: grid;
+    width: 48px;
+    height: 48px;
+    place-items: center;
+    flex: 0 0 48px;
+    border-radius: 50%;
+    background: #e8f3f0;
+    color: var(--brand-primary);
+}
+
+.customer-finance-icon.is-savings {
+    background: #f1eee2;
+    color: #877445;
+}
+
+.customer-finance-icon.is-loan {
+    background: #e8effb;
+    color: #536fa2;
+}
+
+.customer-finance-icon svg {
+    width: 25px;
+    height: 25px;
+}
+
+.customer-finance-main {
+    display: grid;
+    min-width: 0;
+    gap: 2px;
+}
+
+.customer-finance-title {
+    overflow: hidden;
+    color: var(--text-muted);
+    font-size: 16px;
+    font-weight: 700;
+    letter-spacing: -0.03em;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.customer-finance-value {
+    overflow: hidden;
+    color: var(--text-strong);
+    font-size: 22px;
+    font-weight: 800;
+    letter-spacing: -0.045em;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.customer-finance-meta {
+    overflow: hidden;
+    color: var(--text-muted);
+    font-size: 13px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.customer-finance-action {
+    min-width: 78px;
+    min-height: 38px;
+    padding: 0 15px;
+    border-radius: 10px;
+    white-space: nowrap;
+}
+
+.customer-finance-action.button-secondary {
+    border: 1px solid transparent;
+    background: var(--surface-muted);
+    color: var(--text-muted);
+}
+
+.customer-finance-action.button-secondary:hover {
+    border-color: var(--line);
+    background: #e9efed;
+}
+
+.customer-finance-card > .status-message,
+.customer-finance-card > .customer-product-list > .status-message {
+    margin: 10px 0;
+}
+
+.customer-transactions {
+    padding: 18px 0 4px;
+    border-top: 1px solid var(--line);
+}
+
+.customer-transactions-heading {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 10px;
+}
+
+.customer-transactions-heading h3 {
+    margin: 0;
+    color: var(--text-strong);
+    font-size: 16px;
+}
+
+.customer-transactions-account {
+    color: var(--text-muted);
+    font-size: 12px;
+}
+
+.customer-transaction-list {
+    display: grid;
+}
+
+.customer-transaction-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 18px;
+    padding: 12px 0;
+    border-top: 1px solid var(--line-soft);
+}
+
+.customer-transaction-row > div {
+    display: grid;
+    min-width: 0;
+    gap: 2px;
+}
+
+.customer-transaction-row strong {
+    overflow: hidden;
+    color: var(--text-strong);
+    font-size: 14px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.customer-transaction-row div span {
+    color: var(--text-muted);
+    font-size: 12px;
+}
+
+.customer-transaction-row > span {
+    flex: 0 0 auto;
+    font-size: 14px;
+    font-weight: 800;
+    white-space: nowrap;
+}
+
+.customer-profile-heading {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    padding: 4px 0 20px;
+}
+
+.customer-profile-heading > div:last-child {
+    display: grid;
+    gap: 2px;
+}
+
+.customer-profile-name {
+    color: var(--text-strong);
+    font-size: 20px;
+}
+
+.customer-profile-subtitle {
+    color: var(--text-muted);
+    font-size: 13px;
+}
+
+.customer-profile-row,
+.customer-review-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 18px;
+    min-height: 52px;
+    border-top: 1px solid var(--line-soft);
+    color: var(--text-muted);
+    font-size: 13px;
+}
+
+.customer-profile-row strong,
+.customer-review-row strong {
+    color: var(--text-strong);
+    font-size: 14px;
+    text-align: right;
+}
+
+.customer-review-list {
+    margin-top: 14px;
+}
+
+.customer-info-list {
+    margin-top: 18px;
+}
+
+.customer-info-row {
+    min-height: 54px;
+}
+
+.customer-info-label {
+    color: var(--text-muted);
+    font-size: 13px;
+}
+
+.customer-info-value {
+    color: var(--text-strong);
+    font-size: 14px;
+    text-align: right;
+}
+
+.customer-detail-actions {
+    justify-content: flex-end;
+    margin-top: 18px;
+}
+
+.customer-form-panel .customer-form {
+    max-width: 620px;
+    margin-top: 4px;
+}
+
+.otp-demo-note {
+    margin: -4px 0 4px;
+    color: var(--text-muted);
+    font-size: 12px;
+}
+
+.staff-customer-header {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 18px;
+    padding: 4px 0 14px;
+    border-bottom: 1px solid var(--line);
+}
+
+.staff-customer-header h2,
+.staff-detail-card h2,
+.lab-scenario-section h2,
+.lab-overview-card h2,
+.lab-run-card h2,
+.lab-sdk-card h2,
+.lab-intro-card h2 {
+    margin: 0;
+    color: var(--text-strong);
+    font-size: 18px;
+}
+
+.staff-customer-count {
+    color: var(--text-muted);
+    font-size: 13px;
+    font-weight: 800;
+}
+
+.staff-customer-list {
+    display: grid;
+}
+
+.staff-customer-row {
+    display: grid;
+    grid-template-columns: 48px minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 16px;
+    min-height: 84px;
+    padding: 14px 0;
+    border-bottom: 1px solid var(--line-soft);
+    color: inherit;
+    text-decoration: none;
+}
+
+.staff-customer-row:last-child {
+    border-bottom: 0;
+}
+
+.staff-customer-main {
+    display: grid;
+    min-width: 0;
+    gap: 2px;
+}
+
+.staff-customer-name {
+    color: var(--text-strong);
+    font-size: 17px;
+}
+
+.staff-customer-id,
+.staff-customer-status {
+    color: var(--text-muted);
+    font-size: 13px;
+}
+
+.staff-customer-action {
+    min-width: 82px;
+    text-align: center;
+}
+
+.staff-detail-card > h2 {
+    padding-bottom: 14px;
+    border-bottom: 1px solid var(--line);
+}
+
+.lab-context-list,
+.lab-scenario-list,
+.lab-run-stack {
+    display: grid;
+    gap: 0;
+    margin-top: 18px;
+}
+
+.lab-context-list .lab-context-item {
+    padding: 16px 0;
+    border-top: 1px solid var(--line-soft);
+    border-radius: 0;
+    background: transparent;
+}
+
+.lab-scenario-row {
+    display: grid;
+    grid-template-columns: 92px minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 16px;
+    min-height: 96px;
+    padding: 16px 0;
+    border-bottom: 1px solid var(--line-soft);
+}
+
+.lab-scenario-row:last-child {
+    border-bottom: 0;
+}
+
+.lab-scenario-id {
+    color: var(--brand-primary);
+    font-size: 13px;
+    font-weight: 900;
+    letter-spacing: 0.02em;
+}
+
+.lab-scenario-main {
+    display: grid;
+    min-width: 0;
+    gap: 3px;
+}
+
+.lab-scenario-title {
+    color: var(--text-strong);
+    font-size: 16px;
+}
+
+.lab-scenario-meta,
+.lab-scenario-description {
+    overflow: hidden;
+    color: var(--text-muted);
+    font-size: 12px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.lab-scenario-actions {
+    margin-top: 0;
+}
+
+.lab-run-stack .lab-result-panel {
+    padding: 18px 0;
+    border: 0;
+    border-top: 1px solid var(--line-soft);
+    border-radius: 0;
+    background: transparent;
+}
+
+.lab-run-stack .lab-result-panel:first-child {
+    border-top: 0;
+}
+
+.lab-run-stack .lab-result-panel h3 {
+    font-size: 16px;
+}
+
+.lab-scenario-grid,
+.lab-context-grid,
+.lab-run-grid {
+    grid-template-columns: 1fr;
+}
+
 .lab-context-grid,
 .lab-run-grid {
     display: grid;
@@ -1445,6 +1854,45 @@ select:focus-visible {
     margin-bottom: 0;
 }
 
+.lab-reproduction-guide {
+    margin-bottom: 0;
+}
+
+.lab-guide-section {
+    margin-top: 22px;
+    padding-top: 18px;
+    border-top: 1px solid var(--line-soft);
+}
+
+.lab-guide-section h3 {
+    margin: 0;
+    color: var(--text-strong);
+    font-size: 16px;
+}
+
+.lab-guide-list,
+.lab-guide-steps {
+    display: grid;
+    gap: 8px;
+    margin: 11px 0 0;
+    padding-left: 21px;
+    color: var(--text-muted);
+    font-size: 13px;
+    line-height: 1.65;
+}
+
+.lab-guide-list li,
+.lab-guide-steps li {
+    overflow-wrap: anywhere;
+}
+
+.lab-guide-note {
+    margin: 12px 0 0;
+    color: var(--text-muted);
+    font-size: 12px;
+    line-height: 1.65;
+}
+
 @media (max-width: 860px) {
     .customer-nav {
         gap: 10px;
@@ -1506,5 +1954,61 @@ select:focus-visible {
 
     .identity-steps {
         flex-direction: column;
+    }
+
+    .customer-finance-card,
+    .customer-profile-card {
+        padding: 10px 14px;
+        border-radius: 22px;
+    }
+
+    .customer-finance-row {
+        grid-template-columns: 48px minmax(0, 1fr);
+        gap: 12px;
+    }
+
+    .customer-finance-action {
+        grid-column: 2;
+        justify-self: start;
+    }
+
+    .customer-finance-title {
+        font-size: 15px;
+    }
+
+    .customer-finance-value {
+        font-size: 20px;
+    }
+
+    .customer-transaction-row {
+        align-items: flex-start;
+    }
+
+    .staff-customer-row {
+        grid-template-columns: 48px minmax(0, 1fr);
+        gap: 12px;
+    }
+
+    .staff-customer-action {
+        grid-column: 2;
+        justify-self: start;
+    }
+
+    .lab-scenario-row {
+        grid-template-columns: 1fr;
+        gap: 8px;
+    }
+
+    .lab-scenario-actions {
+        justify-self: start;
+    }
+
+    .customer-info-row {
+        align-items: flex-start;
+    }
+
+    .customer-info-value {
+        max-width: 65%;
+        overflow-wrap: anywhere;
     }
 }
