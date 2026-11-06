@@ -82,9 +82,10 @@ class LocalSnapshotStoreIntegrationTest {
     @Test
     void changedFingerprintCreatesNewHistory() throws Exception {
         LocalSnapshotStore store = store(new SnapshotJsonCodec(), 7);
+        Instant reference = Instant.now();
 
-        store.save(snapshot(Instant.parse("2026-10-30T00:00:00Z"), AnalysisStatus.READY, "/one"), true);
-        Snapshot changed = snapshot(Instant.parse("2026-10-31T00:00:00Z"), AnalysisStatus.READY, "/two");
+        store.save(snapshot(reference.minus(1, ChronoUnit.DAYS), AnalysisStatus.READY, "/one"), true);
+        Snapshot changed = snapshot(reference, AnalysisStatus.READY, "/two");
         store.save(changed, true);
 
         assertEquals(2, managedFiles().size());
@@ -112,8 +113,9 @@ class LocalSnapshotStoreIntegrationTest {
     @Test
     void corruptedNewestSnapshotFallsBackToValidOlderSnapshot() throws Exception {
         LocalSnapshotStore store = store(new SnapshotJsonCodec(), 7);
-        Snapshot older = snapshot(Instant.parse("2026-10-30T00:00:00Z"), AnalysisStatus.READY, "/one");
-        Snapshot newest = snapshot(Instant.parse("2026-10-31T00:00:00Z"), AnalysisStatus.READY, "/two");
+        Instant reference = Instant.now();
+        Snapshot older = snapshot(reference.minus(1, ChronoUnit.DAYS), AnalysisStatus.READY, "/one");
+        Snapshot newest = snapshot(reference, AnalysisStatus.READY, "/two");
 
         store.save(older, true);
         store.save(newest, true);

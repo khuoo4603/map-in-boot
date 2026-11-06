@@ -52,3 +52,6 @@ bin/
 *.key
 *.p12
 *.jks
+
+### Runtime Snapshot Data ###
+mapinboot-data/

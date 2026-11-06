@@ -53,7 +53,7 @@ class IdentityRepositoryTest {
 
         DemoUser dev = userRepository.findByUsername("mib.dev").orElseThrow();
         assertThat(dev.getUserId()).isEqualTo("DEV001");
-        assertThat(dev.getRoles()).isEqualTo(Set.of("MAP_IN_BOOT_ADMIN"));
+        assertThat(dev.getRoles()).isEqualTo(Set.of("ROLE_MAP_IN_BOOT_ADMIN"));
 
         // BCrypt 해시 저장 및 원문 일치 검증
         assertThat(customerA.getPasswordHash()).isNotEqualTo(rawPassword);

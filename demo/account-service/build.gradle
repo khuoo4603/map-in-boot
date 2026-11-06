@@ -8,6 +8,8 @@ jar {
 }
 
 dependencies {
+    implementation project(':map-in-boot-starter')
+    implementation project(':map-in-boot-security')
     implementation 'org.springframework.boot:spring-boot-starter-webmvc'
     implementation 'org.springframework.boot:spring-boot-starter-security'
     implementation 'org.springframework.boot:spring-boot-starter-oauth2-resource-server'

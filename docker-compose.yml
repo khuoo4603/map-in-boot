@@ -39,6 +39,8 @@ services:
       - "127.0.0.1:${IDENTITY_PORT:-8081}:8081"
     environment:
       IDENTITY_PORT: "8081"
+      SPRING_PROFILES_ACTIVE: "${SPRING_PROFILES_ACTIVE:-}"
+      MAPINBOOT_WEB_ENABLED: "${MAPINBOOT_WEB_ENABLED:-false}"
       DEMO_CORS_ALLOWED_ORIGINS: "${DEMO_CORS_ALLOWED_ORIGINS:-http://localhost:8080,http://127.0.0.1:8080}"
       DEMO_TEST_PASSWORD: "${DEMO_TEST_PASSWORD}"
       JWT_PRIVATE_KEY_PATH: "/keys/jwt-private.pem"
@@ -64,6 +66,8 @@ services:
       - "127.0.0.1:${ACCOUNT_PORT:-8082}:8082"
     environment:
       ACCOUNT_PORT: "8082"
+      SPRING_PROFILES_ACTIVE: "${SPRING_PROFILES_ACTIVE:-}"
+      MAPINBOOT_WEB_ENABLED: "${MAPINBOOT_WEB_ENABLED:-false}"
       DEMO_CORS_ALLOWED_ORIGINS: "${DEMO_CORS_ALLOWED_ORIGINS:-http://localhost:8080,http://127.0.0.1:8080}"
       JWT_PUBLIC_KEY_PATH: "/keys/jwt-public.pem"
       JWT_ISSUER: "${JWT_ISSUER:-demo-identity}"
@@ -88,6 +92,8 @@ services:
       - "127.0.0.1:${MAIN_PORT:-8080}:8080"
     environment:
       MAIN_PORT: "8080"
+      SPRING_PROFILES_ACTIVE: "${SPRING_PROFILES_ACTIVE:-}"
+      MAPINBOOT_WEB_ENABLED: "${MAPINBOOT_WEB_ENABLED:-false}"
       DEMO_CORS_ALLOWED_ORIGINS: "${DEMO_CORS_ALLOWED_ORIGINS:-http://localhost:8080,http://127.0.0.1:8080}"
       IDENTITY_BASE_URL: "http://identity-service:8081"
       ACCOUNT_BASE_URL: "http://account-service:8082"
