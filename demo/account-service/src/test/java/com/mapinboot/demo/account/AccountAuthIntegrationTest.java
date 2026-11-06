@@ -175,6 +175,7 @@ class AccountAuthIntegrationTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$", hasSize(1)))
                 .andExpect(jsonPath("$[0].accountId").value("ACC001"))
+                .andExpect(jsonPath("$[0].accountNumber").value("0000-00-000100"))
                 .andExpect(jsonPath("$[0].ownerId").value("USER001"))
                 .andExpect(jsonPath("$[0].balance").value(1250000));
     }
@@ -189,6 +190,7 @@ class AccountAuthIntegrationTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$", hasSize(1)))
                 .andExpect(jsonPath("$[0].accountId").value("ACC002"))
+                .andExpect(jsonPath("$[0].accountNumber").value("0000-00-000200"))
                 .andExpect(jsonPath("$[0].ownerId").value("USER002"))
                 .andExpect(jsonPath("$[0].balance").value(2800000));
     }
@@ -203,12 +205,14 @@ class AccountAuthIntegrationTest {
                         .header("Authorization", "Bearer " + customerToken))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.accountId").value("ACC001"))
+                .andExpect(jsonPath("$.accountNumber").doesNotExist())
                 .andExpect(jsonPath("$.ownerId").value("USER001"))
                 .andExpect(jsonPath("$.balance").value(1250000));
         mockMvc.perform(get("/api/accounts/ACC001")
                         .header("Authorization", "Bearer " + customerToken))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.accountId").value("ACC001"))
+                .andExpect(jsonPath("$.accountNumber").doesNotExist())
                 .andExpect(jsonPath("$.ownerId").value("USER001"))
                 .andExpect(jsonPath("$.balance").value(1250000));
 
@@ -219,6 +223,7 @@ class AccountAuthIntegrationTest {
                         .header("Authorization", "Bearer " + customerToken))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.accountId").value("ACC002"))
+                .andExpect(jsonPath("$.accountNumber").doesNotExist())
                 .andExpect(jsonPath("$.ownerId").value("USER002"))
                 .andExpect(jsonPath("$.balance").value(2800000));
 
