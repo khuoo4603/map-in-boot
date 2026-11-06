@@ -418,6 +418,24 @@ class SecurityRuleEngineTest {
         assertEquals(first, second);
     }
 
+    @Test
+    void keepsExistingChainFindingWhenMethodMismatchHasNoStructuredBypassEvidence() {
+        Fact endpoint = endpoint("reports", "/api/reports/summary");
+        Fact broad = chain("broad", 1, "/api/reports/**");
+        Fact protectedChain = chain("protected", 2, "/api/reports/summary");
+
+        List<Finding> findings = evaluate(List.of(
+                endpoint,
+                broad,
+                policy("broad-policy", broad, "PERMIT_ALL", "/api/reports/**", null),
+                protectedChain,
+                policy("protected-policy", protectedChain, "AUTHORITY_REQUIRED", "/api/reports/summary", "ROLE_STAFF")),
+                readyStatuses());
+
+        assertEquals(1, findings.stream().filter(finding -> "CHAIN_ORDER".equals(finding.ruleId())).count());
+        assertTrue(findings.stream().noneMatch(finding -> "METHOD_MISMATCH".equals(finding.ruleId())));
+    }
+
     private List<Finding> evaluate(List<Fact> facts, Map<String, AnalysisStatus> statuses) {
         List<Evidence> evidence = facts.stream()
                 .flatMap(fact -> fact.evidenceIds().stream())
