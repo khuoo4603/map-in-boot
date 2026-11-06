@@ -118,6 +118,8 @@ class WebAccessSmokeIntegrationTest {
                     .andExpect(status().isNotFound());
             mvc.perform(get("/mapinboot/test/api/report").with(principal(true)))
                     .andExpect(status().isNotFound());
+            mvc.perform(get("/mapinboot/test/assets/development-diagnostic.css").with(principal(true)))
+                    .andExpect(status().isNotFound());
         }
 
         try (ConfigurableApplicationContext context = start(
@@ -135,6 +137,8 @@ class WebAccessSmokeIntegrationTest {
             mvc.perform(get("/mapinboot/test").with(principal(true)))
                     .andExpect(status().isNotFound());
             mvc.perform(get("/mapinboot/test/api/report").with(principal(true)))
+                    .andExpect(status().isNotFound());
+            mvc.perform(get("/mapinboot/test/assets/development-diagnostic.css").with(principal(true)))
                     .andExpect(status().isNotFound());
         }
     }
@@ -260,6 +264,16 @@ class WebAccessSmokeIntegrationTest {
                     .andExpect(status().isOk())
                     .andExpect(content().contentTypeCompatibleWith(MediaType.TEXT_HTML))
                     .andExpect(content().string(org.hamcrest.Matchers.containsString("Map in Boot Development Diagnostics")));
+            mvc.perform(get("/mapinboot/test/assets/development-diagnostic.css"))
+                    .andExpect(status().isUnauthorized());
+            mvc.perform(get("/mapinboot/test/assets/development-diagnostic.css").with(basic("viewer", "password")))
+                    .andExpect(status().isForbidden());
+            mvc.perform(get("/mapinboot/test/assets/development-diagnostic.css").with(basic("admin", "password")))
+                    .andExpect(status().isOk())
+                    .andExpect(content().contentTypeCompatibleWith(MediaType.valueOf("text/css")));
+            mvc.perform(get("/mapinboot/test/assets/development-diagnostic.js").with(basic("admin", "password")))
+                    .andExpect(status().isOk())
+                    .andExpect(content().contentTypeCompatibleWith(MediaType.valueOf("text/javascript")));
             mvc.perform(get("/mapinboot/test/api/report"))
                     .andExpect(status().isUnauthorized());
             mvc.perform(get("/mapinboot/test/api/report").with(basic("viewer", "password")))

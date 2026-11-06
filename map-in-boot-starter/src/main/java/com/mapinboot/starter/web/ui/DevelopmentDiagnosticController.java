@@ -19,6 +19,8 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import org.springframework.context.annotation.Profile;
+import org.springframework.core.io.ClassPathResource;
+import org.springframework.core.io.Resource;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -30,6 +32,10 @@ import org.springframework.web.bind.annotation.RestController;
 @Profile("develop")
 @RequestMapping("/mapinboot")
 public final class DevelopmentDiagnosticController {
+    private static final String RESOURCE_PATH = "META-INF/mapinboot/development-diagnostic/";
+    private static final MediaType TEXT_CSS = MediaType.parseMediaType("text/css");
+    private static final MediaType TEXT_JAVASCRIPT = MediaType.parseMediaType("text/javascript");
+
     private final MapInBootBootstrap bootstrap;
 
     public DevelopmentDiagnosticController(MapInBootBootstrap bootstrap) {
@@ -37,25 +43,32 @@ public final class DevelopmentDiagnosticController {
     }
 
     @GetMapping(value = "/test", produces = MediaType.TEXT_HTML_VALUE)
-    public ResponseEntity<String> test() {
-        return ResponseEntity.ok()
-                .contentType(MediaType.TEXT_HTML)
-                .body("""
-                        <!doctype html>
-                        <html lang="ko">
-                        <head><meta charset="UTF-8"><title>Map in Boot Development Diagnostics</title></head>
-                        <body>
-                        <h1>Map in Boot Development Diagnostics</h1>
-                        <p>SDK 개발 전용 진단 화면</p>
-                        </body>
-                        </html>
-                        """);
+    public ResponseEntity<Resource> test() {
+        return resource("development-diagnostic.html", MediaType.TEXT_HTML);
+    }
+
+    @GetMapping(value = "/test/assets/development-diagnostic.css", produces = "text/css")
+    public ResponseEntity<Resource> stylesheet() {
+        return resource("development-diagnostic.css", TEXT_CSS);
+    }
+
+    @GetMapping(value = "/test/assets/development-diagnostic.js", produces = "text/javascript")
+    public ResponseEntity<Resource> script() {
+        return resource("development-diagnostic.js", TEXT_JAVASCRIPT);
     }
 
     // 현재 수집·분석 결과의 읽기 전용 조회
     @GetMapping(value = "/test/api/report", produces = MediaType.APPLICATION_JSON_VALUE)
     public DevelopmentDiagnosticReport report() {
         return DevelopmentDiagnosticReport.from(bootstrap);
+    }
+
+    private ResponseEntity<Resource> resource(String name, MediaType contentType) {
+        Resource resource = new ClassPathResource(RESOURCE_PATH + name);
+        if (!resource.exists()) {
+            return ResponseEntity.notFound().build();
+        }
+        return ResponseEntity.ok().contentType(contentType).body(resource);
     }
 
     public record DevelopmentDiagnosticReport(

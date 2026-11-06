@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Map in Boot Development Diagnostics</title>
+  <link rel="stylesheet" href="/mapinboot/test/assets/development-diagnostic.css">
+</head>
+<body>
+<main class="diagnostic-shell">
+  <header class="page-header">
+    <div>
+      <p class="eyebrow">MAP IN BOOT</p>
+      <h1>Development Diagnostics</h1>
+      <p id="service-name" class="muted">서비스 정보 확인 중</p>
+    </div>
+    <div class="header-actions">
+      <span id="request-state" class="status-chip" aria-live="polite">조회 대기</span>
+      <button id="refresh-button" type="button">결과 다시 불러오기</button>
+    </div>
+  </header>
+
+  <section class="status-grid" aria-label="실행 상태">
+    <article><span>현재 실행 단계</span><strong id="phase">미확인</strong></article>
+    <article><span>CollectionReport</span><strong id="collection-present">미확인</strong></article>
+    <article><span>AnalysisReport</span><strong id="analysis-present">미확인</strong></article>
+    <article><span>현재 Snapshot</span><strong id="current-snapshot">미확인</strong></article>
+    <article><span>마지막 보존 Snapshot</span><strong id="persisted-snapshot">미확인</strong></article>
+  </section>
+
+  <section class="panel snapshot-panel">
+    <div class="panel-heading"><h2>현재 실행과 보존 Snapshot</h2><p>현재 실행 결과와 마지막 보존 결과를 별도로 표시</p></div>
+    <div id="snapshot-details" class="key-values"></div>
+  </section>
+
+  <section class="panel">
+    <div class="panel-heading"><h2>Endpoint 목록</h2><p>ENDPOINT_MAPPING Fact와 확인된 관계 기반 표시</p></div>
+    <div id="endpoint-content"></div>
+  </section>
+
+  <section class="panel split-panel">
+    <div>
+      <div class="panel-heading"><h2>SecurityFilterChain</h2><p>SECURITY_CHAIN Fact</p></div>
+      <div id="chain-content"></div>
+    </div>
+    <div>
+      <div class="panel-heading"><h2>URL 인가 정책</h2><p>URL_AUTHORIZATION Fact</p></div>
+      <div id="policy-content"></div>
+    </div>
+  </section>
+
+  <section class="panel">
+    <div class="panel-heading"><h2>Servlet 및 Filter 정보</h2><p>수집된 등록 정보만 표시</p></div>
+    <div id="filter-content"></div>
+  </section>
+
+  <section class="panel split-panel">
+    <div>
+      <div class="panel-heading"><h2>Finding</h2><p>현재 Snapshot에 생성된 항목</p></div>
+      <div id="finding-content"></div>
+    </div>
+    <div>
+      <div class="panel-heading"><h2>Diagnostic</h2><p>안전한 오류 요약</p></div>
+      <div id="diagnostic-content"></div>
+    </div>
+  </section>
+
+  <section class="panel">
+    <div class="panel-heading"><h2>Evidence</h2><p>현재 Report가 제공한 근거</p></div>
+    <div id="evidence-content"></div>
+  </section>
+</main>
+<script src="/mapinboot/test/assets/development-diagnostic.js"></script>
+</body>
+</html>
