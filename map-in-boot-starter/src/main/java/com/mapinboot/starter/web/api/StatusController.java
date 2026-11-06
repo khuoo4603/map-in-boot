@@ -80,7 +80,7 @@ public class StatusController {
                     bootstrap.failureCode());
         }
 
-        private static List<DiagnosticResponse> toDiagnostics(List<AdapterDiagnostic> diagnostics) {
+        public static List<DiagnosticResponse> toDiagnostics(List<AdapterDiagnostic> diagnostics) {
             return diagnostics.stream()
                     .filter(Objects::nonNull)
                     .map(diagnostic -> new DiagnosticResponse(

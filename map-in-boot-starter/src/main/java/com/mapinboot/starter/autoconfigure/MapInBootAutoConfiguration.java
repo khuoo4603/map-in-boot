@@ -15,6 +15,7 @@ import com.mapinboot.starter.snapshot.SnapshotJsonCodec;
 import com.mapinboot.starter.web.api.SnapshotController;
 import com.mapinboot.starter.web.api.StatusController;
 import com.mapinboot.starter.web.access.WebAccessInterceptor;
+import com.mapinboot.starter.web.ui.DevelopmentDiagnosticController;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.concurrent.ExecutorService;
@@ -29,6 +30,7 @@ import org.springframework.boot.context.properties.EnableConfigurationProperties
 import org.springframework.context.ApplicationContext;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.context.annotation.Profile;
 import org.springframework.web.servlet.config.annotation.InterceptorRegistry;
 import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
 
@@ -152,6 +154,15 @@ public class MapInBootAutoConfiguration {
         @ConditionalOnProperty(prefix = "mapinboot.web", name = "enabled", havingValue = "true")
         StatusController statusController(MapInBootBootstrap bootstrap, MapInBootProperties properties) {
             return new StatusController(bootstrap, properties);
+        }
+
+        @Bean
+        @Profile("develop")
+        @ConditionalOnMissingBean
+        @ConditionalOnProperty(prefix = "mapinboot", name = "enabled", havingValue = "true", matchIfMissing = true)
+        @ConditionalOnProperty(prefix = "mapinboot.web", name = "enabled", havingValue = "true")
+        DevelopmentDiagnosticController developmentDiagnosticController(MapInBootBootstrap bootstrap) {
+            return new DevelopmentDiagnosticController(bootstrap);
         }
 
         @Bean

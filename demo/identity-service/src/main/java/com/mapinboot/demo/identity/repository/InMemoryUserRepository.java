@@ -50,7 +50,7 @@ public class InMemoryUserRepository {
         saveUser(new DemoUser("STAFF001", "staff.a", encodedPassword, Set.of("ROLE_STAFF"), true));
         saveUser(new DemoUser("STAFF002", "staff.b", encodedPassword, Set.of("ROLE_STAFF"), true));
         saveUser(new DemoUser("ADMIN001", "bank.admin", encodedPassword, Set.of("ROLE_BANK_ADMIN"), true));
-        saveUser(new DemoUser("DEV001", "mib.dev", encodedPassword, Set.of("MAP_IN_BOOT_ADMIN"), true));
+        saveUser(new DemoUser("DEV001", "mib.dev", encodedPassword, Set.of("ROLE_MAP_IN_BOOT_ADMIN"), true));
     }
 
     /**
