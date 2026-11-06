@@ -4,6 +4,7 @@ import com.mapinboot.demo.account.model.DemoAccount;
 import com.mapinboot.demo.account.model.DemoAccountTransaction;
 import com.mapinboot.demo.account.repository.InMemoryAccountRepository;
 import com.mapinboot.demo.account.repository.InMemoryAccountTransactionRepository;
+import java.math.BigDecimal;
 import java.util.List;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -35,14 +36,14 @@ public class MyAccountController {
      * 현재 인증된 고객 본인의 계좌 목록 조회
      */
     @GetMapping("/accounts")
-    public ResponseEntity<List<DemoAccount>> getMyAccounts(@AuthenticationPrincipal Jwt jwt) {
+    public ResponseEntity<List<MyAccountResponse>> getMyAccounts(@AuthenticationPrincipal Jwt jwt) {
         if (jwt == null) {
             return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
         }
 
         String userId = jwt.getSubject();
         List<DemoAccount> accounts = accountRepository.findByOwnerId(userId);
-        return ResponseEntity.ok(accounts);
+        return ResponseEntity.ok(accounts.stream().map(MyAccountResponse::from).toList());
     }
 
     /**
@@ -67,6 +68,28 @@ public class MyAccountController {
         }
 
         return ResponseEntity.ok(transactionRepository.findByAccountId(accountId));
+    }
+
+    /**
+     * 고객 계좌 목록의 화면 표시용 응답
+     */
+    private record MyAccountResponse(
+            String accountId,
+            String accountNumber,
+            String ownerId,
+            String accountType,
+            BigDecimal balance,
+            String status) {
+
+        private static MyAccountResponse from(DemoAccount account) {
+            return new MyAccountResponse(
+                    account.getAccountId(),
+                    account.getAccountNumber(),
+                    account.getOwnerId(),
+                    account.getAccountType(),
+                    account.getBalance(),
+                    account.getStatus());
+        }
     }
 }
 
