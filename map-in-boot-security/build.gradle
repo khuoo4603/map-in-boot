@@ -1,5 +1,6 @@
 dependencies {
     api project(':map-in-boot-core')
+    implementation 'org.ow2.asm:asm:9.7'
     compileOnly 'org.springframework.boot:spring-boot-autoconfigure:4.0.9'
     compileOnly 'org.springframework.security:spring-security-config:7.0.8'
     compileOnly 'org.springframework.security:spring-security-web:7.0.8'
