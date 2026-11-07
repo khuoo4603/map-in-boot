@@ -1,6 +1,9 @@
 package com.mapinboot.security.autoconfigure;
 
 import com.mapinboot.security.analyzer.EndpointChainMatchingAnalysisAdapter;
+import com.mapinboot.security.analyzer.FilterRegistrationAnalysisAdapter;
+import com.mapinboot.security.analyzer.MethodSecurityAnalysisAdapter;
+import com.mapinboot.security.collector.MethodSecurityCollectorAdapter;
 import com.mapinboot.security.collector.SecurityChainCollectorAdapter;
 import com.mapinboot.security.finding.SecurityRuleEngine;
 import com.mapinboot.core.finding.FindingEvaluator;
@@ -24,9 +27,27 @@ public class MapInBootSecurityAutoConfiguration {
     }
 
     @Bean
+    @ConditionalOnMissingBean(MethodSecurityCollectorAdapter.class)
+    MethodSecurityCollectorAdapter methodSecurityCollectorAdapter() {
+        return new MethodSecurityCollectorAdapter();
+    }
+
+    @Bean
     @ConditionalOnMissingBean(EndpointChainMatchingAnalysisAdapter.class)
     EndpointChainMatchingAnalysisAdapter endpointChainMatchingAnalysisAdapter() {
         return new EndpointChainMatchingAnalysisAdapter();
+    }
+
+    @Bean
+    @ConditionalOnMissingBean(MethodSecurityAnalysisAdapter.class)
+    MethodSecurityAnalysisAdapter methodSecurityAnalysisAdapter() {
+        return new MethodSecurityAnalysisAdapter();
+    }
+
+    @Bean
+    @ConditionalOnMissingBean(FilterRegistrationAnalysisAdapter.class)
+    FilterRegistrationAnalysisAdapter filterRegistrationAnalysisAdapter() {
+        return new FilterRegistrationAnalysisAdapter();
     }
 
     @Bean

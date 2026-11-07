@@ -1,6 +1,27 @@
 package com.mapinboot.demo.identity;
 
 import com.mapinboot.demo.identity.repository.InMemoryIdentityStateRepository;
+import com.mapinboot.core.analysis.AnalysisProvider;
+import com.mapinboot.core.analysis.model.AnalysisContext;
+import com.mapinboot.core.analysis.model.AnalysisReport;
+import com.mapinboot.core.collection.CollectionProvider;
+import com.mapinboot.core.collection.CollectorAdapter;
+import com.mapinboot.core.collection.model.CollectionContext;
+import com.mapinboot.core.collection.model.CollectionReport;
+import com.mapinboot.core.common.status.AnalysisStatus;
+import com.mapinboot.core.common.status.Confidence;
+import com.mapinboot.core.common.type.EdgeType;
+import com.mapinboot.core.evidence.Fact;
+import com.mapinboot.core.finding.Finding;
+import com.mapinboot.security.analyzer.EndpointChainMatchingAnalysisAdapter;
+import com.mapinboot.security.analyzer.FilterRegistrationAnalysisAdapter;
+import com.mapinboot.security.analyzer.MethodSecurityAnalysisAdapter;
+import com.mapinboot.security.collector.MethodSecurityCollectorAdapter;
+import com.mapinboot.security.collector.SecurityChainCollectorAdapter;
+import com.mapinboot.security.finding.SecurityRuleEngine;
+import com.mapinboot.starter.collector.EndpointMappingCollectorAdapter;
+import com.mapinboot.starter.collector.ServletFilterCollectorAdapter;
+import com.mapinboot.starter.collector.ServletRegistrationCollectorAdapter;
 import jakarta.servlet.http.Cookie;
 import jakarta.servlet.Filter;
 import java.io.FileOutputStream;
@@ -115,6 +136,74 @@ class IdentityAuthIntegrationTest {
 
         assertThat(normalRefreshIndex).isGreaterThan(normalBearerIndex);
         assertThat(vulnerableRefreshIndex).isLessThan(vulnerableBearerIndex);
+    }
+
+    @Test
+    @DisplayName("실제 Identity Context의 N08/V08 Filter 순서와 FILTER_ORDER 근거 비교")
+    void sdkFindingUsesActualIdentityFilterFactsAndSeparatesN08FromV08() {
+        CollectionProvider collectionProvider = context.getBean(CollectionProvider.class);
+        AnalysisProvider analysisProvider = context.getBean(AnalysisProvider.class);
+        SecurityRuleEngine ruleEngine = context.getBean(SecurityRuleEngine.class);
+
+        List<CollectorAdapter> collectors = List.of(
+                new EndpointMappingCollectorAdapter(),
+                new ServletFilterCollectorAdapter(),
+                new ServletRegistrationCollectorAdapter(),
+                new MethodSecurityCollectorAdapter(),
+                new SecurityChainCollectorAdapter());
+        CollectionReport collection = collectionProvider.execute(
+                new CollectionContext(context, "identity", "test"), collectors);
+        AnalysisReport analysis = analysisProvider.execute(
+                new AnalysisContext(collection, "identity"), List.of(
+                        new EndpointChainMatchingAnalysisAdapter(),
+                        new FilterRegistrationAnalysisAdapter(),
+                        new MethodSecurityAnalysisAdapter()));
+
+        assertThat(collection.statusByAdapter().get("security-chain"))
+                .isNotEqualTo(AnalysisStatus.UNKNOWN);
+        assertThat(analysis.relations()).anyMatch(relation -> relation.type() == EdgeType.MATCHED_BY);
+
+        Fact normalEndpoint = endpoint(collection, "/api/auth/secured/refresh");
+        Fact vulnerableEndpoint = endpoint(collection, "/api/auth/refresh");
+        Fact normalChain = selectedChain(analysis, normalEndpoint);
+        Fact vulnerableChain = selectedChain(analysis, vulnerableEndpoint);
+        assertThat(normalChain.attributes().get("chainKey"))
+                .isNotEqualTo(vulnerableChain.attributes().get("chainKey"));
+
+        List<Fact> normalFilters = securityFilters(collection, normalChain);
+        List<Fact> vulnerableFilters = securityFilters(collection, vulnerableChain);
+        List<com.mapinboot.core.evidence.Relation> vulnerableFilterRelations = analysis.relations().stream()
+                .filter(relation -> relation.type() == EdgeType.FILTERED_BY
+                        && vulnerableChain.subjectKey().equals(relation.sourceKey()))
+                .toList();
+        assertThat(vulnerableFilters).hasSize(vulnerableFilterRelations.size());
+        assertThat(vulnerableFilterRelations).allMatch(relation -> vulnerableFilters.stream()
+                .anyMatch(filter -> filter.subjectKey().equals(relation.targetKey())));
+        assertThat(filterOrder(normalFilters, "BearerTokenAuthenticationFilter"))
+                .isLessThan(filterOrder(normalFilters, "RefreshTokenFilter"));
+        assertThat(filterOrder(vulnerableFilters, "RefreshTokenFilter"))
+                .isLessThan(filterOrder(vulnerableFilters, "BearerTokenAuthenticationFilter"));
+        assertThat(vulnerableFilters.stream()
+                .filter(fact -> fact.attributes().get("filterClass").endsWith("RefreshTokenFilter"))
+                .flatMap(fact -> fact.evidenceIds().stream())
+                .anyMatch(id -> collection.evidence().stream().anyMatch(evidence ->
+                        evidence.id().equals(id)
+                                && evidence.source() == com.mapinboot.core.common.status.EvidenceSource.CODE_PATTERN)))
+                .isTrue();
+
+        List<Finding> findings = ruleEngine.evaluate(analysis);
+        assertThat(findings.stream().map(Finding::ruleId).toList())
+                .contains("FILTER_ORDER");
+        assertThat(findings.stream()
+                .filter(finding -> "FILTER_ORDER".equals(finding.ruleId()))
+                .filter(finding -> finding.evidenceIds().stream().anyMatch(id -> vulnerableEndpoint.evidenceIds().contains(id)))
+                .count()).isEqualTo(1);
+        assertThat(findings.stream()
+                .filter(finding -> "FILTER_ORDER".equals(finding.ruleId()))
+                .filter(finding -> finding.evidenceIds().stream().anyMatch(id -> normalEndpoint.evidenceIds().contains(id)))
+                .count()).isZero();
+        assertThat(findings.stream().filter(finding -> "FILTER_ORDER".equals(finding.ruleId()))
+                .findFirst().orElseThrow().confidence()).isEqualTo(Confidence.LIKELY);
     }
 
     @Test
@@ -555,6 +644,45 @@ class IdentityAuthIntegrationTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.identityVerified").value(false))
                 .andExpect(jsonPath("$.verifiedAt").doesNotExist());
+    }
+
+    private Fact endpoint(CollectionReport collection, String path) {
+        return collection.facts().stream()
+                .filter(fact -> "ENDPOINT_MAPPING".equals(fact.type()))
+                .filter(fact -> path.equals(fact.attributes().get("path")))
+                .findFirst().orElseThrow();
+    }
+
+    private Fact selectedChain(AnalysisReport analysis, Fact endpoint) {
+        String chainKey = analysis.relations().stream()
+                .filter(relation -> relation.type() == EdgeType.MATCHED_BY)
+                .filter(relation -> endpoint.subjectKey().equals(relation.sourceKey()))
+                .findFirst().orElseThrow().targetKey();
+        return analysis.collectionReport().facts().stream()
+                .filter(fact -> chainKey.equals(fact.subjectKey()))
+                .findFirst().orElseThrow();
+    }
+
+    private List<Fact> securityFilters(CollectionReport collection, Fact chain) {
+        return collection.facts().stream()
+                .filter(fact -> "FILTER_REGISTRATION".equals(fact.type()))
+                .filter(fact -> "SECURITY".equals(fact.attributes().get("registrationKind")))
+                .filter(fact -> chain.attributes().get("chainKey").equals(fact.attributes().get("chainKey")))
+                .filter(fact -> chain.attributes().get("chainOrder").equals(fact.attributes().get("chainOrder")))
+                .sorted(java.util.Comparator.comparingInt(this::filterOrder))
+                .toList();
+    }
+
+    private int filterOrder(List<Fact> filters, String simpleName) {
+        return filters.stream()
+                .filter(candidate -> candidate.attributes().get("filterClass").endsWith(simpleName))
+                .findFirst()
+                .map(this::filterOrder)
+                .orElseThrow();
+    }
+
+    private int filterOrder(Fact filter) {
+        return Integer.parseInt(filter.attributes().get("filterOrder"));
     }
 
     private int filterIndex(List<Filter> filters, String simpleName) {
