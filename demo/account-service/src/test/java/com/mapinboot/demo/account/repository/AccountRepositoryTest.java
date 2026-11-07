@@ -37,10 +37,12 @@ class AccountRepositoryTest {
         accountRepository.initFixtures();
 
         DemoAccount accA = accountRepository.findByAccountId("ACC001").orElseThrow();
+        assertThat(accA.getAccountNumber()).isEqualTo("0000-00-000100");
         assertThat(accA.getOwnerId()).isEqualTo("USER001");
         assertThat(accA.getBalance()).isEqualByComparingTo(new BigDecimal("1250000"));
 
         DemoAccount accB = accountRepository.findByAccountId("ACC002").orElseThrow();
+        assertThat(accB.getAccountNumber()).isEqualTo("0000-00-000200");
         assertThat(accB.getOwnerId()).isEqualTo("USER002");
         assertThat(accB.getBalance()).isEqualByComparingTo(new BigDecimal("2800000"));
 

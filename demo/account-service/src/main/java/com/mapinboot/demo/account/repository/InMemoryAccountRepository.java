@@ -25,8 +25,8 @@ public class InMemoryAccountRepository {
     public void initFixtures() {
         accountsById.clear();
 
-        save(new DemoAccount("ACC001", "USER001", "CHECKING", new BigDecimal("1250000"), "ACTIVE"));
-        save(new DemoAccount("ACC002", "USER002", "CHECKING", new BigDecimal("2800000"), "ACTIVE"));
+        save(new DemoAccount("ACC001", "0000-00-000100", "USER001", "CHECKING", new BigDecimal("1250000"), "ACTIVE"));
+        save(new DemoAccount("ACC002", "0000-00-000200", "USER002", "CHECKING", new BigDecimal("2800000"), "ACTIVE"));
     }
 
     /**
