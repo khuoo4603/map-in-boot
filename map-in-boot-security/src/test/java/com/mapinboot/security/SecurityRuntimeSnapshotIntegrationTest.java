@@ -20,6 +20,7 @@ import com.mapinboot.core.graph.GraphBuilder;
 import com.mapinboot.core.graph.model.SecurityGraph;
 import com.mapinboot.core.snapshot.Snapshot;
 import com.mapinboot.security.analyzer.EndpointChainMatchingAnalysisAdapter;
+import com.mapinboot.security.analyzer.FilterRegistrationAnalysisAdapter;
 import com.mapinboot.security.autoconfigure.MapInBootSecurityAutoConfiguration;
 import com.mapinboot.security.collector.SecurityChainCollectorAdapter;
 import com.mapinboot.security.finding.SecurityRuleEngine;
@@ -86,6 +87,28 @@ class SecurityRuntimeSnapshotIntegrationTest {
             assertTrue(snapshot.analysisStatus().containsKey(analyzer.id()));
             assertTrue(snapshot.edges().get(0).evidenceIds().stream()
                     .allMatch(id -> snapshot.evidence().stream().anyMatch(evidence -> evidence.id().equals(id))));
+        }
+    }
+
+    @Test
+    void assemblesSecurityFilterRelationsFromRegisteredRuntimeFilters() throws Exception {
+        try (AnnotationConfigApplicationContext context = context(CompleteRuntimeConfiguration.class)) {
+            SecurityChainCollectorAdapter chainCollector = context.getBean(SecurityChainCollectorAdapter.class);
+            FilterRegistrationAnalysisAdapter analyzer = context.getBean(FilterRegistrationAnalysisAdapter.class);
+            CollectionReport collection = collect(context, chainCollector);
+
+            AnalysisReport analysis = new AnalysisProvider().execute(
+                    new AnalysisContext(collection, "main"), List.of(analyzer));
+
+            assertEquals(AnalysisStatus.READY, analysis.statusByAdapter().get(analyzer.id()));
+            assertEquals(1, analysis.relations().stream()
+                    .filter(relation -> relation.type() == EdgeType.FILTERED_BY)
+                    .count());
+            SecurityGraph graph = new GraphBuilder().build("main", analysis);
+            assertEquals(1, graph.edges().stream()
+                    .filter(edge -> edge.type() == EdgeType.FILTERED_BY)
+                    .count());
+            assertTrue(graph.nodes().stream().anyMatch(node -> node.type().name().equals("FILTER")));
         }
     }
 
@@ -203,6 +226,7 @@ class SecurityRuntimeSnapshotIntegrationTest {
                 .run(context -> {
                     assertEquals(1, context.getBeansOfType(SecurityChainCollectorAdapter.class).size());
                     assertEquals(1, context.getBeansOfType(EndpointChainMatchingAnalysisAdapter.class).size());
+                    assertEquals(1, context.getBeansOfType(FilterRegistrationAnalysisAdapter.class).size());
                     assertEquals(1, context.getBeansOfType(SecurityRuleEngine.class).size());
                 });
     }

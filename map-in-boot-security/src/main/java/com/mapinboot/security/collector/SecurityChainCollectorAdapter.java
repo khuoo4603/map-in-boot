@@ -1,5 +1,6 @@
 package com.mapinboot.security.collector;
 
+import jakarta.servlet.Filter;
 import com.mapinboot.core.collection.AbstractCollectorAdapter;
 import com.mapinboot.core.collection.model.CollectionContext;
 import com.mapinboot.core.collection.model.CollectionResult;
@@ -49,6 +50,7 @@ import org.springframework.web.util.pattern.PathPatternParser;
 public class SecurityChainCollectorAdapter extends AbstractCollectorAdapter {
     private static final String TYPE = "SECURITY_CHAIN";
     private static final String URL_AUTHORIZATION_TYPE = "URL_AUTHORIZATION";
+    private static final String FILTER_REGISTRATION_TYPE = "FILTER_REGISTRATION";
     private static final int MAX_MATCHER_DEPTH = 32;
     private static final String HTTP_METHOD_MATCHER =
             "org.springframework.security.web.servlet.util.matcher.PathPatternRequestMatcher$HttpMethodRequestMatcher";
@@ -56,7 +58,8 @@ public class SecurityChainCollectorAdapter extends AbstractCollectorAdapter {
     private final StableIdGenerator idGenerator = new StableIdGenerator();
 
     public SecurityChainCollectorAdapter() {
-        super("security-chain", "Spring Security FilterChain 및 Matcher 수집", Set.of(TYPE, URL_AUTHORIZATION_TYPE));
+        super("security-chain", "Spring Security FilterChain 및 Matcher 수집",
+                Set.of(TYPE, URL_AUTHORIZATION_TYPE, FILTER_REGISTRATION_TYPE));
     }
 
     @Override
@@ -76,6 +79,7 @@ public class SecurityChainCollectorAdapter extends AbstractCollectorAdapter {
         List<Evidence> evidence = new ArrayList<>();
         List<AdapterDiagnostic> diagnostics = new ArrayList<>();
         Map<String, Integer> occurrences = new HashMap<>();
+        IdentityHashMap<Filter, String> filterLocations = new IdentityHashMap<>();
         boolean partial = false;
         int readableProxies = 0;
 
@@ -134,6 +138,9 @@ public class SecurityChainCollectorAdapter extends AbstractCollectorAdapter {
                     evidence.add(new Evidence(evidenceId, EvidenceSource.RUNTIME,
                             "FilterChainProxy:" + proxyEntry.getKey() + "[" + chainOrder + "]",
                             "SecurityFilterChain Matcher 수집: " + matcher.type()));
+                    partial |= collectSecurityFilters(
+                            context.serviceId(), proxyEntry.getKey(), chainOrder, chainKey, chain,
+                            filterLocations, facts, evidence, diagnostics);
                     partial |= collectUrlAuthorizationPolicies(
                             context.serviceId(), proxyEntry.getKey(), chainOrder, chainKey, chain,
                             facts, evidence, diagnostics);
@@ -150,6 +157,76 @@ public class SecurityChainCollectorAdapter extends AbstractCollectorAdapter {
         }
         return new CollectionResult(id(), facts, evidence,
                 partial ? AnalysisStatus.PARTIAL : AnalysisStatus.READY, diagnostics);
+    }
+
+    private boolean collectSecurityFilters(
+            String serviceId,
+            String proxyBeanName,
+            String chainOrder,
+            String chainKey,
+            SecurityFilterChain chain,
+            IdentityHashMap<Filter, String> filterLocations,
+            List<Fact> facts,
+            List<Evidence> evidence,
+            List<AdapterDiagnostic> diagnostics
+    ) {
+        List<? extends Filter> filters;
+        try {
+            filters = chain.getFilters();
+        } catch (RuntimeException exception) {
+            diagnostics.add(new AdapterDiagnostic(id(), ErrorCode.ADAPTER_FAILED,
+                    "SecurityFilterChain Filter 목록 조회 실패: " + chainKey));
+            return true;
+        }
+        if (filters == null) {
+            diagnostics.add(new AdapterDiagnostic(id(), ErrorCode.INVALID_STATE,
+                    "SecurityFilterChain Filter 목록 부재: " + chainKey));
+            return true;
+        }
+
+        boolean partial = false;
+        for (int index = 0; index < filters.size(); index++) {
+            Filter filter = filters.get(index);
+            if (filter == null) {
+                partial = true;
+                diagnostics.add(new AdapterDiagnostic(id(), ErrorCode.INVALID_STATE,
+                        "SecurityFilter 구성 부재: " + chainKey));
+                continue;
+            }
+            try {
+                String filterClass = filter.getClass().getName();
+                String filterOrder = Integer.toString(index + 1);
+                String location = chainKey + "|" + filterOrder;
+                String previousLocation = filterLocations.putIfAbsent(filter, location);
+                String subjectKey = "filter|SECURITY|" + proxyBeanName + "|" + chainKey
+                        + "|" + filterOrder + "|" + filterClass;
+                String evidenceId = idGenerator.generate(
+                        serviceId, NodeType.FILTER, "evidence|" + subjectKey);
+                Map<String, String> attributes = new TreeMap<>();
+                attributes.put("filterClass", filterClass);
+                attributes.put("registrationKind", "SECURITY");
+                attributes.put("proxyBeanName", proxyBeanName);
+                attributes.put("chainKey", chainKey);
+                attributes.put("chainOrder", chainOrder);
+                attributes.put("filterOrder", filterOrder);
+                if (previousLocation != null) {
+                    attributes.put("instanceReuse",
+                            previousLocation.startsWith(chainKey + "|")
+                                    ? "WITHIN_CHAIN" : "CROSS_CHAIN");
+                }
+                facts.add(new Fact(
+                        idGenerator.generate(serviceId, NodeType.FILTER, "fact|" + subjectKey),
+                        FILTER_REGISTRATION_TYPE, subjectKey, attributes, List.of(evidenceId)));
+                evidence.add(new Evidence(evidenceId, EvidenceSource.RUNTIME,
+                        "FilterChainProxy:" + proxyBeanName + "[" + chainOrder + "]/filter[" + filterOrder + "]",
+                        "Security Filter 수집: " + filterClass));
+            } catch (RuntimeException exception) {
+                partial = true;
+                diagnostics.add(new AdapterDiagnostic(id(), ErrorCode.ADAPTER_FAILED,
+                        "Security Filter 처리 실패: " + chainKey));
+            }
+        }
+        return partial;
     }
 
     private boolean collectUrlAuthorizationPolicies(

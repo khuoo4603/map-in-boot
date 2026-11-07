@@ -5,6 +5,11 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import jakarta.servlet.Filter;
+import jakarta.servlet.FilterChain;
+import jakarta.servlet.ServletException;
+import jakarta.servlet.ServletRequest;
+import jakarta.servlet.ServletResponse;
 import com.mapinboot.core.analysis.model.AnalysisReport;
 import com.mapinboot.core.analysis.AnalysisProvider;
 import com.mapinboot.core.analysis.model.AnalysisContext;
@@ -17,11 +22,13 @@ import com.mapinboot.core.evidence.Fact;
 import com.mapinboot.core.graph.GraphBuilder;
 import com.mapinboot.core.graph.model.SecurityGraph;
 import com.mapinboot.security.autoconfigure.MapInBootSecurityAutoConfiguration;
+import com.mapinboot.security.analyzer.FilterRegistrationAnalysisAdapter;
 import com.mapinboot.security.analyzer.EndpointChainMatchingAnalysisAdapter;
 import com.mapinboot.security.collector.SecurityChainCollectorAdapter;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.io.IOException;
 import org.junit.jupiter.api.Test;
 import org.springframework.context.annotation.AnnotationConfigApplicationContext;
 import org.springframework.context.annotation.Bean;
@@ -45,6 +52,80 @@ import org.springframework.web.util.pattern.PathPatternParser;
 import org.springframework.web.util.pattern.PathPattern;
 
 class SecurityChainCollectorAdapterTest {
+
+    @Test
+    void collectsEverySecurityFilterWithChainScopedOrderAndReuseMetadata() {
+        try (AnnotationConfigApplicationContext context = context(MultipleFilterSecurityConfiguration.class)) {
+            SecurityChainCollectorAdapter adapter = new SecurityChainCollectorAdapter();
+
+            CollectionResult result = adapter.collect(new CollectionContext(context, "main", "instance"));
+
+            List<Fact> filters = result.facts().stream()
+                    .filter(fact -> "FILTER_REGISTRATION".equals(fact.type()))
+                    .toList();
+            assertEquals(AnalysisStatus.READY, result.status());
+            assertTrue(adapter.getSupportedTypes().contains("FILTER_REGISTRATION"));
+            assertEquals(5, filters.size());
+            assertEquals(List.of("1", "2", "3"), filters.stream()
+                    .filter(fact -> "1".equals(fact.attributes().get("chainOrder")))
+                    .map(fact -> fact.attributes().get("filterOrder"))
+                    .toList());
+            assertEquals(List.of("1", "2"), filters.stream()
+                    .filter(fact -> "2".equals(fact.attributes().get("chainOrder")))
+                    .map(fact -> fact.attributes().get("filterOrder"))
+                    .toList());
+            assertEquals(2, filters.stream()
+                    .filter(fact -> "1".equals(fact.attributes().get("chainOrder")))
+                    .filter(fact -> OrderFilter.class.getName().equals(fact.attributes().get("filterClass")))
+                    .count());
+            assertTrue(filters.stream()
+                    .filter(fact -> OrderFilter.class.getName().equals(fact.attributes().get("filterClass")))
+                    .allMatch(fact -> !fact.attributes().containsKey("instanceReuse")));
+            assertTrue(filters.stream().allMatch(fact ->
+                    "SECURITY".equals(fact.attributes().get("registrationKind"))));
+            assertEquals(filters.size(), filters.stream().map(Fact::subjectKey).distinct().count());
+            assertTrue(filters.stream().anyMatch(fact ->
+                    "CROSS_CHAIN".equals(fact.attributes().get("instanceReuse"))));
+            assertEquals(7, result.evidence().size());
+            assertTrue(filters.stream().allMatch(fact -> fact.evidenceIds().stream()
+                    .allMatch(id -> result.evidence().stream().anyMatch(evidence -> evidence.id().equals(id)))));
+        }
+    }
+
+    @Test
+    void preservesN08AndV08RuntimeFilterOrder() {
+        try (AnnotationConfigApplicationContext context = context(N08V08SecurityConfiguration.class)) {
+            List<Fact> filters = new SecurityChainCollectorAdapter()
+                    .collect(new CollectionContext(context, "main", "instance"))
+                    .facts().stream()
+                    .filter(fact -> "FILTER_REGISTRATION".equals(fact.type()))
+                    .toList();
+
+            assertEquals(List.of(BearerTokenAuthenticationFilter.class.getName(), RefreshTokenFilter.class.getName()),
+                    filters.stream().filter(fact -> "1".equals(fact.attributes().get("chainOrder")))
+                            .map(fact -> fact.attributes().get("filterClass")).toList());
+            assertEquals(List.of(RefreshTokenFilter.class.getName(), BearerTokenAuthenticationFilter.class.getName()),
+                    filters.stream().filter(fact -> "2".equals(fact.attributes().get("chainOrder")))
+                            .map(fact -> fact.attributes().get("filterClass")).toList());
+        }
+    }
+
+    @Test
+    void separatesFiltersFromMultipleFilterChainProxies() {
+        try (AnnotationConfigApplicationContext context = context(MultipleProxyFilterSecurityConfiguration.class)) {
+            List<Fact> filters = new SecurityChainCollectorAdapter()
+                    .collect(new CollectionContext(context, "main", "instance"))
+                    .facts().stream()
+                    .filter(fact -> "FILTER_REGISTRATION".equals(fact.type()))
+                    .toList();
+
+            assertEquals(2, filters.size());
+            assertEquals(Set.of("proxyA", "proxyB"), filters.stream()
+                    .map(fact -> fact.attributes().get("proxyBeanName"))
+                    .collect(java.util.stream.Collectors.toSet()));
+            assertEquals(2, filters.stream().map(Fact::subjectKey).distinct().count());
+        }
+    }
 
     @Test
     void collectsRuntimeChainsAndPreservesRegisteredOrder() {
@@ -89,7 +170,7 @@ class SecurityChainCollectorAdapterTest {
                     .map(fact -> fact.attributes().get("policyOrder"))
                     .toList());
             assertTrue(policies.stream().allMatch(fact -> "URL".equals(fact.attributes().get("policySource"))));
-            assertEquals(5, result.evidence().size());
+            assertEquals(6, result.evidence().size());
             assertTrue(result.diagnostics().isEmpty());
         }
     }
@@ -320,12 +401,14 @@ class SecurityChainCollectorAdapterTest {
                 RuntimeSecurityConfiguration.class, MapInBootSecurityAutoConfiguration.class)) {
             assertEquals(1, withSecurity.getBeansOfType(SecurityChainCollectorAdapter.class).size());
             assertEquals(1, withSecurity.getBeansOfType(EndpointChainMatchingAnalysisAdapter.class).size());
+            assertEquals(1, withSecurity.getBeansOfType(FilterRegistrationAnalysisAdapter.class).size());
             assertEquals(1, withSecurity.getBeansOfType(com.mapinboot.security.finding.SecurityRuleEngine.class).size());
         }
         try (AnnotationConfigApplicationContext withoutSecurity = context(
                 NoSecurityConfiguration.class, MapInBootSecurityAutoConfiguration.class)) {
             assertEquals(1, withoutSecurity.getBeansOfType(SecurityChainCollectorAdapter.class).size());
             assertEquals(1, withoutSecurity.getBeansOfType(EndpointChainMatchingAnalysisAdapter.class).size());
+            assertEquals(1, withoutSecurity.getBeansOfType(FilterRegistrationAnalysisAdapter.class).size());
             assertEquals(1, withoutSecurity.getBeansOfType(com.mapinboot.security.finding.SecurityRuleEngine.class).size());
         }
     }
@@ -340,6 +423,7 @@ class SecurityChainCollectorAdapterTest {
         try (context) {
             assertTrue(context.getBeansOfType(SecurityChainCollectorAdapter.class).isEmpty());
             assertTrue(context.getBeansOfType(EndpointChainMatchingAnalysisAdapter.class).isEmpty());
+            assertTrue(context.getBeansOfType(FilterRegistrationAnalysisAdapter.class).isEmpty());
             assertTrue(context.getBeansOfType(com.mapinboot.security.finding.SecurityRuleEngine.class).isEmpty());
         }
     }
@@ -532,6 +616,81 @@ class SecurityChainCollectorAdapterTest {
         @Override
         public boolean matches(jakarta.servlet.http.HttpServletRequest request) {
             return true;
+        }
+    }
+
+    @Configuration(proxyBeanMethods = false)
+    static class MultipleFilterSecurityConfiguration {
+
+        @Bean
+        FilterChainProxy springSecurityFilterChain() {
+            SharedFilter shared = new SharedFilter();
+            return new FilterChainProxy(List.of(
+                    new DefaultSecurityFilterChain(
+                            PathPatternRequestMatcher.pathPattern("/n08/**"),
+                            List.of(new OrderFilter(), shared, new OrderFilter())),
+                    new DefaultSecurityFilterChain(
+                            PathPatternRequestMatcher.pathPattern("/v08/**"),
+                            List.of(shared, new OrderFilter()))));
+        }
+    }
+
+    @Configuration(proxyBeanMethods = false)
+    static class N08V08SecurityConfiguration {
+
+        @Bean
+        FilterChainProxy springSecurityFilterChain() {
+            return new FilterChainProxy(List.of(
+                    new DefaultSecurityFilterChain(
+                            PathPatternRequestMatcher.pathPattern("/api/auth/secured/refresh"),
+                            List.of(new BearerTokenAuthenticationFilter(), new RefreshTokenFilter())),
+                    new DefaultSecurityFilterChain(
+                            PathPatternRequestMatcher.pathPattern("/api/auth/refresh"),
+                            List.of(new RefreshTokenFilter(), new BearerTokenAuthenticationFilter()))));
+        }
+    }
+
+    @Configuration(proxyBeanMethods = false)
+    static class MultipleProxyFilterSecurityConfiguration {
+
+        @Bean
+        FilterChainProxy proxyA() {
+            return new FilterChainProxy(List.of(new DefaultSecurityFilterChain(
+                    PathPatternRequestMatcher.pathPattern("/proxy-a/**"), List.of(new SharedFilter()))));
+        }
+
+        @Bean
+        FilterChainProxy proxyB() {
+            return new FilterChainProxy(List.of(new DefaultSecurityFilterChain(
+                    PathPatternRequestMatcher.pathPattern("/proxy-b/**"), List.of(new SharedFilter()))));
+        }
+    }
+
+    static class OrderFilter implements Filter {
+        @Override
+        public void doFilter(ServletRequest request, ServletResponse response, FilterChain chain)
+                throws IOException, ServletException {
+        }
+    }
+
+    static class SharedFilter implements Filter {
+        @Override
+        public void doFilter(ServletRequest request, ServletResponse response, FilterChain chain)
+                throws IOException, ServletException {
+        }
+    }
+
+    static class BearerTokenAuthenticationFilter implements Filter {
+        @Override
+        public void doFilter(ServletRequest request, ServletResponse response, FilterChain chain)
+                throws IOException, ServletException {
+        }
+    }
+
+    static class RefreshTokenFilter implements Filter {
+        @Override
+        public void doFilter(ServletRequest request, ServletResponse response, FilterChain chain)
+                throws IOException, ServletException {
         }
     }
 }
