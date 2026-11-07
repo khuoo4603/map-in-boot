@@ -12,11 +12,13 @@ public class SecurityRuleEngine implements FindingEvaluator {
     private final ChainOrderFindingRule chainOrderRule = new ChainOrderFindingRule();
     private final PublicEndpointFindingRule publicEndpointRule = new PublicEndpointFindingRule();
     private final MethodMismatchFindingRule methodMismatchRule = new MethodMismatchFindingRule();
+    private final FilterOrderFindingRule filterOrderRule = new FilterOrderFindingRule();
 
     @Override
     public List<Finding> evaluate(AnalysisReport report) {
         return Stream.of(chainMissingRule.evaluate(report), chainOrderRule.evaluate(report),
-                        publicEndpointRule.evaluate(report), methodMismatchRule.evaluate(report))
+                        publicEndpointRule.evaluate(report), methodMismatchRule.evaluate(report),
+                        filterOrderRule.evaluate(report))
                 .flatMap(List::stream)
                 .sorted(java.util.Comparator.comparing(Finding::id))
                 .toList();

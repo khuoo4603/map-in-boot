@@ -12,6 +12,8 @@ import com.mapinboot.core.common.type.NodeType;
 import com.mapinboot.core.evidence.Evidence;
 import com.mapinboot.core.evidence.Fact;
 import com.mapinboot.core.graph.StableIdGenerator;
+import java.io.IOException;
+import java.io.InputStream;
 import java.lang.reflect.Field;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -45,6 +47,10 @@ import org.springframework.security.web.util.matcher.RequestMatcher;
 import org.springframework.security.web.util.matcher.RequestMatcherEntry;
 import org.springframework.web.util.pattern.PathPattern;
 import org.springframework.web.util.pattern.PathPatternParser;
+import org.objectweb.asm.ClassReader;
+import org.objectweb.asm.ClassVisitor;
+import org.objectweb.asm.MethodVisitor;
+import org.objectweb.asm.Opcodes;
 
 // Spring Security Runtime FilterChain 및 RequestMatcher 수집기
 public class SecurityChainCollectorAdapter extends AbstractCollectorAdapter {
@@ -209,14 +215,33 @@ public class SecurityChainCollectorAdapter extends AbstractCollectorAdapter {
                 attributes.put("chainKey", chainKey);
                 attributes.put("chainOrder", chainOrder);
                 attributes.put("filterOrder", filterOrder);
+                if (isBearerAuthenticationFilter(filterClass)) {
+                    attributes.put("filterRole", "AUTHENTICATION_PROVIDER");
+                }
+                CodePatternInfo codePattern = codePattern(filterClass);
+                if (codePattern.unknown()) {
+                    partial = true;
+                    diagnostics.add(new AdapterDiagnostic(id(), ErrorCode.INVALID_STATE,
+                            "Security Filter 코드 패턴 조회 불확실: " + filterClass));
+                }
+                attributes.putAll(codePattern.attributes());
                 if (previousLocation != null) {
                     attributes.put("instanceReuse",
                             previousLocation.startsWith(chainKey + "|")
                                     ? "WITHIN_CHAIN" : "CROSS_CHAIN");
                 }
+                List<String> evidenceIds = new ArrayList<>(List.of(evidenceId));
+                if (codePattern.evidence()) {
+                    String codeEvidenceId = idGenerator.generate(
+                            serviceId, NodeType.FILTER, "evidence|code|" + subjectKey);
+                    evidenceIds.add(codeEvidenceId);
+                    evidence.add(new Evidence(codeEvidenceId, EvidenceSource.CODE_PATTERN,
+                            filterClass + ":doFilter",
+                            "등록된 Filter의 인증정보 처리 코드 패턴: " + codePattern.attributes().get("codePattern")));
+                }
                 facts.add(new Fact(
                         idGenerator.generate(serviceId, NodeType.FILTER, "fact|" + subjectKey),
-                        FILTER_REGISTRATION_TYPE, subjectKey, attributes, List.of(evidenceId)));
+                        FILTER_REGISTRATION_TYPE, subjectKey, attributes, evidenceIds));
                 evidence.add(new Evidence(evidenceId, EvidenceSource.RUNTIME,
                         "FilterChainProxy:" + proxyBeanName + "[" + chainOrder + "]/filter[" + filterOrder + "]",
                         "Security Filter 수집: " + filterClass));
@@ -227,6 +252,119 @@ public class SecurityChainCollectorAdapter extends AbstractCollectorAdapter {
             }
         }
         return partial;
+    }
+
+    private boolean isBearerAuthenticationFilter(String filterClass) {
+        return "org.springframework.security.oauth2.server.resource.web.authentication.BearerTokenAuthenticationFilter"
+                .equals(filterClass);
+    }
+
+    private CodePatternInfo codePattern(String filterClass) {
+        String resource = filterClass.replace('.', '/') + ".class";
+        ClassLoader loader = Thread.currentThread().getContextClassLoader();
+        if (loader == null) {
+            loader = getClass().getClassLoader();
+        }
+        try (InputStream input = loader.getResourceAsStream(resource)) {
+            if (input == null) {
+                return CodePatternInfo.unavailable();
+            }
+            boolean[] flags = new boolean[7];
+            new ClassReader(input).accept(new ClassVisitor(Opcodes.ASM9) {
+                @Override
+                public MethodVisitor visitMethod(int access, String name, String descriptor,
+                                                  String signature, String[] exceptions) {
+                    if (!"doFilter".equals(name) && !"doFilterInternal".equals(name)) {
+                        return null;
+                    }
+                    return new MethodVisitor(Opcodes.ASM9) {
+                        @Override
+                        public void visitMethodInsn(int opcode, String owner, String name,
+                                                    String descriptor, boolean isInterface) {
+                            if ("org/springframework/security/core/context/SecurityContextHolder".equals(owner)
+                                    && "getContext".equals(name)) {
+                                flags[0] = true;
+                            }
+                            if ("org/springframework/security/core/context/SecurityContext".equals(owner)
+                                    && "getAuthentication".equals(name)) {
+                                flags[1] = true;
+                            }
+                            if ("isAuthenticated".equals(name) && "()Z".equals(descriptor)
+                                    && ("org/springframework/security/core/Authentication".equals(owner)
+                                    || owner.endsWith("AuthenticationToken"))) {
+                                flags[2] = true;
+                            }
+                            if ("jakarta/servlet/http/HttpServletResponse".equals(owner)
+                                    && "sendError".equals(name)) {
+                                flags[4] = true;
+                            }
+                            if ("jakarta/servlet/FilterChain".equals(owner)
+                                    && "doFilter".equals(name)) {
+                                flags[5] = true;
+                            }
+                        }
+
+                        @Override
+                        public void visitTypeInsn(int opcode, String type) {
+                            if ((opcode == Opcodes.INSTANCEOF || opcode == Opcodes.CHECKCAST)
+                                    && type.endsWith("/JwtAuthenticationToken")) {
+                                flags[3] = true;
+                            }
+                        }
+
+                        @Override
+                        public void visitFieldInsn(int opcode, String owner, String name, String descriptor) {
+                            if (opcode == Opcodes.GETSTATIC
+                                    && "jakarta/servlet/http/HttpServletResponse".equals(owner)
+                                    && "SC_UNAUTHORIZED".equals(name)) {
+                                flags[6] = true;
+                            }
+                        }
+
+                        @Override
+                        public void visitIntInsn(int opcode, int operand) {
+                            if ((opcode == Opcodes.BIPUSH || opcode == Opcodes.SIPUSH) && operand == 401) {
+                                flags[6] = true;
+                            }
+                        }
+
+                        @Override
+                        public void visitLdcInsn(Object value) {
+                            if (Integer.valueOf(401).equals(value)) {
+                                flags[6] = true;
+                            }
+                        }
+                    };
+                }
+            }, ClassReader.SKIP_DEBUG | ClassReader.SKIP_FRAMES);
+            Map<String, String> attributes = new TreeMap<>();
+            if (!flags[0] && !flags[1]) {
+                return new CodePatternInfo(attributes, false, false);
+            }
+            attributes.put("authData", flags[0] && flags[1]
+                    ? "SECURITY_CONTEXT_AUTHENTICATION" : "AUTHENTICATION_LOOKUP");
+            attributes.put("authType", flags[3] ? "JWT_AUTHENTICATION" : "AUTHENTICATION");
+            if (flags[2]) {
+                attributes.put("authCheck", "IS_AUTHENTICATED");
+            }
+            if (flags[4] && flags[6]) {
+                attributes.put("unauthenticatedAction", "HTTP_401");
+            }
+            if (flags[5]) {
+                attributes.put("filterChainContinuation", "AFTER_AUTHENTICATION");
+            }
+            boolean guard = flags[0] && flags[1] && flags[2] && flags[4] && flags[5] && flags[6];
+            attributes.put("codePattern", guard ? "AUTHENTICATION_GUARD" : "AUTHENTICATION_LOOKUP");
+            return new CodePatternInfo(attributes, guard, false);
+        } catch (IOException | RuntimeException exception) {
+            return CodePatternInfo.unavailable();
+        }
+    }
+
+    private record CodePatternInfo(Map<String, String> attributes, boolean evidence, boolean unknown) {
+        private static CodePatternInfo unavailable() {
+            return new CodePatternInfo(Map.of("codePattern", "UNKNOWN"), false, true);
+        }
     }
 
     private boolean collectUrlAuthorizationPolicies(

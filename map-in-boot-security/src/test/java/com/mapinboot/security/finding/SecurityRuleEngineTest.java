@@ -436,6 +436,64 @@ class SecurityRuleEngineTest {
         assertTrue(findings.stream().noneMatch(finding -> "METHOD_MISMATCH".equals(finding.ruleId())));
     }
 
+    @Test
+    void registersFilterOrderRuleWithoutChangingExistingRuleEvaluation() {
+        Fact endpoint = endpoint("filter-order", "/api/filter-order");
+        Fact chain = chain("filter-order", 1, "/api/filter-order");
+        Fact guard = new Fact(
+                "filter-fact-guard", "FILTER_REGISTRATION",
+                "filter|SECURITY|proxy|proxy|filter-order|1|GuardedFilter",
+                Map.ofEntries(
+                        Map.entry("filterClass", "GuardedFilter"),
+                        Map.entry("registrationKind", "SECURITY"),
+                        Map.entry("proxyBeanName", "proxy"),
+                        Map.entry("chainKey", "proxy|filter-order"),
+                        Map.entry("chainOrder", "1"),
+                        Map.entry("filterOrder", "1"),
+                        Map.entry("codePattern", "AUTHENTICATION_GUARD"),
+                        Map.entry("authData", "SECURITY_CONTEXT_AUTHENTICATION"),
+                        Map.entry("authType", "JWT_AUTHENTICATION"),
+                        Map.entry("authCheck", "IS_AUTHENTICATED"),
+                        Map.entry("unauthenticatedAction", "HTTP_401"),
+                        Map.entry("filterChainContinuation", "AFTER_AUTHENTICATION")),
+                List.of("filter-runtime-guard", "filter-code-guard"));
+        Fact bearer = new Fact(
+                "filter-fact-bearer", "FILTER_REGISTRATION",
+                "filter|SECURITY|proxy|proxy|filter-order|2|org.springframework.security.oauth2.server.resource.web.authentication.BearerTokenAuthenticationFilter",
+                Map.of(
+                        "filterClass", "org.springframework.security.oauth2.server.resource.web.authentication.BearerTokenAuthenticationFilter",
+                        "registrationKind", "SECURITY",
+                        "proxyBeanName", "proxy",
+                        "chainKey", "proxy|filter-order",
+                        "chainOrder", "1",
+                        "filterOrder", "2",
+                        "filterRole", "AUTHENTICATION_PROVIDER"),
+                List.of("filter-runtime-bearer"));
+        Relation matched = new Relation(
+                "matched-filter-order", endpoint.subjectKey(), chain.subjectKey(), EdgeType.MATCHED_BY,
+                Map.of("chainKey", "proxy|filter-order", "chainOrder", "1", "proxyBeanName", "proxy"),
+                Confidence.CONFIRMED, List.of(endpoint.evidenceIds().get(0), chain.evidenceIds().get(0)));
+        Relation guardRelation = filterRelation("guard", chain, guard);
+        Relation bearerRelation = filterRelation("bearer", chain, bearer);
+        List<Fact> facts = List.of(endpoint, chain, guard, bearer);
+        List<Evidence> evidence = facts.stream()
+                .flatMap(fact -> fact.evidenceIds().stream())
+                .map(id -> new Evidence(id,
+                        id.contains("code") ? EvidenceSource.CODE_PATTERN : EvidenceSource.RUNTIME,
+                        "test", "test evidence"))
+                .toList();
+        AnalysisReport report = new AnalysisReport(
+                new CollectionReport(facts, evidence,
+                        Map.of("starter-endpoint-mapping", AnalysisStatus.READY, "security-chain", AnalysisStatus.READY),
+                        List.of()),
+                List.of(matched, guardRelation, bearerRelation), evidence,
+                Map.of("security-endpoint-chain-matching", AnalysisStatus.READY), List.of());
+
+        List<Finding> findings = new SecurityRuleEngine().evaluate(report);
+
+        assertEquals(1, findings.stream().filter(finding -> "FILTER_ORDER".equals(finding.ruleId())).count());
+    }
+
     private List<Finding> evaluate(List<Fact> facts, Map<String, AnalysisStatus> statuses) {
         List<Evidence> evidence = facts.stream()
                 .flatMap(fact -> fact.evidenceIds().stream())
@@ -599,5 +657,19 @@ class SecurityRuleEngineTest {
 
     private Fact fact(String prefix, String key, String type, String subjectKey, Map<String, String> attributes) {
         return new Fact(prefix + "-fact-" + key, type, subjectKey, attributes, List.of(prefix + "-evidence-" + key));
+    }
+
+    private Relation filterRelation(String key, Fact chain, Fact filter) {
+        return new Relation(
+                "filter-relation-" + key,
+                chain.subjectKey(), filter.subjectKey(), EdgeType.FILTERED_BY,
+                Map.of("registrationKind", "SECURITY",
+                        "filterClass", filter.attributes().get("filterClass"),
+                        "proxyBeanName", chain.attributes().get("proxyBeanName"),
+                        "chainKey", chain.attributes().get("chainKey"),
+                        "chainOrder", chain.attributes().get("chainOrder"),
+                        "filterOrder", filter.attributes().get("filterOrder")),
+                Confidence.CONFIRMED,
+                List.of(chain.evidenceIds().get(0), filter.evidenceIds().get(0)));
     }
 }

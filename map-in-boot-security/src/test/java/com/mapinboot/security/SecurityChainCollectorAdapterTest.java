@@ -17,7 +17,9 @@ import com.mapinboot.core.collection.model.CollectionContext;
 import com.mapinboot.core.collection.model.CollectionReport;
 import com.mapinboot.core.collection.model.CollectionResult;
 import com.mapinboot.core.common.status.AnalysisStatus;
+import com.mapinboot.core.common.status.EvidenceSource;
 import com.mapinboot.core.common.type.EdgeType;
+import com.mapinboot.core.evidence.Evidence;
 import com.mapinboot.core.evidence.Fact;
 import com.mapinboot.core.graph.GraphBuilder;
 import com.mapinboot.core.graph.model.SecurityGraph;
@@ -52,6 +54,30 @@ import org.springframework.web.util.pattern.PathPatternParser;
 import org.springframework.web.util.pattern.PathPattern;
 
 class SecurityChainCollectorAdapterTest {
+
+    @Test
+    void recordsLimitedAuthenticationGuardCodePatternEvidenceForRegisteredFilter() {
+        try (AnnotationConfigApplicationContext context = context(AuthenticationGuardSecurityConfiguration.class)) {
+            CollectionResult result = new SecurityChainCollectorAdapter().collect(
+                    new CollectionContext(context, "main", "instance"));
+
+            Fact guard = result.facts().stream()
+                    .filter(fact -> "FILTER_REGISTRATION".equals(fact.type()))
+                    .filter(fact -> AuthenticationGuardFilter.class.getName()
+                            .equals(fact.attributes().get("filterClass")))
+                    .findFirst().orElseThrow();
+
+            assertEquals("AUTHENTICATION_GUARD", guard.attributes().get("codePattern"));
+            assertEquals("SECURITY_CONTEXT_AUTHENTICATION", guard.attributes().get("authData"));
+            assertEquals("AUTHENTICATION", guard.attributes().get("authType"));
+            assertEquals("IS_AUTHENTICATED", guard.attributes().get("authCheck"));
+            assertEquals("HTTP_401", guard.attributes().get("unauthenticatedAction"));
+            assertEquals("AFTER_AUTHENTICATION", guard.attributes().get("filterChainContinuation"));
+            assertTrue(guard.evidenceIds().stream()
+                    .map(id -> result.evidence().stream().filter(evidence -> evidence.id().equals(id)).findFirst().orElse(null))
+                    .anyMatch(evidence -> evidence != null && evidence.source() == EvidenceSource.CODE_PATTERN));
+        }
+    }
 
     @Test
     void collectsEverySecurityFilterWithChainScopedOrderAndReuseMetadata() {
@@ -636,6 +662,17 @@ class SecurityChainCollectorAdapterTest {
     }
 
     @Configuration(proxyBeanMethods = false)
+    static class AuthenticationGuardSecurityConfiguration {
+
+        @Bean
+        FilterChainProxy springSecurityFilterChain() {
+            return new FilterChainProxy(List.of(new DefaultSecurityFilterChain(
+                    PathPatternRequestMatcher.pathPattern("/api/auth/**"),
+                    List.of(new AuthenticationGuardFilter()))));
+        }
+    }
+
+    @Configuration(proxyBeanMethods = false)
     static class N08V08SecurityConfiguration {
 
         @Bean
@@ -691,6 +728,21 @@ class SecurityChainCollectorAdapterTest {
         @Override
         public void doFilter(ServletRequest request, ServletResponse response, FilterChain chain)
                 throws IOException, ServletException {
+        }
+    }
+
+    static class AuthenticationGuardFilter implements Filter {
+        @Override
+        public void doFilter(ServletRequest request, ServletResponse response, FilterChain chain)
+                throws IOException, ServletException {
+            var authentication = org.springframework.security.core.context.SecurityContextHolder
+                    .getContext().getAuthentication();
+            if (authentication == null || !authentication.isAuthenticated()) {
+                ((jakarta.servlet.http.HttpServletResponse) response)
+                        .sendError(jakarta.servlet.http.HttpServletResponse.SC_UNAUTHORIZED);
+                return;
+            }
+            chain.doFilter(request, response);
         }
     }
 }
