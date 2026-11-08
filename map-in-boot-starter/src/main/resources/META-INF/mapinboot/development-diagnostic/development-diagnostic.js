@@ -96,6 +96,25 @@
     return sourceNames[code] ? `${sourceNames[code]} (${code})` : code;
   }
 
+  // 원본 Evidence ID를 표시 코드로 변환하고 미매핑 값은 원본 유지
+  function evidenceCode(evidenceId) {
+    const codes = state.report && state.report.evidenceDisplayCodes || {};
+    return Object.prototype.hasOwnProperty.call(codes, evidenceId) && codes[evidenceId]
+      ? codes[evidenceId] : value(evidenceId, "없음");
+  }
+
+  // Evidence ID 목록의 표시 코드 변환
+  function evidenceCodes(evidenceIds) {
+    const ids = evidenceIds || [];
+    return ids.length ? ids.map(evidenceCode).join(", ") : "없음";
+  }
+
+  // Inspector용 표시 코드·원본 ID 병렬 출력
+  function evidenceDetails(evidenceIds) {
+    const ids = evidenceIds || [];
+    return [["근거 코드", evidenceCodes(ids)], ["원본 Evidence ID", ids.join(", ") || "없음"]];
+  }
+
   function relationLabel(type) {
     const code = value(type);
     return relationNames[code] ? `${relationNames[code]} (${code})` : code;
@@ -307,7 +326,7 @@
       ["Chain 순서", resolved ? resolved.chain.attributes.chainOrder : "미확인"],
       ["URL 정책", resolved ? policyLabel(resolved.policy.attributes.policyKind) : "미확인"],
       ["필요 권한", resolved ? authorityLabel(resolved.policy.attributes.requiredAuthority) : "미확인"],
-      ["근거 ID", (endpoint.evidenceIds || []).join(", ") || "없음"]
+      ...evidenceDetails(endpoint.evidenceIds)
     ];
   }
 
@@ -334,7 +353,7 @@
       { label: "확정 Endpoint", value: (item) => matched.filter((relation) => relation.targetKey === item.subjectKey).length }
     ], (item) => {
       const a = item.attributes || {};
-      return [["표시 Chain", chainLabel(a, chains)], ["원문 Chain Key", a.chainKey], ["Proxy Bean", a.proxyBeanName], ["순서", a.chainOrder], ["Matcher Type", a.matcherType], ["Matcher", a.matcherCondition], ["확정 Endpoint", matched.filter((relation) => relation.targetKey === item.subjectKey).length], ["근거 ID", (item.evidenceIds || []).join(", ") || "없음"]];
+      return [["표시 Chain", chainLabel(a, chains)], ["원문 Chain Key", a.chainKey], ["Proxy Bean", a.proxyBeanName], ["순서", a.chainOrder], ["Matcher Type", a.matcherType], ["Matcher", a.matcherCondition], ["확정 Endpoint", matched.filter((relation) => relation.targetKey === item.subjectKey).length], ...evidenceDetails(item.evidenceIds)];
     });
   }
 
@@ -348,7 +367,7 @@
       { label: "출처", value: (item) => item.attributes && item.attributes.policySource, badge: true }
     ], (item) => {
       const a = item.attributes || {};
-      return [["ID", item.subjectKey], ["표시 Chain", chainLabel(a, chains)], ["원문 Chain Key", a.chainKey], ["Matcher", a.policyMatcherCondition], ["정책", policyLabel(a.policyKind)], ["Authority", authorityLabel(a.requiredAuthority)], ["Authority 연산", a.authorityOperator], ["출처", a.policySource], ["근거 ID", (item.evidenceIds || []).join(", ") || "없음"]];
+      return [["ID", item.subjectKey], ["표시 Chain", chainLabel(a, chains)], ["원문 Chain Key", a.chainKey], ["Matcher", a.policyMatcherCondition], ["정책", policyLabel(a.policyKind)], ["Authority", authorityLabel(a.requiredAuthority)], ["Authority 연산", a.authorityOperator], ["출처", a.policySource], ...evidenceDetails(item.evidenceIds)];
     });
   }
 
@@ -372,12 +391,12 @@
         { label: "Filter 클래스", value: (item) => item.attributes && item.attributes.filterClass, truncate: true },
         { label: "URL 매핑", value: (item) => item.attributes && item.attributes.urlPatterns, truncate: true },
         { label: "적용 상태", value: (item) => filterMappingStatus(item, endpoint).label, badge: true, badgeTone: (item) => filterMappingStatus(item, endpoint).code }
-      ], (item) => { const a = item.attributes || {}; return [["ID", item.subjectKey], ["등록명", a.registrationName], ["Filter 클래스", a.filterClass], ["URL 매핑", a.urlPatterns], ["Servlet 정보", a.servletNames], ["근거 ID", (item.evidenceIds || []).join(", ") || "없음"]]; }, (item) => filterMappingStatus(item, endpoint).code === "matched");
+      ], (item) => { const a = item.attributes || {}; return [["ID", item.subjectKey], ["등록명", a.registrationName], ["Filter 클래스", a.filterClass], ["URL 매핑", a.urlPatterns], ["Servlet 정보", a.servletNames], ...evidenceDetails(item.evidenceIds)]; }, (item) => filterMappingStatus(item, endpoint).code === "matched");
       renderList(body, factsOf("SERVLET_REGISTRATION"), [
         { label: "Servlet 이름", value: (item) => item.attributes && item.attributes.servletName },
         { label: "Servlet 클래스", value: (item) => item.attributes && item.attributes.servletClass, truncate: true },
         { label: "URL 매핑", value: (item) => item.attributes && item.attributes.urlPattern, code: true }
-      ], (item) => { const a = item.attributes || {}; return [["ID", item.subjectKey], ["Servlet 이름", a.servletName], ["Servlet 클래스", a.servletClass], ["URL 매핑", a.urlPattern], ["근거 ID", (item.evidenceIds || []).join(", ") || "없음"]]; });
+      ], (item) => { const a = item.attributes || {}; return [["ID", item.subjectKey], ["Servlet 이름", a.servletName], ["Servlet 클래스", a.servletClass], ["URL 매핑", a.urlPattern], ...evidenceDetails(item.evidenceIds)]; });
     };
     endpointSelect.addEventListener("change", draw);
     holder.append(endpointSelect, body);
@@ -393,7 +412,7 @@
       { label: "심각도", value: (item) => item.severity, badge: true },
       { label: "Confidence", value: (item) => item.confidence, display: confidenceLabel, badge: true },
       { label: "대상", value: (item) => item.subjectKey, code: true, truncate: true }
-    ], (item) => [["Rule", item.ruleId], ["설명", item.description], ["가이드", item.guide], ["Confidence", confidenceLabel(item.confidence)], ["근거 ID", (item.evidenceIds || []).join(", ") || "없음"]]);
+    ], (item) => [["Rule", item.ruleId], ["설명", item.description], ["가이드", item.guide], ["Confidence", confidenceLabel(item.confidence)], ...evidenceDetails(item.evidenceIds)]);
   }
 
   function referencesForEvidence(id) {
@@ -407,14 +426,14 @@
 
   function renderEvidence(parent) {
     renderList(parent, state.report.evidence || [], [
-      { label: "근거 ID", value: (item) => item.id, code: true, truncate: true, width: "15%" },
+      { label: "근거 코드", value: (item) => evidenceCode(item.id), code: true, truncate: true, width: "15%" },
       { label: "출처", value: (item) => item.source, display: sourceLabel, badge: true, width: "15%" },
       { label: "위치", value: (item) => item.location, truncate: true, width: "25%" },
       { label: "내용", value: (item) => policyEvidenceLabel(item.id, item.summary), truncate: true, width: "45%" }
     ], (item) => {
       const policies = policiesForEvidence(item.id);
       const policyValues = policies.length === 1 ? policies[0].attributes || {} : null;
-      return [["근거 ID", item.id], ["출처", sourceLabel(item.source)], ["위치", item.location], ["표시 내용", policyEvidenceLabel(item.id, item.summary)], ["원문 Summary", item.summary], ["Chain", policyValues && chainLabel(policyValues, factsOf("SECURITY_CHAIN"))], ["원문 Chain Key", policyValues && policyValues.chainKey], ["정책 Matcher", policyValues && policyValues.policyMatcherCondition], ["정책 순서", policyValues && policyValues.policyOrder], ["정책", policyValues && policyLabel(policyValues.policyKind)], ["연결", referencesForEvidence(item.id)]];
+      return [["근거 코드", evidenceCode(item.id)], ["원본 Evidence ID", item.id], ["출처", sourceLabel(item.source)], ["위치", item.location], ["표시 내용", policyEvidenceLabel(item.id, item.summary)], ["원문 Summary", item.summary], ["Chain", policyValues && chainLabel(policyValues, factsOf("SECURITY_CHAIN"))], ["원문 Chain Key", policyValues && policyValues.chainKey], ["정책 Matcher", policyValues && policyValues.policyMatcherCondition], ["정책 순서", policyValues && policyValues.policyOrder], ["정책", policyValues && policyLabel(policyValues.policyKind)], ["연결", referencesForEvidence(item.id)]];
     }, null, "evidence-table");
   }
 

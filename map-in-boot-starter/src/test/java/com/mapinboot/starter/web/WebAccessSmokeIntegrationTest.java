@@ -288,6 +288,8 @@ class WebAccessSmokeIntegrationTest {
                     .andExpect(jsonPath("$.facts[0].id").value(bootstrap.collectionReport().facts().get(0).id()))
                     .andExpect(jsonPath("$.relations").isArray())
                     .andExpect(jsonPath("$.evidence").isArray())
+                    .andExpect(jsonPath("$.evidenceDisplayCodes").isMap())
+                    .andExpect(jsonPath("$.evidenceDisplayCodes").isNotEmpty())
                     .andExpect(jsonPath("$.evidence[0].id").value(bootstrap.collectionReport().evidence().get(0).id()));
             mvc.perform(get("/mapinboot/smoke.txt").with(basic("admin", "password")))
                     .andExpect(status().isOk());

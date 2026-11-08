@@ -37,6 +37,7 @@ public final class DevelopmentDiagnosticController {
     private static final MediaType TEXT_JAVASCRIPT = MediaType.parseMediaType("text/javascript");
 
     private final MapInBootBootstrap bootstrap;
+    private final EvidenceDisplayCodeResolver evidenceDisplayCodeResolver = new EvidenceDisplayCodeResolver();
 
     public DevelopmentDiagnosticController(MapInBootBootstrap bootstrap) {
         this.bootstrap = bootstrap;
@@ -60,7 +61,7 @@ public final class DevelopmentDiagnosticController {
     // 현재 수집·분석 결과의 읽기 전용 조회
     @GetMapping(value = "/test/api/report", produces = MediaType.APPLICATION_JSON_VALUE)
     public DevelopmentDiagnosticReport report() {
-        return DevelopmentDiagnosticReport.from(bootstrap);
+        return DevelopmentDiagnosticReport.from(bootstrap, evidenceDisplayCodeResolver);
     }
 
     private ResponseEntity<Resource> resource(String name, MediaType contentType) {
@@ -81,17 +82,22 @@ public final class DevelopmentDiagnosticController {
             Map<String, AnalysisStatus> analysisStatuses,
             List<Relation> relations,
             List<Evidence> evidence,
+            Map<String, String> evidenceDisplayCodes,
             List<StatusController.DiagnosticResponse> diagnostics,
             boolean currentSnapshotPresent,
             CurrentSnapshotResponse currentSnapshot,
             boolean persistedSnapshotPresent,
             PersistedSnapshotResponse persistedSnapshot
     ) {
-        static DevelopmentDiagnosticReport from(MapInBootBootstrap bootstrap) {
+        static DevelopmentDiagnosticReport from(
+                MapInBootBootstrap bootstrap,
+                EvidenceDisplayCodeResolver evidenceDisplayCodeResolver
+        ) {
             CollectionReport collection = bootstrap.collectionReport();
             AnalysisReport analysis = bootstrap.analysisReport();
             Snapshot current = bootstrap.snapshot();
             Snapshot persisted = bootstrap.persistedSnapshot();
+            List<Evidence> evidence = evidence(collection, analysis);
             return new DevelopmentDiagnosticReport(
                     bootstrap.executionPhase(),
                     bootstrap.failureCode(),
@@ -101,7 +107,8 @@ public final class DevelopmentDiagnosticController {
                     analysis != null,
                     analysis == null ? Map.of() : analysis.statusByAdapter(),
                     analysis == null ? List.of() : analysis.relations(),
-                    evidence(collection, analysis),
+                    evidence,
+                    evidenceDisplayCodeResolver.resolve(collection, analysis),
                     diagnostics(collection, analysis),
                     current != null,
                     current == null ? null : CurrentSnapshotResponse.from(current),
