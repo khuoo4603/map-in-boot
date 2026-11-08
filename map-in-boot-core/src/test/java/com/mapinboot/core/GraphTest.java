@@ -18,6 +18,8 @@ import com.mapinboot.core.common.status.EvidenceSource;
 import com.mapinboot.core.common.type.EdgeType;
 import com.mapinboot.core.common.type.NodeType;
 import com.mapinboot.core.evidence.Evidence;
+import com.mapinboot.core.evidence.EvidenceClassification;
+import com.mapinboot.core.evidence.EvidenceCodeGenerator;
 import com.mapinboot.core.evidence.Fact;
 import com.mapinboot.core.evidence.Relation;
 import com.mapinboot.core.graph.GraphBuilder;
@@ -154,6 +156,46 @@ class GraphTest {
         assertEquals(endpointNode.id(), graph.edges().get(0).sourceId());
         assertEquals(chainNode.id(), graph.edges().get(0).targetId());
         assertEquals(List.of("evidence-chain", "evidence-endpoint"), graph.edges().get(0).evidenceIds());
+    }
+
+    @Test
+    void displayCodeGenerationLeavesGraphIdentityAndOriginalEvidenceReferencesUnchanged() {
+        Evidence endpointEvidence = new Evidence("evidence-endpoint", EvidenceSource.RUNTIME, "mapping", "endpoint");
+        Evidence chainEvidence = new Evidence("evidence-chain", EvidenceSource.RUNTIME, "chain", "chain");
+        Fact endpoint = new Fact(
+                "fact-endpoint", "ENDPOINT_MAPPING", "endpoint:GET:/orders",
+                Map.of("httpMethod", "GET", "path", "/orders", "handler", "OrderController#list"),
+                List.of(endpointEvidence.id()));
+        Fact chain = new Fact(
+                "fact-chain", "SECURITY_CHAIN", "chain:orders",
+                Map.of("chainKey", "orders", "matcherType", "PATH"), List.of(chainEvidence.id()));
+        Relation matchedBy = new Relation(
+                "relation-match", "endpoint:GET:/orders", "chain:orders", EdgeType.MATCHED_BY,
+                Map.of("matcherCondition", "/orders/**", "chainOrder", "1"),
+                Confidence.CONFIRMED, List.of(endpointEvidence.id(), chainEvidence.id()));
+        AnalysisReport report = report(
+                List.of(endpoint, chain), List.of(endpointEvidence, chainEvidence), List.of(matchedBy));
+
+        GraphBuilder builder = new GraphBuilder();
+        GraphFingerprintGenerator fingerprintGenerator = new GraphFingerprintGenerator();
+        SecurityGraph before = builder.build("orders", report);
+        String beforeFingerprint = fingerprintGenerator.generate(before);
+        Map<String, String> displayCodes = new EvidenceCodeGenerator().generate(
+                report.evidence(), List.of(
+                        new EvidenceClassification(endpointEvidence.id(), "EP", "MAPPING"),
+                        new EvidenceClassification(chainEvidence.id(), "SC", "CHAIN")));
+        SecurityGraph after = builder.build("orders", report);
+
+        assertEquals(Set.of(endpointEvidence.id(), chainEvidence.id()), displayCodes.keySet());
+        assertEquals(before.nodes(), after.nodes());
+        assertEquals(before.edges(), after.edges());
+        assertEquals(beforeFingerprint, fingerprintGenerator.generate(after));
+        assertTrue(after.nodes().stream()
+                .flatMap(node -> node.evidenceIds().stream())
+                .allMatch(displayCodes::containsKey));
+        assertTrue(after.edges().stream()
+                .flatMap(edge -> edge.evidenceIds().stream())
+                .allMatch(displayCodes::containsKey));
     }
 
     @Test

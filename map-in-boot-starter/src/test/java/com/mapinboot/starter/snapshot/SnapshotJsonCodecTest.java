@@ -27,6 +27,7 @@ import java.util.Map;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
@@ -150,9 +151,16 @@ class SnapshotJsonCodecTest {
                 Map.of("collector", AnalysisStatus.READY));
         SnapshotJsonCodec codec = new SnapshotJsonCodec();
 
-        Snapshot decoded = codec.decode(codec.encode(snapshot));
+        String encoded = codec.encode(snapshot);
+        Snapshot decoded = codec.decode(encoded);
 
+        assertFalse(encoded.contains("evidenceDisplayCodes"));
         assertEquals(snapshot, decoded);
+        assertEquals(snapshot.schemaVersion(), decoded.schemaVersion());
+        assertEquals(snapshot.evidence(), decoded.evidence());
+        assertEquals(snapshot.nodes().get(0).evidenceIds(), decoded.nodes().get(0).evidenceIds());
+        assertEquals(snapshot.edges().get(0).evidenceIds(), decoded.edges().get(0).evidenceIds());
+        assertEquals(snapshot.findings().get(0).evidenceIds(), decoded.findings().get(0).evidenceIds());
         assertEquals(snapshot.graphFingerprint(), decoded.graphFingerprint());
         assertEquals(snapshot.capturedAt(), decoded.capturedAt());
         assertEquals(Confidence.UNKNOWN, decoded.edges().get(0).confidence());
