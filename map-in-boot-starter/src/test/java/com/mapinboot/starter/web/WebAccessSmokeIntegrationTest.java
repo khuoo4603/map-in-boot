@@ -21,6 +21,7 @@ import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Base64;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -44,8 +45,11 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.context.WebApplicationContext;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.MvcResult;
 import org.springframework.test.web.servlet.request.RequestPostProcessor;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.json.JsonMapper;
 
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
@@ -53,6 +57,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class WebAccessSmokeIntegrationTest {
     @TempDir
@@ -278,7 +283,10 @@ class WebAccessSmokeIntegrationTest {
                     .andExpect(status().isUnauthorized());
             mvc.perform(get("/mapinboot/test/api/report").with(basic("viewer", "password")))
                     .andExpect(status().isForbidden());
-            mvc.perform(get("/mapinboot/test/api/report").with(basic("admin", "password")))
+            Snapshot beforeReport = bootstrap.snapshot();
+            Snapshot beforePersisted = bootstrap.persistedSnapshot();
+            assertOriginalEvidenceReferences(bootstrap);
+            MvcResult firstReport = mvc.perform(get("/mapinboot/test/api/report").with(basic("admin", "password")))
                     .andExpect(status().isOk())
                     .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
                     .andExpect(jsonPath("$.collectionPresent").value(true))
@@ -290,12 +298,76 @@ class WebAccessSmokeIntegrationTest {
                     .andExpect(jsonPath("$.evidence").isArray())
                     .andExpect(jsonPath("$.evidenceDisplayCodes").isMap())
                     .andExpect(jsonPath("$.evidenceDisplayCodes").isNotEmpty())
-                    .andExpect(jsonPath("$.evidence[0].id").value(bootstrap.collectionReport().evidence().get(0).id()));
+                    .andExpect(jsonPath("$.evidence[0].id").value(bootstrap.collectionReport().evidence().get(0).id()))
+                    .andReturn();
+            MvcResult secondReport = mvc.perform(get("/mapinboot/test/api/report").with(basic("admin", "password")))
+                    .andExpect(status().isOk())
+                    .andReturn();
+
+            assertEquals(firstReport.getResponse().getContentAsString(), secondReport.getResponse().getContentAsString());
+            assertEquals(beforeReport, bootstrap.snapshot());
+            assertEquals(beforePersisted, bootstrap.persistedSnapshot());
+            assertDisplayCodeMapping(firstReport.getResponse().getContentAsString());
             mvc.perform(get("/mapinboot/smoke.txt").with(basic("admin", "password")))
                     .andExpect(status().isOk());
             mvc.perform(post("/mapinboot/api/snapshot").with(basic("admin", "password")))
                     .andExpect(status().isMethodNotAllowed());
         }
+    }
+
+    private void assertDisplayCodeMapping(String responseBody) throws Exception {
+        JsonNode report = JsonMapper.builder().build().readTree(responseBody);
+        JsonNode evidence = report.get("evidence");
+        JsonNode displayCodes = report.get("evidenceDisplayCodes");
+        Set<String> evidenceIds = new HashSet<>();
+        Set<String> codes = new HashSet<>();
+        for (JsonNode item : evidence) {
+            String evidenceId = item.get("id").asText();
+            evidenceIds.add(evidenceId);
+            assertTrue(displayCodes.has(evidenceId));
+            String displayCode = displayCodes.get(evidenceId).asText();
+            assertTrue(displayCode.matches("[A-Z]{2}-[A-Z0-9_]+-[0-9]{3,}"));
+            codes.add(displayCode);
+        }
+        assertEquals(evidenceIds.size(), displayCodes.size());
+        assertEquals(evidenceIds.size(), codes.size());
+        for (String fieldName : displayCodes.propertyNames()) {
+            assertTrue(evidenceIds.contains(fieldName));
+        }
+        assertReferencesHaveDisplayCodes(report.get("facts"), displayCodes);
+        assertReferencesHaveDisplayCodes(report.get("relations"), displayCodes);
+        JsonNode currentSnapshot = report.get("currentSnapshot");
+        assertReferencesHaveDisplayCodes(currentSnapshot.get("nodes"), displayCodes);
+        assertReferencesHaveDisplayCodes(currentSnapshot.get("edges"), displayCodes);
+        assertReferencesHaveDisplayCodes(currentSnapshot.get("findings"), displayCodes);
+    }
+
+    private void assertReferencesHaveDisplayCodes(JsonNode objects, JsonNode displayCodes) {
+        for (JsonNode object : objects) {
+            for (JsonNode evidenceId : object.get("evidenceIds")) {
+                assertTrue(displayCodes.has(evidenceId.asText()));
+            }
+        }
+    }
+
+    private void assertOriginalEvidenceReferences(MapInBootBootstrap bootstrap) {
+        Set<String> evidenceIds = new HashSet<>();
+        bootstrap.snapshot().evidence().forEach(evidence -> evidenceIds.add(evidence.id()));
+        assertTrue(bootstrap.collectionReport().facts().stream()
+                .flatMap(fact -> fact.evidenceIds().stream())
+                .allMatch(evidenceIds::contains));
+        assertTrue(bootstrap.analysisReport().relations().stream()
+                .flatMap(relation -> relation.evidenceIds().stream())
+                .allMatch(evidenceIds::contains));
+        assertTrue(bootstrap.snapshot().nodes().stream()
+                .flatMap(node -> node.evidenceIds().stream())
+                .allMatch(evidenceIds::contains));
+        assertTrue(bootstrap.snapshot().edges().stream()
+                .flatMap(edge -> edge.evidenceIds().stream())
+                .allMatch(evidenceIds::contains));
+        assertTrue(bootstrap.snapshot().findings().stream()
+                .flatMap(finding -> finding.evidenceIds().stream())
+                .allMatch(evidenceIds::contains));
     }
 
     private RequestPostProcessor basic(String username, String password) {

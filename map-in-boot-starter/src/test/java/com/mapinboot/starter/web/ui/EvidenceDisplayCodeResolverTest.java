@@ -104,6 +104,35 @@ class EvidenceDisplayCodeResolverTest {
         assertEquals(ErrorCode.INVALID_CONFIG, exception.getErrorCode());
     }
 
+    @Test
+    void keepsCodesDeterministicAndDeduplicatesEvidenceSharedByCollectionAndAnalysis() {
+        Evidence endpoint = evidence("e-endpoint", EvidenceSource.RUNTIME);
+        Evidence chain = evidence("e-chain", EvidenceSource.RUNTIME);
+        Evidence general = evidence("e-general", EvidenceSource.RUNTIME);
+        Fact endpointFact = new Fact(
+                "fact-endpoint", "ENDPOINT_MAPPING", "endpoint", Map.of(), List.of(endpoint.id()));
+        Fact chainFact = new Fact(
+                "fact-chain", "SECURITY_CHAIN", "chain", Map.of(), List.of(chain.id()));
+
+        CollectionReport firstCollection = collectionReport(
+                List.of(endpointFact, chainFact), List.of(endpoint, chain, general), AnalysisStatus.READY);
+        AnalysisReport firstAnalysis = new AnalysisReport(
+                firstCollection, List.of(), List.of(general, chain, endpoint),
+                Map.of("analyzer", AnalysisStatus.READY), List.of());
+        CollectionReport secondCollection = collectionReport(
+                List.of(chainFact, endpointFact), List.of(general, endpoint, chain), AnalysisStatus.READY);
+        AnalysisReport secondAnalysis = new AnalysisReport(
+                secondCollection, List.of(), List.of(endpoint, general, chain),
+                Map.of("analyzer", AnalysisStatus.READY), List.of());
+
+        Map<String, String> firstCodes = new EvidenceDisplayCodeResolver().resolve(firstCollection, firstAnalysis);
+        Map<String, String> secondCodes = new EvidenceDisplayCodeResolver().resolve(secondCollection, secondAnalysis);
+
+        assertEquals(firstCodes, secondCodes);
+        assertEquals(3, firstCodes.size());
+        assertEquals("EV-GENERAL-001", firstCodes.get(general.id()));
+    }
+
     private Evidence evidence(String id, EvidenceSource source) {
         return new Evidence(id, source, "location text", "summary text");
     }

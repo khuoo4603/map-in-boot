@@ -69,6 +69,24 @@ class EvidenceCodeGeneratorTest {
     }
 
     @Test
+    void preservesCodesWhenClassificationGroupsAreReordered() {
+        Evidence endpoint = evidence("evidence-endpoint");
+        Evidence chain = evidence("evidence-chain");
+        Evidence general = evidence("evidence-general");
+        List<EvidenceClassification> classifications = List.of(
+                new EvidenceClassification(endpoint.id(), "EP", "MAPPING"),
+                new EvidenceClassification(chain.id(), "SC", "CHAIN"));
+
+        Map<String, String> firstResult = new EvidenceCodeGenerator().generate(
+                List.of(endpoint, chain, general), classifications);
+        Map<String, String> secondResult = new EvidenceCodeGenerator().generate(
+                List.of(general, chain, endpoint), List.of(classifications.get(1), classifications.get(0)));
+
+        assertEquals(firstResult, secondResult);
+        assertEquals("EV-GENERAL-001", secondResult.get(general.id()));
+    }
+
+    @Test
     void removesIdenticalDuplicateEvidenceAndClassification() {
         Evidence evidence = evidence("evidence-1");
         EvidenceClassification classification = new EvidenceClassification("evidence-1", "EP", "MAPPING");

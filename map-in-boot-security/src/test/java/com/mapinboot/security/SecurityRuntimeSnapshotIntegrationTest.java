@@ -27,8 +27,10 @@ import com.mapinboot.security.finding.SecurityRuleEngine;
 import com.mapinboot.starter.collector.EndpointMappingCollectorAdapter;
 import com.mapinboot.starter.snapshot.SnapshotAssembler;
 import java.util.List;
+import java.util.Set;
 import java.util.stream.IntStream;
 import java.util.stream.Stream;
+import java.util.stream.Collectors;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.autoconfigure.EnableAutoConfiguration;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
@@ -85,8 +87,7 @@ class SecurityRuntimeSnapshotIntegrationTest {
             assertEquals(2, snapshot.edges().size());
             assertTrue(snapshot.findings().isEmpty());
             assertTrue(snapshot.analysisStatus().containsKey(analyzer.id()));
-            assertTrue(snapshot.edges().get(0).evidenceIds().stream()
-                    .allMatch(id -> snapshot.evidence().stream().anyMatch(evidence -> evidence.id().equals(id))));
+            assertEvidenceReferences(collection, analysis, snapshot);
         }
     }
 
@@ -161,9 +162,7 @@ class SecurityRuntimeSnapshotIntegrationTest {
             Snapshot snapshot = new SnapshotAssembler(List.of(), "1")
                     .assemble(analysis, "main", "instance", "test");
             assertEquals(3, snapshot.edges().size());
-            assertTrue(snapshot.edges().stream().flatMap(edge -> edge.evidenceIds().stream())
-                    .allMatch(id -> snapshot.evidence().stream()
-                            .anyMatch(evidence -> evidence.id().equals(id))));
+            assertEvidenceReferences(collection, analysis, snapshot);
         }
     }
 
@@ -248,10 +247,7 @@ class SecurityRuntimeSnapshotIntegrationTest {
             assertEquals(1, snapshot.findings().size());
             assertEquals("CHAIN_ORDER", snapshot.findings().get(0).ruleId());
             assertEquals(Confidence.LIKELY, snapshot.findings().get(0).confidence());
-            assertTrue(snapshot.evidence().stream()
-                    .map(Evidence::id)
-                    .collect(java.util.stream.Collectors.toSet())
-                    .containsAll(snapshot.findings().get(0).evidenceIds()));
+            assertEvidenceReferences(collection, analysis, snapshot);
         }
     }
 
@@ -273,6 +269,41 @@ class SecurityRuntimeSnapshotIntegrationTest {
             assertTrue(snapshot.edges().stream().flatMap(edge -> edge.evidenceIds().stream())
                     .allMatch(id -> snapshot.evidence().stream().anyMatch(evidence -> evidence.id().equals(id))));
         }
+    }
+
+    private void assertEvidenceReferences(
+            CollectionReport collection, AnalysisReport analysis, Snapshot snapshot) {
+        Set<String> evidenceIds = snapshot.evidence().stream()
+                .map(Evidence::id)
+                .collect(Collectors.toSet());
+        Set<String> nodeIds = snapshot.nodes().stream()
+                .map(node -> node.id())
+                .collect(Collectors.toSet());
+        Set<String> edgeIds = snapshot.edges().stream()
+                .map(edge -> edge.id())
+                .collect(Collectors.toSet());
+
+        assertTrue(collection.facts().stream()
+                .flatMap(fact -> fact.evidenceIds().stream())
+                .allMatch(evidenceIds::contains));
+        assertTrue(analysis.relations().stream()
+                .flatMap(relation -> relation.evidenceIds().stream())
+                .allMatch(evidenceIds::contains));
+        assertTrue(snapshot.nodes().stream()
+                .flatMap(node -> node.evidenceIds().stream())
+                .allMatch(evidenceIds::contains));
+        assertTrue(snapshot.edges().stream()
+                .flatMap(edge -> edge.evidenceIds().stream())
+                .allMatch(evidenceIds::contains));
+        assertTrue(snapshot.findings().stream()
+                .flatMap(finding -> finding.evidenceIds().stream())
+                .allMatch(evidenceIds::contains));
+        assertTrue(snapshot.findings().stream()
+                .flatMap(finding -> finding.nodeIds().stream())
+                .allMatch(nodeIds::contains));
+        assertTrue(snapshot.findings().stream()
+                .flatMap(finding -> finding.edgeIds().stream())
+                .allMatch(edgeIds::contains));
     }
 
     private AnnotationConfigApplicationContext context(Class<?> configuration) {
