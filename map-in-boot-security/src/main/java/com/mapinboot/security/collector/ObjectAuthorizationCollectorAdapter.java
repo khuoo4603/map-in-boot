@@ -129,7 +129,7 @@ public class ObjectAuthorizationCollectorAdapter extends AbstractCollectorAdapte
             attributes.put("credentialCodeLocation", check.source().codeLocation());
         }
         if (check.source().owner() != null) {
-            attributes.put("credentialApiOwner", check.source().owner());
+            attributes.put("credentialApiOwner", check.source().owner().replace('/', '.'));
             attributes.put("credentialApiName", check.source().name());
             attributes.put("credentialApiDescriptor", check.source().descriptor());
         }

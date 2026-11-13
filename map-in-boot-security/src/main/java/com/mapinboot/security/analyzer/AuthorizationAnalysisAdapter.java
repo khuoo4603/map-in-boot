@@ -78,7 +78,7 @@ public class AuthorizationAnalysisAdapter extends AbstractAnalysisAdapter {
                     continue;
                 }
                 addRelation(relationData, handler, object.subjectKey(), EdgeType.SECURED_BY,
-                        Map.of("securityKind", "AUTHORIZATION", "policySource", "OBJECT"),
+                        authorizationAttributes(object),
                         Confidence.CONFIRMED, evidenceIds(endpoint, object));
             }
 
@@ -95,7 +95,7 @@ public class AuthorizationAnalysisAdapter extends AbstractAnalysisAdapter {
             }
             addRelation(relationData, credential.subjectKey(), object.subjectKey(),
                     EdgeType.USES_FOR_AUTHORIZATION,
-                    Map.of("securityKind", "AUTHORIZATION", "policySource", "OBJECT"),
+                    authorizationAttributes(object),
                     Confidence.CONFIRMED, evidenceIds(credential, object));
         }
 
@@ -196,7 +196,7 @@ public class AuthorizationAnalysisAdapter extends AbstractAnalysisAdapter {
             return;
         }
         RelationKey key = new RelationKey(sourceKey, targetKey, type, attributes.get("securityKind"),
-                attributes.get("policySource"));
+                attributes.get("policySource"), attributes.get("credentialSource"));
         relationData.computeIfAbsent(key, ignored -> new RelationData(
                         sourceKey, targetKey, type, attributes, confidence))
                 .evidenceIds.addAll(evidenceIds);
@@ -204,6 +204,13 @@ public class AuthorizationAnalysisAdapter extends AbstractAnalysisAdapter {
 
     private AdapterDiagnostic diagnostic(String summary) {
         return new AdapterDiagnostic(id(), ErrorCode.INVALID_STATE, summary);
+    }
+
+    private Map<String, String> authorizationAttributes(Fact object) {
+        return Map.of(
+                "credentialSource", object.attributes().get("credentialSource"),
+                "policySource", "OBJECT",
+                "securityKind", "AUTHORIZATION");
     }
 
     private AnalysisResult unknown(String summary) {
@@ -220,7 +227,8 @@ public class AuthorizationAnalysisAdapter extends AbstractAnalysisAdapter {
             String targetKey,
             EdgeType type,
             String securityKind,
-            String policySource
+            String policySource,
+            String credentialSource
     ) {
     }
 

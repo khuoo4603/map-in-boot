@@ -86,6 +86,12 @@ class ObjectAuthorizationAnalysisTest {
                     .count());
             assertTrue(analysis.relations().stream()
                     .anyMatch(relation -> relation.type() == EdgeType.USES_FOR_AUTHORIZATION));
+            assertTrue(analysis.relations().stream()
+                    .filter(relation -> relation.type() == EdgeType.USES_FOR_AUTHORIZATION)
+                    .anyMatch(relation -> "JWT_SUBJECT".equals(relation.attributes().get("credentialSource"))));
+            assertTrue(analysis.relations().stream()
+                    .filter(relation -> relation.type() == EdgeType.USES_FOR_AUTHORIZATION)
+                    .anyMatch(relation -> "REQUEST_HEADER".equals(relation.attributes().get("credentialSource"))));
 
             SecurityGraph graph = new GraphBuilder().build("fixture", analysis);
             assertNotNull(graph);
