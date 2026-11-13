@@ -5,6 +5,7 @@ import com.mapinboot.security.analyzer.FilterRegistrationAnalysisAdapter;
 import com.mapinboot.security.analyzer.MethodSecurityAnalysisAdapter;
 import com.mapinboot.security.analyzer.CredentialUsageAnalysisAdapter;
 import com.mapinboot.security.analyzer.AuthorizationAnalysisAdapter;
+import com.mapinboot.security.analyzer.BusinessStateAnalysisAdapter;
 import com.mapinboot.security.collector.MethodSecurityCollectorAdapter;
 import com.mapinboot.security.collector.SecurityChainCollectorAdapter;
 import com.mapinboot.security.collector.JwtUsageCollectorAdapter;
@@ -12,6 +13,7 @@ import com.mapinboot.security.collector.SessionUsageCollectorAdapter;
 import com.mapinboot.security.collector.HeaderUsageCollectorAdapter;
 import com.mapinboot.security.collector.PrincipalUsageCollectorAdapter;
 import com.mapinboot.security.collector.ObjectAuthorizationCollectorAdapter;
+import com.mapinboot.security.collector.BusinessStateCollectorAdapter;
 import com.mapinboot.security.finding.SecurityRuleEngine;
 import com.mapinboot.core.finding.FindingEvaluator;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
@@ -70,6 +72,12 @@ public class MapInBootSecurityAutoConfiguration {
     }
 
     @Bean
+    @ConditionalOnMissingBean(BusinessStateCollectorAdapter.class)
+    BusinessStateCollectorAdapter businessStateCollectorAdapter() {
+        return new BusinessStateCollectorAdapter();
+    }
+
+    @Bean
     @ConditionalOnMissingBean(EndpointChainMatchingAnalysisAdapter.class)
     EndpointChainMatchingAnalysisAdapter endpointChainMatchingAnalysisAdapter() {
         return new EndpointChainMatchingAnalysisAdapter();
@@ -97,6 +105,12 @@ public class MapInBootSecurityAutoConfiguration {
     @ConditionalOnMissingBean(AuthorizationAnalysisAdapter.class)
     AuthorizationAnalysisAdapter authorizationAnalysisAdapter() {
         return new AuthorizationAnalysisAdapter();
+    }
+
+    @Bean
+    @ConditionalOnMissingBean(BusinessStateAnalysisAdapter.class)
+    BusinessStateAnalysisAdapter businessStateAnalysisAdapter() {
+        return new BusinessStateAnalysisAdapter();
     }
 
     @Bean
