@@ -3,6 +3,7 @@ package com.mapinboot.security.autoconfigure;
 import com.mapinboot.security.analyzer.EndpointChainMatchingAnalysisAdapter;
 import com.mapinboot.security.analyzer.FilterRegistrationAnalysisAdapter;
 import com.mapinboot.security.analyzer.MethodSecurityAnalysisAdapter;
+import com.mapinboot.security.analyzer.CredentialUsageAnalysisAdapter;
 import com.mapinboot.security.collector.MethodSecurityCollectorAdapter;
 import com.mapinboot.security.collector.SecurityChainCollectorAdapter;
 import com.mapinboot.security.collector.JwtUsageCollectorAdapter;
@@ -76,6 +77,12 @@ public class MapInBootSecurityAutoConfiguration {
     @ConditionalOnMissingBean(FilterRegistrationAnalysisAdapter.class)
     FilterRegistrationAnalysisAdapter filterRegistrationAnalysisAdapter() {
         return new FilterRegistrationAnalysisAdapter();
+    }
+
+    @Bean
+    @ConditionalOnMissingBean(CredentialUsageAnalysisAdapter.class)
+    CredentialUsageAnalysisAdapter credentialUsageAnalysisAdapter() {
+        return new CredentialUsageAnalysisAdapter();
     }
 
     @Bean
