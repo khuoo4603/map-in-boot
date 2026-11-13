@@ -5,6 +5,7 @@ import com.mapinboot.security.analyzer.FilterRegistrationAnalysisAdapter;
 import com.mapinboot.security.analyzer.MethodSecurityAnalysisAdapter;
 import com.mapinboot.security.collector.MethodSecurityCollectorAdapter;
 import com.mapinboot.security.collector.SecurityChainCollectorAdapter;
+import com.mapinboot.security.collector.JwtUsageCollectorAdapter;
 import com.mapinboot.security.finding.SecurityRuleEngine;
 import com.mapinboot.core.finding.FindingEvaluator;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
@@ -30,6 +31,12 @@ public class MapInBootSecurityAutoConfiguration {
     @ConditionalOnMissingBean(MethodSecurityCollectorAdapter.class)
     MethodSecurityCollectorAdapter methodSecurityCollectorAdapter() {
         return new MethodSecurityCollectorAdapter();
+    }
+
+    @Bean
+    @ConditionalOnMissingBean(JwtUsageCollectorAdapter.class)
+    JwtUsageCollectorAdapter jwtUsageCollectorAdapter() {
+        return new JwtUsageCollectorAdapter();
     }
 
     @Bean
