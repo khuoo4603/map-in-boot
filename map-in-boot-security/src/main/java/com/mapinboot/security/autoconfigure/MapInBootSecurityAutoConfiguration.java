@@ -7,6 +7,8 @@ import com.mapinboot.security.collector.MethodSecurityCollectorAdapter;
 import com.mapinboot.security.collector.SecurityChainCollectorAdapter;
 import com.mapinboot.security.collector.JwtUsageCollectorAdapter;
 import com.mapinboot.security.collector.SessionUsageCollectorAdapter;
+import com.mapinboot.security.collector.HeaderUsageCollectorAdapter;
+import com.mapinboot.security.collector.PrincipalUsageCollectorAdapter;
 import com.mapinboot.security.finding.SecurityRuleEngine;
 import com.mapinboot.core.finding.FindingEvaluator;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
@@ -44,6 +46,18 @@ public class MapInBootSecurityAutoConfiguration {
     @ConditionalOnMissingBean(SessionUsageCollectorAdapter.class)
     SessionUsageCollectorAdapter sessionUsageCollectorAdapter() {
         return new SessionUsageCollectorAdapter();
+    }
+
+    @Bean
+    @ConditionalOnMissingBean(HeaderUsageCollectorAdapter.class)
+    HeaderUsageCollectorAdapter headerUsageCollectorAdapter() {
+        return new HeaderUsageCollectorAdapter();
+    }
+
+    @Bean
+    @ConditionalOnMissingBean(PrincipalUsageCollectorAdapter.class)
+    PrincipalUsageCollectorAdapter principalUsageCollectorAdapter() {
+        return new PrincipalUsageCollectorAdapter();
     }
 
     @Bean
