@@ -161,6 +161,39 @@ class ObjectAuthorizationAnalysisTest {
         }
     }
 
+    @Test
+    void doesNotConfirmObjectBindingOutsideCompleteProtectedAccess() {
+        try (AnnotationConfigApplicationContext context = context(PathBoundaryConfiguration.class)) {
+            CollectionReport collection = new CollectionProvider().execute(
+                    new CollectionContext(context, "boundary", "instance"),
+                    List.of(new EndpointMappingCollectorAdapter(), new ObjectAuthorizationCollectorAdapter()));
+
+            List<Fact> paths = collection.facts().stream()
+                    .filter(fact -> "OBJECT_ACCESS_PATH".equals(fact.type()))
+                    .toList();
+            assertTrue(paths.stream().anyMatch(fact ->
+                    fact.attributes().getOrDefault("handler", "").contains("calculatedOnly")
+                            && "UNRESOLVED".equals(fact.attributes().get("pathOutcome"))
+                            && "INCOMPLETE".equals(fact.attributes().get("coverage"))));
+            assertTrue(paths.stream().anyMatch(fact ->
+                    fact.attributes().getOrDefault("handler", "").contains("discardedForbidden")
+                            && "UNRESOLVED".equals(fact.attributes().get("pathOutcome"))
+                            && "INCOMPLETE".equals(fact.attributes().get("coverage"))));
+            assertTrue(paths.stream().anyMatch(fact ->
+                    fact.attributes().getOrDefault("handler", "").contains("delegated")
+                            && "UNRESOLVED".equals(fact.attributes().get("pathOutcome"))
+                            && "INCOMPLETE".equals(fact.attributes().get("coverage"))));
+            assertTrue(paths.stream().anyMatch(fact ->
+                    fact.attributes().getOrDefault("handler", "").contains("conditionalOwnerCheck")
+                            && "UNRESOLVED".equals(fact.attributes().get("pathOutcome"))
+                            && "INCOMPLETE".equals(fact.attributes().get("coverage"))));
+
+            AnalysisReport analysis = new AnalysisProvider().execute(
+                    new AnalysisContext(collection, "boundary"), List.of(new AuthorizationAnalysisAdapter()));
+            assertTrue(new ObjectBindingFindingRule().evaluate(analysis).isEmpty());
+        }
+    }
+
     private AnnotationConfigApplicationContext context(Class<?>... configurations) {
         AnnotationConfigApplicationContext context = new AnnotationConfigApplicationContext();
         context.register(configurations);
@@ -189,6 +222,20 @@ class ObjectAuthorizationAnalysisTest {
         @Bean
         AssignmentService assignmentService() {
             return new AssignmentService();
+        }
+
+        @Bean
+        RequestMappingHandlerMapping requestMappingHandlerMapping() {
+            return new RequestMappingHandlerMapping();
+        }
+    }
+
+    @Configuration(proxyBeanMethods = false)
+    static class PathBoundaryConfiguration {
+
+        @Bean
+        PathBoundaryController pathBoundaryController() {
+            return new PathBoundaryController(new BoundaryRepository(), new BoundaryAuditService());
         }
 
         @Bean
@@ -319,6 +366,81 @@ class ObjectAuthorizationAnalysisTest {
     static class AssignmentService {
         boolean isAssigned(String staffId, String customerId) {
             return false;
+        }
+    }
+
+    @RestController
+    static class PathBoundaryController {
+        private final BoundaryRepository repository;
+        private final BoundaryAuditService auditService;
+
+        PathBoundaryController(BoundaryRepository repository, BoundaryAuditService auditService) {
+            this.repository = repository;
+            this.auditService = auditService;
+        }
+
+        @GetMapping("/boundary/{id}/calculated")
+        @RequiresObjectAuthorization(
+                kind = "OWNER", resourceType = Account.class, principalSource = "JWT_SUBJECT")
+        ResponseEntity<?> calculatedOnly(@PathVariable String id, Jwt jwt) {
+            Account account = repository.findById(id).orElse(null);
+            if (account == null) {
+                return ResponseEntity.notFound().build();
+            }
+            String owner = account.getOwnerId();
+            return ResponseEntity.ok(owner + jwt.getSubject());
+        }
+
+        @GetMapping("/boundary/{id}/discarded")
+        @RequiresObjectAuthorization(
+                kind = "OWNER", resourceType = Account.class, principalSource = "JWT_SUBJECT")
+        ResponseEntity<?> discardedForbidden(@PathVariable String id, Jwt jwt) {
+            Account account = repository.findById(id).orElse(null);
+            if (account == null) {
+                return ResponseEntity.notFound().build();
+            }
+            if (!account.getOwnerId().equals(jwt.getSubject())) {
+                ResponseEntity.status(HttpStatus.FORBIDDEN).build();
+            }
+            return ResponseEntity.ok(account);
+        }
+
+        @GetMapping("/boundary/{id}/delegated")
+        @RequiresObjectAuthorization(
+                kind = "OWNER", resourceType = Account.class, principalSource = "JWT_SUBJECT")
+        ResponseEntity<?> delegated(@PathVariable String id, Jwt jwt) {
+            Account account = repository.findById(id).orElse(null);
+            if (account == null) {
+                return ResponseEntity.notFound().build();
+            }
+            auditService.inspect(account);
+            return ResponseEntity.ok(account);
+        }
+
+        @GetMapping("/boundary/{id}/conditional")
+        @RequiresObjectAuthorization(
+                kind = "OWNER", resourceType = Account.class, principalSource = "JWT_SUBJECT")
+        ResponseEntity<?> conditionalOwnerCheck(@PathVariable String id, Jwt jwt) {
+            Account account = repository.findById(id).orElse(null);
+            if (account == null) {
+                return ResponseEntity.notFound().build();
+            }
+            if (id.startsWith("checked") && !account.getOwnerId().equals(jwt.getSubject())) {
+                return ResponseEntity.status(HttpStatus.FORBIDDEN).build();
+            }
+            return ResponseEntity.ok(account);
+        }
+    }
+
+    static class BoundaryRepository {
+        Optional<Account> findById(String id) {
+            return Optional.of(new Account("owner"));
+        }
+    }
+
+    static class BoundaryAuditService {
+        void inspect(Account account) {
+            account.getOwnerId();
         }
     }
 

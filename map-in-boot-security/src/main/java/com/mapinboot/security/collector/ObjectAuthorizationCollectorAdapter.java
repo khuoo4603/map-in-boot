@@ -206,6 +206,15 @@ public class ObjectAuthorizationCollectorAdapter extends AbstractCollectorAdapte
         if (!outcome.accesses().contains(resourceType)) {
             return null;
         }
+        String location = outcome.accessLocations().stream().findFirst().orElse("unknown");
+        if (!outcome.protectedAccesses().contains(resourceType)) {
+            return outcome.uncertain()
+                    ? new PathOutcome("UNRESOLVED", location, requirement.principalSource())
+                    : null;
+        }
+        if (outcome.uncertain()) {
+            return new PathOutcome("UNRESOLVED", location, requirement.principalSource());
+        }
         Check matching = checks.stream()
                 .filter(check -> requirement.principalSource().equals(check.source().kind()))
                 .findFirst()
@@ -217,7 +226,6 @@ public class ObjectAuthorizationCollectorAdapter extends AbstractCollectorAdapte
         if (mismatched != null) {
             return new PathOutcome("SOURCE_MISMATCH", mismatched.location(), mismatched.source().kind());
         }
-        String location = outcome.accessLocations().stream().findFirst().orElse("unknown");
         return new PathOutcome("UNGUARDED", location, requirement.principalSource());
     }
 
@@ -392,16 +400,18 @@ public class ObjectAuthorizationCollectorAdapter extends AbstractCollectorAdapte
             boolean uncertain,
             List<Check> checks,
             Set<String> accesses,
-            Set<String> accessLocations
+            Set<String> accessLocations,
+            Set<String> protectedAccesses
     ) {
         private ScanOutcome {
             checks = List.copyOf(checks);
             accesses = Set.copyOf(accesses);
             accessLocations = Set.copyOf(accessLocations);
+            protectedAccesses = Set.copyOf(protectedAccesses);
         }
 
         private static ScanOutcome unavailable() {
-            return new ScanOutcome(false, true, List.of(), Set.of(), Set.of());
+            return new ScanOutcome(false, true, List.of(), Set.of(), Set.of(), Set.of());
         }
     }
 
@@ -484,6 +494,11 @@ public class ObjectAuthorizationCollectorAdapter extends AbstractCollectorAdapte
             return new Value(ValueKind.OTHER, null, null, null, null, null, null);
         }
 
+        private static Value derived(Value source) {
+            return new Value(ValueKind.OTHER, null, source.ownerGetter(), source.repositoryCall(),
+                    null, null, source.resourceType());
+        }
+
         private static Value integer(int value) {
             return new Value(ValueKind.OTHER, null, null, null, null, value, null);
         }
@@ -533,7 +548,7 @@ public class ObjectAuthorizationCollectorAdapter extends AbstractCollectorAdapte
             String key = method.getName() + descriptor + "|"
                     + parameterOrigins.stream().map(value -> value.kind().name()).collect(Collectors.joining(","));
             if (!visited.add(key) || depth > MAX_HELPER_DEPTH) {
-                return new ScanOutcome(true, true, List.of(), Set.of(), Set.of());
+                return new ScanOutcome(true, true, List.of(), Set.of(), Set.of(), Set.of());
             }
 
             String resourceName = targetClass.getName().replace('.', '/') + ".class";
@@ -578,9 +593,11 @@ public class ObjectAuthorizationCollectorAdapter extends AbstractCollectorAdapte
             private final List<Instruction> instructions = new ArrayList<>();
             private final Set<String> accessedTypes = new LinkedHashSet<>();
             private final Set<String> accessLocations = new LinkedHashSet<>();
+            private final Set<String> protectedAccessTypes = new LinkedHashSet<>();
             private final Map<Label, Integer> labels = new HashMap<>();
             private boolean found;
             private boolean uncertain;
+            private boolean denialConstructed;
 
             private MethodBytecodeVisitor(
                     Class<?> ownerClass,
@@ -621,7 +638,9 @@ public class ObjectAuthorizationCollectorAdapter extends AbstractCollectorAdapte
                             candidate.ownerGetter(), candidate.repositoryCall(), candidate.resourceType(), true));
                 }
                 checks.addAll(nestedChecks);
-                return new ScanOutcome(true, uncertain, checks, accessedTypes, accessLocations);
+                boolean effectiveDenial = instructions.stream().anyMatch(Instruction::denial);
+                return new ScanOutcome(true, uncertain || (denialConstructed && !effectiveDenial),
+                        checks, accessedTypes, accessLocations, protectedAccessTypes);
             }
 
             private boolean mismatchBranchHasDenial(Branch branch) {
@@ -744,7 +763,7 @@ public class ObjectAuthorizationCollectorAdapter extends AbstractCollectorAdapte
                     } else {
                         popValue();
                     }
-                    addInstruction(opcode, null, denial, false);
+                    addInstruction(opcode, null, false, false);
                 }
 
                 @Override
@@ -756,11 +775,23 @@ public class ObjectAuthorizationCollectorAdapter extends AbstractCollectorAdapte
                         recordAccess(value);
                     }
                     recordAccess(receiver);
-                    boolean denial = isAccessDeniedConstructor(owner, name)
-                            || isForbiddenStatusCall(owner, name, arguments);
-                    addInstruction(opcode, null, denial, false);
+                    boolean resourceUse = isResourceValue(receiver)
+                            || arguments.stream().anyMatch(this::isResourceValue);
+                    boolean helperCall = isHelperCall(owner, name, descriptor, opcode, receiver);
+                    if (isProtectedTarget(owner, name, descriptor, arguments)) {
+                        arguments.stream().filter(this::isResourceValue)
+                                .map(Value::resourceType).forEach(protectedAccessTypes::add);
+                        if (isResourceValue(receiver)) {
+                            protectedAccessTypes.add(receiver.resourceType());
+                        }
+                    } else if (resourceUse && !helperCall
+                            && !isKnownResourceUse(owner, name, descriptor, receiver, arguments)) {
+                        uncertain = true;
+                    }
+                    denialConstructed |= isForbiddenStatusCall(owner, name, arguments);
+                    addInstruction(opcode, null, false, false);
 
-                    if (isHelperCall(owner, name, descriptor, opcode, receiver)) {
+                    if (helperCall) {
                         Method helper = resolveMethod(owner, name, descriptor);
                         if (helper != null && depth < MAX_HELPER_DEPTH) {
                             ScanOutcome nested = new BytecodeAnalyzer(ownerClass).scan(
@@ -769,6 +800,7 @@ public class ObjectAuthorizationCollectorAdapter extends AbstractCollectorAdapte
                             nestedChecks.addAll(nested.checks());
                             accessedTypes.addAll(nested.accesses());
                             accessLocations.addAll(nested.accessLocations());
+                            protectedAccessTypes.addAll(nested.protectedAccesses());
                             if (!nested.available()) {
                                 uncertain = true;
                             }
@@ -776,6 +808,21 @@ public class ObjectAuthorizationCollectorAdapter extends AbstractCollectorAdapte
                     }
 
                     Value returned = returnValue(owner, name, descriptor, receiver, arguments);
+                    if (isForbiddenStatusCall(owner, name, arguments)
+                            || isForbiddenBuilder(owner, name, receiver)) {
+                        returned = Value.forbidden();
+                    } else if (isAccessDeniedConstructor(owner, name)) {
+                        returned = Value.forbidden();
+                    }
+                    if ("<init>".equals(name) && arguments.stream()
+                            .anyMatch(this::isResourceValue)
+                            && !stack.isEmpty()) {
+                        Value resource = arguments.stream()
+                                .filter(this::isResourceValue)
+                                .findFirst().orElse(Value.unknown());
+                        stack.pop();
+                        stack.push(Value.derived(resource));
+                    }
                     if (returned != null) {
                         stack.push(returned);
                     }
@@ -784,7 +831,7 @@ public class ObjectAuthorizationCollectorAdapter extends AbstractCollectorAdapte
                 @Override
                 public void visitInvokeDynamicInsn(String name, String descriptor,
                                                     Handle bootstrapMethodHandle, Object... bootstrapMethodArguments) {
-                    arguments(descriptor);
+                    arguments(descriptor).forEach(UsageMethodVisitor.this::recordAccess);
                     uncertain = true;
                     addInstruction(Opcodes.INVOKEDYNAMIC, null, false, false);
                     if (!Type.VOID_TYPE.equals(Type.getReturnType(descriptor))) {
@@ -802,6 +849,9 @@ public class ObjectAuthorizationCollectorAdapter extends AbstractCollectorAdapte
                         popValue();
                         condition = popValue();
                     }
+                    if (condition.kind() == ValueKind.UNKNOWN || condition.kind() == ValueKind.OTHER) {
+                        uncertain = true;
+                    }
                     int current = addInstruction(opcode, label, false, false);
                     if ((opcode == Opcodes.IFEQ || opcode == Opcodes.IFNE)
                             && condition.kind() == ValueKind.CHECK && condition.candidate() != null) {
@@ -811,6 +861,7 @@ public class ObjectAuthorizationCollectorAdapter extends AbstractCollectorAdapte
 
                 @Override
                 public void visitInsn(int opcode) {
+                    boolean effectiveDenial = false;
                     switch (opcode) {
                         case Opcodes.ACONST_NULL -> stack.push(Value.other());
                         case Opcodes.ICONST_M1 -> stack.push(Value.integer(-1));
@@ -824,14 +875,20 @@ public class ObjectAuthorizationCollectorAdapter extends AbstractCollectorAdapte
                         case Opcodes.POP, Opcodes.POP2 -> popValue();
                         case Opcodes.SWAP -> swap();
                         case Opcodes.IRETURN, Opcodes.FRETURN, Opcodes.ARETURN, Opcodes.ATHROW,
-                                Opcodes.LRETURN, Opcodes.DRETURN -> popValue();
+                                Opcodes.LRETURN, Opcodes.DRETURN -> {
+                            Value returned = popValue();
+                            effectiveDenial = returned.kind() == ValueKind.FORBIDDEN;
+                            if (isResourceValue(returned)) {
+                                protectedAccessTypes.add(returned.resourceType());
+                            }
+                        }
                         default -> {
                             if (opcode != Opcodes.NOP && opcode != Opcodes.RETURN) {
                                 uncertain = true;
                             }
                         }
                     }
-                    addInstruction(opcode, null, false, isTerminal(opcode));
+                    addInstruction(opcode, null, effectiveDenial, isTerminal(opcode));
                 }
 
                 @Override
@@ -851,8 +908,7 @@ public class ObjectAuthorizationCollectorAdapter extends AbstractCollectorAdapte
                 }
 
                 private void recordAccess(Value value) {
-                    if (value.resourceType() != null
-                            && (value.kind() == ValueKind.OBJECT || value.kind() == ValueKind.OWNER)) {
+                    if (isResourceValue(value)) {
                         accessedTypes.add(value.resourceType());
                         accessLocations.add(location(method));
                     }
@@ -918,8 +974,7 @@ public class ObjectAuthorizationCollectorAdapter extends AbstractCollectorAdapte
                             && receiver.kind() == ValueKind.OPTIONAL) {
                         return Value.object(receiver.repositoryCall());
                     }
-                    if (receiver.kind() == ValueKind.OBJECT
-                            && isOwnerGetter(name, descriptor)) {
+                    if (isResourceValue(receiver) && isOwnerGetter(name, descriptor)) {
                         return Value.owner(receiver, name);
                     }
                     if (isStringEquals(owner, name, descriptor)) {
@@ -947,6 +1002,16 @@ public class ObjectAuthorizationCollectorAdapter extends AbstractCollectorAdapte
                             candidates.add(candidate);
                             return Value.check(candidate);
                         }
+                    }
+                    if (isResourceValue(receiver) && Type.getReturnType(descriptor).getSort() != Type.VOID) {
+                        return Value.derived(receiver);
+                    }
+                    if (("java/util/Map".equals(owner) || "java/util/List".equals(owner))
+                            && name.startsWith("of")
+                            && arguments.stream().anyMatch(this::isResourceValue)) {
+                        return Value.derived(arguments.stream()
+                                .filter(this::isResourceValue)
+                                .findFirst().orElse(Value.unknown()));
                     }
                     if (isAssignmentCheck(owner, name, descriptor, receiver, arguments)) {
                         SourceRef source = assignmentSource(arguments);
@@ -981,11 +1046,45 @@ public class ObjectAuthorizationCollectorAdapter extends AbstractCollectorAdapte
                             && resolveMethod(owner, name, descriptor) != null;
                 }
 
+                private boolean isResourceValue(Value value) {
+                    return value != null && value.resourceType() != null;
+                }
+
+                private boolean isProtectedTarget(String owner, String name, String descriptor,
+                                                  List<Value> arguments) {
+                    if (RESPONSE_ENTITY.equals(owner) && ("ok".equals(name) || "body".equals(name))) {
+                        return arguments.stream().anyMatch(this::isResourceValue);
+                    }
+                    if ("<init>".equals(name) || isFrameworkOwner(owner)) {
+                        return false;
+                    }
+                    return Set.of("save", "persist", "insert", "update", "delete").contains(name)
+                            && arguments.stream().anyMatch(this::isResourceValue);
+                }
+
+                private boolean isKnownResourceUse(String owner, String name, String descriptor,
+                                                    Value receiver, List<Value> arguments) {
+                    return isProtectedTarget(owner, name, descriptor, arguments)
+                            || isHelperCall(owner, name, descriptor, Opcodes.INVOKEVIRTUAL, receiver)
+                            || isOwnerGetter(name, descriptor)
+                            || isStringEquals(owner, name, descriptor)
+                            || isObjectsEquals(owner, name, descriptor)
+                            || "<init>".equals(name)
+                            || (("java/util/Map".equals(owner) || "java/util/List".equals(owner))
+                            && name.startsWith("of"));
+                }
+
                 private boolean isForbiddenStatusCall(String owner, String name, List<Value> arguments) {
                     return RESPONSE_ENTITY.equals(owner)
                             && "status".equals(name)
                             && arguments.stream().anyMatch(value -> value.kind() == ValueKind.FORBIDDEN
                             || Integer.valueOf(403).equals(value.integer()));
+                }
+
+                private boolean isForbiddenBuilder(String owner, String name, Value receiver) {
+                    return receiver.kind() == ValueKind.FORBIDDEN
+                            && "build".equals(name)
+                            && owner.endsWith("ResponseEntity$BodyBuilder");
                 }
 
                 private boolean isAccessDeniedConstructor(String owner, String name) {
