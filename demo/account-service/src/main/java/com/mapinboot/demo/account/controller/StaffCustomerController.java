@@ -1,5 +1,6 @@
 package com.mapinboot.demo.account.controller;
 
+import com.mapinboot.core.annotation.RequiresObjectAuthorization;
 import com.mapinboot.demo.account.model.DemoCustomer;
 import com.mapinboot.demo.account.model.DemoSavingsSubscription;
 import com.mapinboot.demo.account.repository.InMemoryCustomerRepository;
@@ -82,6 +83,8 @@ public class StaffCustomerController {
 
     /** JWT 주체와 담당 관계를 비교하는 연락처 정상 경로 */
     @GetMapping("/api/staff/secured/customers/{customerId}/contact")
+    @RequiresObjectAuthorization(
+            kind = "ASSIGNMENT", resourceType = DemoCustomer.class, principalSource = "JWT_SUBJECT")
     public ResponseEntity<?> getSecuredContact(
             @PathVariable String customerId,
             @AuthenticationPrincipal Jwt jwt) {
@@ -96,6 +99,8 @@ public class StaffCustomerController {
      * Normal: JWT sub와 StaffAssignment를 비교하여 담당 고객만 허용
      */
     @GetMapping("/api/staff/customers/{customerId}/contact")
+    @RequiresObjectAuthorization(
+            kind = "ASSIGNMENT", resourceType = DemoCustomer.class, principalSource = "JWT_SUBJECT")
     public ResponseEntity<?> getContactVulnerable(
             @PathVariable String customerId,
             @RequestHeader(name = "X-Staff-Id", required = false) String staffId) {

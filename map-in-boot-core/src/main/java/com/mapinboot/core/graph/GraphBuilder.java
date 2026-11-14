@@ -43,6 +43,10 @@ public class GraphBuilder {
             Map.entry("PRINCIPAL_USAGE", List.of("principalType", "codeLocation")),
             Map.entry("AUTHORITY_MAPPING", List.of("codeLocation", "mappingKind")),
             Map.entry("OBJECT_AUTHORIZATION", List.of("codeLocation", "checkKind")),
+            Map.entry("OBJECT_AUTHORIZATION_REQUIREMENT", List.of(
+                    "handler", "declaringMethod", "requirementKind", "resourceType", "principalSource")),
+            Map.entry("OBJECT_ACCESS_PATH", List.of(
+                    "handler", "codeLocation", "resourceType", "requirementKey", "pathOutcome", "coverage", "principalSource")),
             Map.entry("BUSINESS_SECURITY_STATE", List.of("stateName", "stateAction", "declaringMethod")));
 
     private final StableIdGenerator idGenerator = new StableIdGenerator();
@@ -88,6 +92,9 @@ public class GraphBuilder {
             case "FILTER_REGISTRATION" -> addNode(serviceId, NodeType.FILTER, fact.subjectKey(), fact.subjectKey(), fact.attributes(), fact.evidenceIds(), nodesById, nodeIdsByStructuralKey);
             case "SECURITY_CHAIN" -> addNode(serviceId, NodeType.SECURITY_CHAIN, fact.subjectKey(), fact.subjectKey(), fact.attributes(), fact.evidenceIds(), nodesById, nodeIdsByStructuralKey);
             case "URL_AUTHORIZATION", "METHOD_AUTHORIZATION", "OBJECT_AUTHORIZATION" -> addNode(serviceId, NodeType.AUTHORIZATION, fact.subjectKey(), fact.subjectKey(), fact.attributes(), fact.evidenceIds(), nodesById, nodeIdsByStructuralKey);
+            case "OBJECT_AUTHORIZATION_REQUIREMENT", "OBJECT_ACCESS_PATH" -> addNode(
+                    serviceId, NodeType.AUTHORIZATION, fact.subjectKey(), fact.subjectKey(),
+                    withFactType(fact), fact.evidenceIds(), nodesById, nodeIdsByStructuralKey);
             case "JWT_USAGE", "SESSION_USAGE", "HEADER_USAGE", "PRINCIPAL_USAGE", "AUTHORITY_MAPPING" -> addNode(serviceId, NodeType.SECURITY_DATA, fact.subjectKey(), fact.subjectKey(), fact.attributes(), fact.evidenceIds(), nodesById, nodeIdsByStructuralKey);
             case "BUSINESS_SECURITY_STATE" -> addNode(serviceId, NodeType.BUSINESS_SECURITY_STATE, fact.subjectKey(), fact.subjectKey(), fact.attributes(), fact.evidenceIds(), nodesById, nodeIdsByStructuralKey);
             default -> invalidGraph("지원하지 않는 Fact 유형");
@@ -159,9 +166,28 @@ public class GraphBuilder {
         if ("BUSINESS_SECURITY_STATE".equals(fact.type()) && !Set.of("PRODUCES", "REQUIRES").contains(fact.attributes().get("stateAction"))) {
             invalidGraph("업무 보안 상태 동작 오류");
         }
+        if ("OBJECT_AUTHORIZATION_REQUIREMENT".equals(fact.type())
+                && !Set.of("OWNER", "ASSIGNMENT").contains(fact.attributes().get("requirementKind"))) {
+            invalidGraph("객체 인가 요구 유형 오류");
+        }
+        if ("OBJECT_ACCESS_PATH".equals(fact.type())
+                && !Set.of("GUARDED", "UNGUARDED", "SOURCE_MISMATCH", "UNRESOLVED")
+                .contains(fact.attributes().get("pathOutcome"))) {
+            invalidGraph("객체 접근 경로 결과 오류");
+        }
+        if ("OBJECT_ACCESS_PATH".equals(fact.type())
+                && !Set.of("COMPLETE_SUPPORTED_PATH", "INCOMPLETE").contains(fact.attributes().get("coverage"))) {
+            invalidGraph("객체 접근 경로 범위 오류");
+        }
         if ("ENDPOINT_MAPPING".equals(fact.type()) && !fact.attributes().get("httpMethod").equals(fact.attributes().get("httpMethod").toUpperCase(Locale.ROOT))) {
             invalidGraph("HTTP Method 형식 오류");
         }
+    }
+
+    private Map<String, String> withFactType(Fact fact) {
+        Map<String, String> attributes = new TreeMap<>(fact.attributes());
+        attributes.put("factType", fact.type());
+        return Map.copyOf(attributes);
     }
 
     // 명시된 구조 식별 속성만 Edge ID 입력으로 선택

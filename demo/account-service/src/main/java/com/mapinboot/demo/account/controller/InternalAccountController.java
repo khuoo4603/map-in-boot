@@ -1,5 +1,6 @@
 package com.mapinboot.demo.account.controller;
 
+import com.mapinboot.core.annotation.RequiresObjectAuthorization;
 import com.mapinboot.demo.account.model.DemoAccount;
 import com.mapinboot.demo.account.repository.InMemoryAccountRepository;
 import java.util.Map;
@@ -26,6 +27,8 @@ public class InternalAccountController {
      * 최종 사용자와 계좌 소유자 비교를 수행하는 정상 내부 계좌 요약 조회
      */
     @GetMapping("/internal/secured/accounts/{accountId}/summary")
+    @RequiresObjectAuthorization(
+            kind = "OWNER", resourceType = DemoAccount.class, principalSource = "REQUEST_HEADER")
     public ResponseEntity<?> getSecuredSummary(
             @PathVariable String accountId,
             @RequestHeader(value = "X-Authenticated-User", required = false) String userId) {
@@ -49,6 +52,8 @@ public class InternalAccountController {
      * 최종 사용자와 계좌 소유자 비교를 생략하는 취약 내부 계좌 요약 조회
      */
     @GetMapping("/internal/accounts/{accountId}/summary")
+    @RequiresObjectAuthorization(
+            kind = "OWNER", resourceType = DemoAccount.class, principalSource = "REQUEST_HEADER")
     public ResponseEntity<?> getSummaryWithoutOwnerCheck(
             @PathVariable String accountId,
             @RequestHeader(value = "X-Authenticated-User", required = false) String userId) {

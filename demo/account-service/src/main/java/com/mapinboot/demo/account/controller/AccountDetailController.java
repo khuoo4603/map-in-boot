@@ -2,6 +2,7 @@ package com.mapinboot.demo.account.controller;
 
 import com.mapinboot.demo.account.model.DemoAccount;
 import com.mapinboot.demo.account.repository.InMemoryAccountRepository;
+import com.mapinboot.core.annotation.RequiresObjectAuthorization;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
@@ -26,6 +27,8 @@ public class AccountDetailController {
      * JWT 주체와 계좌 소유자 비교를 수행하는 정상 계좌 상세 조회
      */
     @GetMapping("/api/secured/accounts/{accountId}")
+    @RequiresObjectAuthorization(
+            kind = "OWNER", resourceType = DemoAccount.class, principalSource = "JWT_SUBJECT")
     public ResponseEntity<?> getSecuredAccount(
             @PathVariable String accountId,
             @AuthenticationPrincipal Jwt jwt) {
@@ -49,6 +52,8 @@ public class AccountDetailController {
      * JWT 인증만 수행하는 취약 계좌 상세 조회
      */
     @GetMapping("/api/accounts/{accountId}")
+    @RequiresObjectAuthorization(
+            kind = "OWNER", resourceType = DemoAccount.class, principalSource = "JWT_SUBJECT")
     public ResponseEntity<?> getAccountWithoutOwnerCheck(
             @PathVariable String accountId,
             @AuthenticationPrincipal Jwt jwt) {

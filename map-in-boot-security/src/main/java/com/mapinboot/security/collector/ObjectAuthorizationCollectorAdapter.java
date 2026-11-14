@@ -1,5 +1,6 @@
 package com.mapinboot.security.collector;
 
+import com.mapinboot.core.annotation.RequiresObjectAuthorization;
 import com.mapinboot.core.collection.AbstractCollectorAdapter;
 import com.mapinboot.core.collection.model.CollectionContext;
 import com.mapinboot.core.collection.model.CollectionResult;
@@ -42,6 +43,8 @@ import org.objectweb.asm.Type;
 // 객체 조회·주체 비교·거부 분기의 코드 근거 수집
 public class ObjectAuthorizationCollectorAdapter extends AbstractCollectorAdapter {
     private static final String TYPE = "OBJECT_AUTHORIZATION";
+    private static final String REQUIREMENT_TYPE = "OBJECT_AUTHORIZATION_REQUIREMENT";
+    private static final String ACCESS_PATH_TYPE = "OBJECT_ACCESS_PATH";
     private static final String JWT = "org/springframework/security/oauth2/jwt/Jwt";
     private static final String AUTHENTICATION = "org/springframework/security/core/Authentication";
     private static final String OPTIONAL = "java/util/Optional";
@@ -52,7 +55,8 @@ public class ObjectAuthorizationCollectorAdapter extends AbstractCollectorAdapte
     private final StableIdGenerator idGenerator = new StableIdGenerator();
 
     public ObjectAuthorizationCollectorAdapter() {
-        super("security-object-authorization", "객체 Owner 비교·거부 구조 수집", Set.of(TYPE));
+        super("security-object-authorization", "객체 Owner 비교·거부 구조 수집",
+                Set.of(TYPE, REQUIREMENT_TYPE, ACCESS_PATH_TYPE));
     }
 
     @Override
@@ -82,6 +86,16 @@ public class ObjectAuthorizationCollectorAdapter extends AbstractCollectorAdapte
             for (Method method : endpointMethods(targetClass)) {
                 String handler = handler(targetClass, method);
                 String location = location(targetClass, method);
+                RequiresObjectAuthorization requirement = method.getDeclaredAnnotation(
+                        RequiresObjectAuthorization.class);
+                String requirementKey = null;
+                if (requirement != null) {
+                    requirementKey = addRequirement(
+                            context.serviceId(), handler, method, requirement, facts, evidence, diagnostics);
+                    if (requirementKey == null) {
+                        partial = true;
+                    }
+                }
                 ScanOutcome outcome = new BytecodeAnalyzer(targetClass).scan(
                         method, parameterOrigins(method, location), List.of(), 0, new HashSet<>());
                 if (!outcome.available()) {
@@ -101,6 +115,13 @@ public class ObjectAuthorizationCollectorAdapter extends AbstractCollectorAdapte
                         .toList()) {
                     addFact(context.serviceId(), handler, check, facts, evidence);
                 }
+                if (requirementKey != null) {
+                    PathOutcome pathOutcome = pathOutcome(outcome, requirement);
+                    if (pathOutcome != null) {
+                        addAccessPath(context.serviceId(), handler, requirementKey, requirement,
+                                pathOutcome, outcome, facts, evidence);
+                    }
+                }
             }
         }
 
@@ -108,6 +129,96 @@ public class ObjectAuthorizationCollectorAdapter extends AbstractCollectorAdapte
         evidence.sort(Comparator.comparing(Evidence::id));
         return new CollectionResult(id(), facts, evidence,
                 partial ? AnalysisStatus.PARTIAL : AnalysisStatus.READY, diagnostics);
+    }
+
+    private String addRequirement(
+            String serviceId,
+            String handler,
+            Method method,
+            RequiresObjectAuthorization requirement,
+            List<Fact> facts,
+            List<Evidence> evidence,
+            List<AdapterDiagnostic> diagnostics
+    ) {
+        if (!Set.of("OWNER", "ASSIGNMENT").contains(requirement.kind())
+                || !Set.of("JWT_SUBJECT", "AUTHENTICATION_NAME", "REQUEST_HEADER")
+                .contains(requirement.principalSource())) {
+            diagnostics.add(new AdapterDiagnostic(id(), ErrorCode.INVALID_STATE,
+                    "지원하지 않는 객체 인가 요구 선언: " + handler));
+            return null;
+        }
+        String declaringMethod = method.getDeclaringClass().getName() + "#" + method.getName()
+                + Type.getMethodDescriptor(method);
+        String resourceType = requirement.resourceType().getName();
+        String subjectKey = "object-authorization-requirement|" + handler + "|"
+                + requirement.kind() + "|" + resourceType + "|" + requirement.principalSource();
+        String evidenceId = idGenerator.generate(serviceId, NodeType.AUTHORIZATION, "evidence|" + subjectKey);
+        Map<String, String> attributes = new TreeMap<>();
+        attributes.put("handler", handler);
+        attributes.put("declaringMethod", declaringMethod);
+        attributes.put("requirementKind", requirement.kind());
+        attributes.put("resourceType", resourceType);
+        attributes.put("principalSource", requirement.principalSource());
+        facts.add(new Fact(
+                idGenerator.generate(serviceId, NodeType.AUTHORIZATION, "fact|" + subjectKey),
+                REQUIREMENT_TYPE, subjectKey, attributes, List.of(evidenceId)));
+        evidence.add(new Evidence(evidenceId, EvidenceSource.DECLARATION, declaringMethod,
+                "객체 인가 요구 선언"));
+        return subjectKey;
+    }
+
+    private void addAccessPath(
+            String serviceId,
+            String handler,
+            String requirementKey,
+            RequiresObjectAuthorization requirement,
+            PathOutcome pathOutcome,
+            ScanOutcome outcome,
+            List<Fact> facts,
+            List<Evidence> evidence
+    ) {
+        String resourceType = requirement.resourceType().getName();
+        String codeLocation = pathOutcome.location();
+        String subjectKey = "object-access-path|" + handler + "|" + requirementKey + "|"
+                + codeLocation + "|" + pathOutcome.outcome();
+        String evidenceId = idGenerator.generate(serviceId, NodeType.AUTHORIZATION, "evidence|" + subjectKey);
+        Map<String, String> attributes = new TreeMap<>();
+        attributes.put("handler", handler);
+        attributes.put("codeLocation", codeLocation);
+        attributes.put("resourceType", resourceType);
+        attributes.put("requirementKey", requirementKey);
+        attributes.put("pathOutcome", pathOutcome.outcome());
+        attributes.put("coverage", outcome.uncertain() ? "INCOMPLETE" : "COMPLETE_SUPPORTED_PATH");
+        attributes.put("principalSource", pathOutcome.source());
+        facts.add(new Fact(
+                idGenerator.generate(serviceId, NodeType.AUTHORIZATION, "fact|" + subjectKey),
+                ACCESS_PATH_TYPE, subjectKey, attributes, List.of(evidenceId)));
+        evidence.add(new Evidence(evidenceId, EvidenceSource.CODE_PATTERN, codeLocation,
+                "객체 접근 경로와 인가 결과 확인"));
+    }
+
+    private PathOutcome pathOutcome(ScanOutcome outcome, RequiresObjectAuthorization requirement) {
+        String resourceType = requirement.resourceType().getName();
+        List<Check> checks = outcome.checks().stream()
+                .filter(check -> resourceType.equals(check.resourceType())
+                        || ("ASSIGNMENT_DENY".equals(check.kind()) && check.resourceType() == null))
+                .toList();
+        if (!outcome.accesses().contains(resourceType)) {
+            return null;
+        }
+        Check matching = checks.stream()
+                .filter(check -> requirement.principalSource().equals(check.source().kind()))
+                .findFirst()
+                .orElse(null);
+        if (matching != null) {
+            return new PathOutcome("GUARDED", matching.location(), matching.source().kind());
+        }
+        Check mismatched = checks.stream().findFirst().orElse(null);
+        if (mismatched != null) {
+            return new PathOutcome("SOURCE_MISMATCH", mismatched.location(), mismatched.source().kind());
+        }
+        String location = outcome.accessLocations().stream().findFirst().orElse("unknown");
+        return new PathOutcome("UNGUARDED", location, requirement.principalSource());
     }
 
     private void addFact(
@@ -268,17 +379,29 @@ public class ObjectAuthorizationCollectorAdapter extends AbstractCollectorAdapte
             SourceRef source,
             String ownerGetter,
             String repositoryCall,
+            String resourceType,
             boolean denied
     ) {
     }
 
-    private record ScanOutcome(boolean available, boolean uncertain, List<Check> checks) {
+    private record PathOutcome(String outcome, String location, String source) {
+    }
+
+    private record ScanOutcome(
+            boolean available,
+            boolean uncertain,
+            List<Check> checks,
+            Set<String> accesses,
+            Set<String> accessLocations
+    ) {
         private ScanOutcome {
             checks = List.copyOf(checks);
+            accesses = Set.copyOf(accesses);
+            accessLocations = Set.copyOf(accessLocations);
         }
 
         private static ScanOutcome unavailable() {
-            return new ScanOutcome(false, true, List.of());
+            return new ScanOutcome(false, true, List.of(), Set.of(), Set.of());
         }
     }
 
@@ -304,62 +427,70 @@ public class ObjectAuthorizationCollectorAdapter extends AbstractCollectorAdapte
             String ownerGetter,
             String repositoryCall,
             CheckCandidate candidate,
-            Integer integer
+            Integer integer,
+            String resourceType
     ) {
         private static Value unknown() {
-            return new Value(ValueKind.UNKNOWN, null, null, null, null, null);
+            return new Value(ValueKind.UNKNOWN, null, null, null, null, null, null);
         }
 
         private static Value input() {
-            return new Value(ValueKind.INPUT, null, null, null, null, null);
+            return new Value(ValueKind.INPUT, null, null, null, null, null, null);
         }
 
         private static Value jwt() {
-            return new Value(ValueKind.JWT, null, null, null, null, null);
+            return new Value(ValueKind.JWT, null, null, null, null, null, null);
         }
 
         private static Value authentication() {
-            return new Value(ValueKind.AUTHENTICATION, null, null, null, null, null);
+            return new Value(ValueKind.AUTHENTICATION, null, null, null, null, null, null);
         }
 
         private static Value header(SourceRef source) {
-            return new Value(ValueKind.HEADER, source, null, null, null, null);
+            return new Value(ValueKind.HEADER, source, null, null, null, null, null);
         }
 
         private static Value optional(String call) {
-            return new Value(ValueKind.OPTIONAL, null, null, call, null, null);
+            return new Value(ValueKind.OPTIONAL, null, null, call, null, null, null);
         }
 
         private static Value object(String call) {
-            return new Value(ValueKind.OBJECT, null, null, call, null, null);
+            return new Value(ValueKind.OBJECT, null, null, call, null, null, null);
         }
 
         private static Value owner(Value object, String getter) {
-            return new Value(ValueKind.OWNER, null, getter, object.repositoryCall(), null, null);
+            return new Value(ValueKind.OWNER, null, getter, object.repositoryCall(), null, null,
+                    object.resourceType());
         }
 
         private static Value subject(SourceRef source) {
-            return new Value(ValueKind.SUBJECT, source, null, null, null, null);
+            return new Value(ValueKind.SUBJECT, source, null, null, null, null, null);
         }
 
         private static Value check(CheckCandidate candidate) {
-            return new Value(ValueKind.CHECK, null, null, null, candidate, null);
+            return new Value(ValueKind.CHECK, null, null, null, candidate, null,
+                    candidate.resourceType());
         }
 
         private static Value forbidden() {
-            return new Value(ValueKind.FORBIDDEN, null, null, null, null, null);
+            return new Value(ValueKind.FORBIDDEN, null, null, null, null, null, null);
         }
 
         private static Value thisValue() {
-            return new Value(ValueKind.THIS, null, null, null, null, null);
+            return new Value(ValueKind.THIS, null, null, null, null, null, null);
         }
 
         private static Value other() {
-            return new Value(ValueKind.OTHER, null, null, null, null, null);
+            return new Value(ValueKind.OTHER, null, null, null, null, null, null);
         }
 
         private static Value integer(int value) {
-            return new Value(ValueKind.OTHER, null, null, null, null, value);
+            return new Value(ValueKind.OTHER, null, null, null, null, value, null);
+        }
+
+        private Value withResourceType(String type) {
+            return new Value(kind, source, ownerGetter, repositoryCall, candidate, integer,
+                    type == null || type.isBlank() ? resourceType : type.replace('/', '.'));
         }
     }
 
@@ -368,7 +499,8 @@ public class ObjectAuthorizationCollectorAdapter extends AbstractCollectorAdapte
             String location,
             SourceRef source,
             String ownerGetter,
-            String repositoryCall
+            String repositoryCall,
+            String resourceType
     ) {
     }
 
@@ -401,7 +533,7 @@ public class ObjectAuthorizationCollectorAdapter extends AbstractCollectorAdapte
             String key = method.getName() + descriptor + "|"
                     + parameterOrigins.stream().map(value -> value.kind().name()).collect(Collectors.joining(","));
             if (!visited.add(key) || depth > MAX_HELPER_DEPTH) {
-                return new ScanOutcome(true, true, List.of());
+                return new ScanOutcome(true, true, List.of(), Set.of(), Set.of());
             }
 
             String resourceName = targetClass.getName().replace('.', '/') + ".class";
@@ -444,6 +576,8 @@ public class ObjectAuthorizationCollectorAdapter extends AbstractCollectorAdapte
             private final List<Check> nestedChecks = new ArrayList<>();
             private final List<Branch> branches = new ArrayList<>();
             private final List<Instruction> instructions = new ArrayList<>();
+            private final Set<String> accessedTypes = new LinkedHashSet<>();
+            private final Set<String> accessLocations = new LinkedHashSet<>();
             private final Map<Label, Integer> labels = new HashMap<>();
             private boolean found;
             private boolean uncertain;
@@ -484,10 +618,10 @@ public class ObjectAuthorizationCollectorAdapter extends AbstractCollectorAdapte
                     }
                     CheckCandidate candidate = branch.candidate();
                     checks.add(new Check(candidate.kind(), candidate.location(), candidate.source(),
-                            candidate.ownerGetter(), candidate.repositoryCall(), true));
+                            candidate.ownerGetter(), candidate.repositoryCall(), candidate.resourceType(), true));
                 }
                 checks.addAll(nestedChecks);
-                return new ScanOutcome(true, uncertain, checks);
+                return new ScanOutcome(true, uncertain, checks, accessedTypes, accessLocations);
             }
 
             private boolean mismatchBranchHasDenial(Branch branch) {
@@ -618,6 +752,10 @@ public class ObjectAuthorizationCollectorAdapter extends AbstractCollectorAdapte
                                             boolean isInterface) {
                     List<Value> arguments = arguments(descriptor);
                     Value receiver = opcode == Opcodes.INVOKESTATIC ? Value.other() : popValue();
+                    for (Value value : arguments) {
+                        recordAccess(value);
+                    }
+                    recordAccess(receiver);
                     boolean denial = isAccessDeniedConstructor(owner, name)
                             || isForbiddenStatusCall(owner, name, arguments);
                     addInstruction(opcode, null, denial, false);
@@ -629,6 +767,8 @@ public class ObjectAuthorizationCollectorAdapter extends AbstractCollectorAdapte
                                     helper, arguments, List.of(), depth + 1, new HashSet<>(visited));
                             uncertain |= nested.uncertain();
                             nestedChecks.addAll(nested.checks());
+                            accessedTypes.addAll(nested.accesses());
+                            accessLocations.addAll(nested.accessLocations());
                             if (!nested.available()) {
                                 uncertain = true;
                             }
@@ -700,7 +840,7 @@ public class ObjectAuthorizationCollectorAdapter extends AbstractCollectorAdapte
                         stack.push(Value.other());
                     } else if (opcode == Opcodes.CHECKCAST) {
                         Value value = popValue();
-                        stack.push(value);
+                        stack.push(value.withResourceType(type));
                     } else if (opcode == Opcodes.ANEWARRAY || opcode == Opcodes.INSTANCEOF) {
                         popValue();
                         stack.push(Value.other());
@@ -708,6 +848,14 @@ public class ObjectAuthorizationCollectorAdapter extends AbstractCollectorAdapte
                         uncertain = true;
                     }
                     addInstruction(opcode, null, false, false);
+                }
+
+                private void recordAccess(Value value) {
+                    if (value.resourceType() != null
+                            && (value.kind() == ValueKind.OBJECT || value.kind() == ValueKind.OWNER)) {
+                        accessedTypes.add(value.resourceType());
+                        accessLocations.add(location(method));
+                    }
                 }
 
                 @Override
@@ -765,7 +913,8 @@ public class ObjectAuthorizationCollectorAdapter extends AbstractCollectorAdapte
                     if (isOptionalResult(descriptor) && !isFrameworkOwner(owner)) {
                         return Value.optional(owner + "#" + name + descriptor);
                     }
-                    if (OPTIONAL.equals(owner) && ("orElse".equals(name) || "orElseGet".equals(name))
+                    if (OPTIONAL.equals(owner) && ("orElse".equals(name) || "orElseGet".equals(name)
+                            || "get".equals(name))
                             && receiver.kind() == ValueKind.OPTIONAL) {
                         return Value.object(receiver.repositoryCall());
                     }
@@ -778,7 +927,7 @@ public class ObjectAuthorizationCollectorAdapter extends AbstractCollectorAdapte
                         if (match != null) {
                             CheckCandidate candidate = new CheckCandidate(
                                     "OWNER_MATCH_WITH_DENY", location(method), match.source(),
-                                    match.ownerGetter(), match.repositoryCall());
+                                    match.ownerGetter(), match.repositoryCall(), receiver.resourceType());
                             candidates.add(candidate);
                             return Value.check(candidate);
                         }
@@ -792,7 +941,9 @@ public class ObjectAuthorizationCollectorAdapter extends AbstractCollectorAdapte
                         if (match != null) {
                             CheckCandidate candidate = new CheckCandidate(
                                     "OWNER_MATCH_WITH_DENY", location(method), match.source(),
-                                    match.ownerGetter(), match.repositoryCall());
+                                    match.ownerGetter(), match.repositoryCall(),
+                                    arguments.stream().map(Value::resourceType)
+                                            .filter(java.util.Objects::nonNull).findFirst().orElse(null));
                             candidates.add(candidate);
                             return Value.check(candidate);
                         }
@@ -800,7 +951,7 @@ public class ObjectAuthorizationCollectorAdapter extends AbstractCollectorAdapte
                     if (isAssignmentCheck(owner, name, descriptor, receiver, arguments)) {
                         SourceRef source = assignmentSource(arguments);
                         CheckCandidate candidate = new CheckCandidate(
-                                "ASSIGNMENT_DENY", location(method), source, null, null);
+                                "ASSIGNMENT_DENY", location(method), source, null, null, null);
                         candidates.add(candidate);
                         return Value.check(candidate);
                     }

@@ -1,5 +1,6 @@
 package com.mapinboot.demo.identity.controller;
 
+import com.mapinboot.core.annotation.RequiresObjectAuthorization;
 import com.mapinboot.demo.identity.model.DemoCustomerProfile;
 import com.mapinboot.demo.identity.repository.InMemoryCustomerProfileRepository;
 import java.util.Map;
@@ -26,6 +27,8 @@ public class SessionProfileController {
      * Session 사용자와 고객 프로필 소유자 비교를 수행하는 정상 프로필 조회
      */
     @GetMapping("/api/session/secured/customers/{customerId}/profile")
+    @RequiresObjectAuthorization(
+            kind = "OWNER", resourceType = DemoCustomerProfile.class, principalSource = "AUTHENTICATION_NAME")
     public ResponseEntity<?> getSecuredProfile(
             @PathVariable String customerId,
             Authentication authentication) {
@@ -51,6 +54,8 @@ public class SessionProfileController {
      * Session 인증만 수행하는 취약 프로필 조회
      */
     @GetMapping("/api/session/customers/{customerId}/profile")
+    @RequiresObjectAuthorization(
+            kind = "OWNER", resourceType = DemoCustomerProfile.class, principalSource = "AUTHENTICATION_NAME")
     public ResponseEntity<?> getProfileWithoutOwnerCheck(
             @PathVariable String customerId,
             Authentication authentication) {

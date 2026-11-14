@@ -8,6 +8,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import com.mapinboot.core.analysis.AnalysisProvider;
 import com.mapinboot.core.analysis.model.AnalysisContext;
 import com.mapinboot.core.analysis.model.AnalysisReport;
+import com.mapinboot.core.annotation.RequiresObjectAuthorization;
 import com.mapinboot.core.collection.CollectionProvider;
 import com.mapinboot.core.collection.model.CollectionContext;
 import com.mapinboot.core.collection.model.CollectionReport;
@@ -21,6 +22,7 @@ import com.mapinboot.security.collector.HeaderUsageCollectorAdapter;
 import com.mapinboot.security.collector.JwtUsageCollectorAdapter;
 import com.mapinboot.security.collector.ObjectAuthorizationCollectorAdapter;
 import com.mapinboot.security.collector.PrincipalUsageCollectorAdapter;
+import com.mapinboot.security.finding.ObjectBindingFindingRule;
 import com.mapinboot.starter.collector.EndpointMappingCollectorAdapter;
 import java.util.List;
 import java.util.Map;
@@ -112,6 +114,53 @@ class ObjectAuthorizationAnalysisTest {
         }
     }
 
+    @Test
+    void evaluatesDeclaredObjectBindingRequirementAgainstCompiledAccessPaths() {
+        try (AnnotationConfigApplicationContext context = context(FixtureConfiguration.class)) {
+            CollectionReport collection = new CollectionProvider().execute(
+                    new CollectionContext(context, "fixture", "instance"),
+                    List.of(
+                            new EndpointMappingCollectorAdapter(),
+                            new JwtUsageCollectorAdapter(),
+                            new HeaderUsageCollectorAdapter(),
+                            new PrincipalUsageCollectorAdapter(),
+                            new ObjectAuthorizationCollectorAdapter()));
+
+            List<Fact> requirements = collection.facts().stream()
+                    .filter(fact -> "OBJECT_AUTHORIZATION_REQUIREMENT".equals(fact.type()))
+                    .toList();
+            assertEquals(2, requirements.size());
+            assertTrue(requirements.stream().allMatch(fact ->
+                    "OWNER".equals(fact.attributes().get("requirementKind"))
+                            && Account.class.getName().equals(fact.attributes().get("resourceType"))
+                            && "JWT_SUBJECT".equals(fact.attributes().get("principalSource"))));
+
+            List<Fact> paths = collection.facts().stream()
+                    .filter(fact -> "OBJECT_ACCESS_PATH".equals(fact.type()))
+                    .toList();
+            assertEquals(2, paths.size());
+            assertTrue(paths.stream().anyMatch(fact -> "GUARDED".equals(fact.attributes().get("pathOutcome"))));
+            assertTrue(paths.stream().anyMatch(fact -> "UNGUARDED".equals(fact.attributes().get("pathOutcome"))));
+            assertTrue(paths.stream().allMatch(fact ->
+                    "COMPLETE_SUPPORTED_PATH".equals(fact.attributes().get("coverage"))));
+
+            AnalysisReport analysis = new AnalysisProvider().execute(
+                    new AnalysisContext(collection, "fixture"),
+                    List.of(new AuthorizationAnalysisAdapter()));
+            SecurityGraph graph = new GraphBuilder().build("fixture", analysis);
+            assertTrue(graph.nodes().stream().anyMatch(node ->
+                    "OBJECT_AUTHORIZATION_REQUIREMENT".equals(node.attributes().get("factType"))));
+            assertTrue(graph.nodes().stream().anyMatch(node ->
+                    "OBJECT_ACCESS_PATH".equals(node.attributes().get("factType"))));
+
+            var findings = new ObjectBindingFindingRule().evaluate(analysis);
+            assertEquals(1, findings.size());
+            assertEquals("OBJECT_BINDING", findings.get(0).ruleId());
+            assertTrue(findings.get(0).evidenceIds().stream()
+                    .allMatch(id -> analysis.evidence().stream().anyMatch(item -> item.id().equals(id))));
+        }
+    }
+
     private AnnotationConfigApplicationContext context(Class<?>... configurations) {
         AnnotationConfigApplicationContext context = new AnnotationConfigApplicationContext();
         context.register(configurations);
@@ -164,6 +213,8 @@ class ObjectAuthorizationAnalysisTest {
         }
 
         @RequestMapping(path = "/accounts/{id}/secured", method = RequestMethod.GET)
+        @RequiresObjectAuthorization(
+                kind = "OWNER", resourceType = Account.class, principalSource = "JWT_SUBJECT")
         ResponseEntity<?> securedJwt(@PathVariable String id, Jwt jwt) {
             if (jwt == null) {
                 return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
@@ -179,6 +230,8 @@ class ObjectAuthorizationAnalysisTest {
         }
 
         @GetMapping("/accounts/{id}/unsecured")
+        @RequiresObjectAuthorization(
+                kind = "OWNER", resourceType = Account.class, principalSource = "JWT_SUBJECT")
         ResponseEntity<?> unsecuredJwt(@PathVariable String id, Jwt jwt) {
             if (jwt == null) {
                 return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
