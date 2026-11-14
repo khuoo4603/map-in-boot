@@ -42,7 +42,21 @@
     MATCHED_BY: "적용 체인 관계",
     SECURED_BY: "접근 정책 관계",
     FILTERED_BY: "필터 연결 관계",
-    FLOWS_TO: "처리 흐름 관계"
+    FLOWS_TO: "처리 흐름 관계",
+    USES_FOR_AUTHORIZATION: "인가 인증정보 관계",
+    SECURITY_STATE: "업무 보안 상태 관계"
+  };
+  const analysisOutcomeNames = {
+    GUARDED: "검사 확인 (GUARDED)",
+    UNGUARDED: "검사 누락 (UNGUARDED)",
+    SOURCE_MISMATCH: "출처 불일치 (SOURCE_MISMATCH)",
+    ENFORCED: "집행 확인 (ENFORCED)",
+    BYPASS_PATH: "우회 경로 (BYPASS_PATH)",
+    UNRESOLVED: "미확정 (UNRESOLVED)"
+  };
+  const coverageNames = {
+    COMPLETE_SUPPORTED_PATH: "지원 경로 완결 (COMPLETE_SUPPORTED_PATH)",
+    INCOMPLETE: "경로 불완전 (INCOMPLETE)"
   };
 
   function create(tag, content, className) {
@@ -118,6 +132,16 @@
   function relationLabel(type) {
     const code = value(type);
     return relationNames[code] ? `${relationNames[code]} (${code})` : code;
+  }
+
+  function analysisOutcomeLabel(outcome) {
+    const code = value(outcome);
+    return analysisOutcomeNames[code] || code;
+  }
+
+  function coverageLabel(coverage) {
+    const code = value(coverage);
+    return coverageNames[code] || code;
   }
 
   function matcherLabel(condition, type) {
@@ -369,10 +393,210 @@
     parent.append(area);
   }
 
+  function attributesOf(item) {
+    return item && item.attributes || {};
+  }
+
+  function findingsOf(ruleId) {
+    const findings = state.report.currentSnapshot && state.report.currentSnapshot.findings || [];
+    return ruleId ? findings.filter((finding) => finding.ruleId === ruleId) : findings;
+  }
+
+  function evidenceIdsOf(items) {
+    const ids = new Set();
+    (items || []).forEach((item) => (item && item.evidenceIds || []).forEach((id) => ids.add(id)));
+    return [...ids];
+  }
+
+  function findingsForEvidence(ruleId, evidenceIds) {
+    const ids = new Set(evidenceIds || []);
+    return findingsOf(ruleId).filter((finding) =>
+      (finding.evidenceIds || []).some((id) => ids.has(id)));
+  }
+
+  function appendFactDetails(details, label, fact) {
+    if (!fact) {
+      details.push([label, "미수집"]);
+      return;
+    }
+    details.push([`${label} Type`, fact.type], [`${label} ID`, fact.id], [`${label} Subject Key`, fact.subjectKey]);
+    Object.entries(attributesOf(fact)).sort(([first], [second]) => first.localeCompare(second)).forEach(([key, item]) => {
+      details.push([`${label} ${key}`, item]);
+    });
+    details.push(...evidenceDetails(fact.evidenceIds).map(([key, item]) => [`${label} ${key}`, item]));
+  }
+
+  function appendRelationDetails(details, label, relation) {
+    details.push([`${label} Type`, relation.type], [`${label} ID`, relation.id],
+      [`${label} Source Key`, relation.sourceKey], [`${label} Target Key`, relation.targetKey],
+      [`${label} Confidence`, confidenceLabel(relation.confidence)]);
+    Object.entries(relation.attributes || {}).sort(([first], [second]) => first.localeCompare(second)).forEach(([key, item]) => {
+      details.push([`${label} ${key}`, item]);
+    });
+    details.push(...evidenceDetails(relation.evidenceIds).map(([key, item]) => [`${label} ${key}`, item]));
+  }
+
+  function appendFindingDetails(details, label, finding) {
+    details.push([`${label} Rule`, finding.ruleId], [`${label} ID`, finding.id],
+      [`${label} 제목`, finding.title], [`${label} 설명`, finding.description],
+      [`${label} Confidence`, confidenceLabel(finding.confidence)], [`${label} 가이드`, finding.guide]);
+    details.push(...evidenceDetails(finding.evidenceIds).map(([key, item]) => [`${label} ${key}`, item]));
+  }
+
+  function objectAuthorizationRows() {
+    const requirements = factsOf("OBJECT_AUTHORIZATION_REQUIREMENT");
+    const paths = factsOf("OBJECT_ACCESS_PATH");
+    const checks = factsOf("OBJECT_AUTHORIZATION");
+    const credentials = ["JWT_USAGE", "PRINCIPAL_USAGE", "HEADER_USAGE"]
+      .flatMap((type) => factsOf(type));
+    const relations = state.report.relations || [];
+    const rows = [];
+
+    requirements.forEach((requirement) => {
+      const requirementAttributes = attributesOf(requirement);
+      const requirementPaths = paths.filter((path) => {
+        const attributes = attributesOf(path);
+        return attributes.requirementKey === requirement.subjectKey
+          && attributes.handler === requirementAttributes.handler
+          && attributes.resourceType === requirementAttributes.resourceType;
+      });
+      const pathItems = requirementPaths.length ? requirementPaths : [null];
+      pathItems.forEach((path) => {
+        const pathAttributes = attributesOf(path);
+        const objectChecks = checks.filter((check) => {
+          const attributes = attributesOf(check);
+          return attributes.handler === requirementAttributes.handler
+            && (!attributes.resourceType || attributes.resourceType === requirementAttributes.resourceType);
+        });
+        const checkKeys = new Set(objectChecks.map((check) => check.subjectKey));
+        const securedRelations = relations.filter((relation) => relation.type === "SECURED_BY"
+          && relation.sourceKey === requirementAttributes.handler
+          && checkKeys.has(relation.targetKey));
+        const usesRelations = relations.filter((relation) => relation.type === "USES_FOR_AUTHORIZATION"
+          && checkKeys.has(relation.targetKey));
+        const linkedCredentials = credentials.filter((credential) =>
+          usesRelations.some((relation) => relation.sourceKey === credential.subjectKey));
+        const facts = [requirement, path, ...objectChecks, ...linkedCredentials].filter(Boolean);
+        const evidenceIds = evidenceIdsOf(facts.concat(securedRelations, usesRelations));
+        rows.push({
+          requirement,
+          path,
+          checks: objectChecks,
+          credentials: linkedCredentials,
+          relations: [...securedRelations, ...usesRelations],
+          findings: findingsForEvidence("OBJECT_BINDING", evidenceIds),
+          evidenceIds,
+          handler: requirementAttributes.handler,
+          resourceType: requirementAttributes.resourceType,
+          pathOutcome: path ? pathAttributes.pathOutcome : null,
+          coverage: path ? pathAttributes.coverage : null
+        });
+      });
+    });
+    return rows;
+  }
+
+  function objectAuthorizationDetails(row) {
+    const details = [];
+    appendFactDetails(details, "요구", row.requirement);
+    appendFactDetails(details, "접근 경로", row.path);
+    row.checks.forEach((fact, index) => appendFactDetails(details, `인가 검사 ${index + 1}`, fact));
+    row.credentials.forEach((fact, index) => appendFactDetails(details, `인증정보 ${index + 1}`, fact));
+    row.relations.forEach((relation, index) => appendRelationDetails(details, `관계 ${index + 1}`, relation));
+    if (!row.relations.length) details.push(["관계", "확정 관계 없음"]);
+    row.findings.forEach((finding, index) => appendFindingDetails(details, `Finding ${index + 1}`, finding));
+    if (!row.findings.length) details.push(["OBJECT_BINDING Finding", "현재 Report에 없음. Finding 0건은 안전 판정이 아님"]);
+    return details;
+  }
+
+  function renderObjectAuthorization(parent) {
+    const rows = objectAuthorizationRows();
+    analysisNotice(parent, "OBJECT_BINDING Rule 미통합",
+      "객체 인가 Fact·Relation·Evidence는 표시하지만 현재 SecurityRuleEngine에 등록되지 않은 독립 Rule이다. Finding 0건은 안전 판정이 아니다.");
+    renderList(parent, rows, [
+      { label: "Handler", value: (item) => item.handler, code: true, truncate: true, width: "27%" },
+      { label: "Resource", value: (item) => item.resourceType, truncate: true, width: "18%" },
+      { label: "요구", value: (item) => attributesOf(item.requirement).requirementKind, width: "11%" },
+      { label: "Principal", value: (item) => attributesOf(item.requirement).principalSource, width: "14%" },
+      { label: "경로 판정", value: (item) => item.pathOutcome || "미수집", display: (item) => item === "미수집" ? item : analysisOutcomeLabel(item), badge: true, badgeTone: (item) => item.pathOutcome || "unknown", width: "18%" },
+      { label: "Coverage", value: (item) => item.coverage || "미수집", display: (item) => item === "미수집" ? item : coverageLabel(item), badge: true, badgeTone: (item) => item.coverage || "unknown", width: "18%" }
+    ], objectAuthorizationDetails, null, "analysis-table");
+  }
+
+  function businessStateRows() {
+    const states = factsOf("BUSINESS_SECURITY_STATE");
+    const evaluations = factsOf("BUSINESS_STATE_EVALUATION");
+    const relations = state.report.relations || [];
+    const rows = [];
+    states.forEach((stateFact) => {
+      const stateAttributes = attributesOf(stateFact);
+      const stateEvaluations = evaluations.filter((evaluation) => {
+        const attributes = attributesOf(evaluation);
+        return attributes.requirementKey === stateFact.subjectKey
+          && attributes.handler === stateAttributes.handler
+          && attributes.stateName === stateAttributes.stateName;
+      });
+      const evaluationItems = stateEvaluations.length ? stateEvaluations : [null];
+      evaluationItems.forEach((evaluation) => {
+        const related = relations.filter((relation) => relation.type === "SECURITY_STATE"
+          && ((relation.sourceKey === stateFact.subjectKey && relation.targetKey === stateAttributes.handler)
+            || (relation.sourceKey === stateAttributes.handler && relation.targetKey === stateFact.subjectKey)));
+        const facts = [stateFact, evaluation].filter(Boolean);
+        const evidenceIds = evidenceIdsOf(facts.concat(related));
+        rows.push({
+          state: stateFact,
+          evaluation,
+          relations: related,
+          findings: findingsForEvidence("STATE_BYPASS", evidenceIds),
+          handler: stateAttributes.handler,
+          stateName: stateAttributes.stateName,
+          stateAction: stateAttributes.stateAction,
+          claim: stateAttributes.claim || stateAttributes.claimName,
+          pathOutcome: evaluation && attributesOf(evaluation).pathOutcome,
+          coverage: evaluation && attributesOf(evaluation).coverage
+        });
+      });
+    });
+    return rows;
+  }
+
+  function businessStateDetails(row) {
+    const details = [];
+    appendFactDetails(details, "상태 선언", row.state);
+    appendFactDetails(details, "상태 평가", row.evaluation);
+    row.relations.forEach((relation, index) => appendRelationDetails(details, `관계 ${index + 1}`, relation));
+    if (!row.relations.length) details.push(["관계", "확정 관계 없음"]);
+    row.findings.forEach((finding, index) => appendFindingDetails(details, `Finding ${index + 1}`, finding));
+    if (!row.findings.length) details.push(["STATE_BYPASS Finding", "현재 Report에 없음. Finding 0건은 안전 판정이 아님"]);
+    return details;
+  }
+
+  function renderBusinessState(parent) {
+    const rows = businessStateRows();
+    analysisNotice(parent, "STATE_BYPASS Rule 미통합",
+      "업무 보안 상태 Fact·Relation·Evidence는 표시하지만 현재 SecurityRuleEngine에 등록되지 않은 독립 Rule이다. 미확정·부분 분석을 성공으로 해석하지 않는다.");
+    renderList(parent, rows, [
+      { label: "Handler", value: (item) => item.handler, code: true, truncate: true, width: "28%" },
+      { label: "상태", value: (item) => item.stateName, code: true, width: "15%" },
+      { label: "Action", value: (item) => item.stateAction, width: "12%" },
+      { label: "Claim", value: (item) => item.claim, truncate: true, width: "14%" },
+      { label: "평가 판정", value: (item) => item.pathOutcome || "미수집", display: (item) => item === "미수집" ? item : analysisOutcomeLabel(item), badge: true, badgeTone: (item) => item.pathOutcome || "unknown", width: "17%" },
+      { label: "Coverage", value: (item) => item.coverage || "미수집", display: (item) => item === "미수집" ? item : coverageLabel(item), badge: true, badgeTone: (item) => item.coverage || "unknown", width: "18%" }
+    ], businessStateDetails, null, "analysis-table");
+  }
+
+  function analysisNotice(parent, title, message) {
+    const notice = create("p", undefined, "analysis-notice");
+    notice.append(create("strong", title), create("span", ` ${message}`));
+    parent.append(notice);
+  }
+
   function renderDashboard(parent) {
     const report = state.report;
+    const snapshot = report.currentSnapshot || {};
     const statusArea = create("section", undefined, "dashboard-status");
     [
+      ["서비스", snapshot.serviceId],
       ["현재 실행", statusLabel(report.phase)],
       ["수집 상태", statusSummary(report.collectionStatuses)],
       ["분석 상태", statusSummary(report.analysisStatuses)],
@@ -384,19 +608,23 @@
     });
     const counts = create("section", undefined, "dashboard-counts");
     [
-      ["엔드포인트", factsOf("ENDPOINT_MAPPING").length],
-      ["보안 체인", factsOf("SECURITY_CHAIN").length],
-      ["URL 정책", factsOf("URL_AUTHORIZATION").length],
-      ["필터", factsOf("FILTER_REGISTRATION").length],
-      ["관계", (report.relations || []).length],
-      ["분석 근거", (report.evidence || []).length],
-      ["진단 결과", (report.currentSnapshot && report.currentSnapshot.findings || []).length]
+      ["ENDPOINT_MAPPING", factsOf("ENDPOINT_MAPPING").length],
+      ["OBJECT_AUTHORIZATION_REQUIREMENT", factsOf("OBJECT_AUTHORIZATION_REQUIREMENT").length],
+      ["OBJECT_AUTHORIZATION", factsOf("OBJECT_AUTHORIZATION").length],
+      ["OBJECT_ACCESS_PATH", factsOf("OBJECT_ACCESS_PATH").length],
+      ["BUSINESS_SECURITY_STATE", factsOf("BUSINESS_SECURITY_STATE").length],
+      ["BUSINESS_STATE_EVALUATION", factsOf("BUSINESS_STATE_EVALUATION").length],
+      ["Finding", findingsOf().length],
+      ["진단 Diagnostic", (report.diagnostics || []).length]
     ].forEach(([label, count]) => {
       const section = document.createElement("div");
       section.append(create("span", label), create("span", count, "count-value"));
       counts.append(section);
     });
-    parent.append(statusArea, counts);
+    const notice = create("p", undefined, "analysis-notice");
+    notice.append(create("strong", "보안 판정 주의"),
+      create("span", " Finding 0건, UNKNOWN, PARTIAL은 안전 또는 보호 완료를 의미하지 않는다. 표시된 Evidence와 관계의 확정 범위를 함께 확인해야 한다."));
+    parent.append(statusArea, counts, notice);
   }
 
   function endpointDetails(endpoint) {
@@ -574,6 +802,8 @@
     chains: renderChains,
     policies: renderPolicies,
     filters: renderFilters,
+    "object-authorization": renderObjectAuthorization,
+    "business-state": renderBusinessState,
     findings: renderFindings,
     evidence: renderEvidence,
     diagnostics: renderDiagnostics

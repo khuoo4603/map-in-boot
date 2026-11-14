@@ -51,6 +51,7 @@ import org.springframework.web.context.WebApplicationContext;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.security.test.web.servlet.setup.SecurityMockMvcConfigurers.springSecurity;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.options;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
@@ -65,7 +66,9 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @TestPropertySource(properties = {
     "DEMO_TEST_PASSWORD=demoTestSecret123!",
     "demo.jwt.issuer=demo-identity",
-    "demo.jwt.audience=demo-services"
+    "demo.jwt.audience=demo-services",
+    "spring.profiles.active=develop",
+    "mapinboot.web.enabled=true"
 })
 class IdentityAuthIntegrationTest {
 
@@ -484,6 +487,44 @@ class IdentityAuthIntegrationTest {
     void meWithoutTokenFails() throws Exception {
         mockMvc.perform(get("/api/auth/me"))
                 .andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    @DisplayName("미인증 진단 접근은 비밀번호 전용 개발 로그인으로 연결되고 관리자 Session을 재사용")
+    void diagnosticLoginUsesPasswordOnlyAndAdminSession() throws Exception {
+        mockMvc.perform(get("/mapinboot/test"))
+                .andExpect(status().isFound())
+                .andExpect(header().string(HttpHeaders.LOCATION, "/mapinboot-login"));
+
+        mockMvc.perform(get("/mapinboot-login"))
+                .andExpect(status().isOk())
+                .andExpect(header().string(HttpHeaders.CONTENT_TYPE, org.hamcrest.Matchers.containsString("text/html")))
+                .andExpect(content().string(org.hamcrest.Matchers.containsString("type=\"password\"")))
+                .andExpect(content().string(org.hamcrest.Matchers.not(org.hamcrest.Matchers.containsString("mib.dev"))))
+                .andExpect(content().string(org.hamcrest.Matchers.not(org.hamcrest.Matchers.containsString("name=\"username\""))));
+
+        CsrfSession csrf = csrfSession();
+        MvcResult login = mockMvc.perform(post("/api/auth/login")
+                        .cookie(csrf.cookie())
+                        .header("X-XSRF-TOKEN", csrf.token())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"username\":\"mib.dev\",\"password\":\"demoTestSecret123!\"}"))
+                .andExpect(status().isOk())
+                .andReturn();
+        Cookie adminSession = login.getResponse().getCookie("MIB_IDENTITY_SESSION");
+
+        mockMvc.perform(get("/mapinboot/test").cookie(adminSession))
+                .andExpect(status().isOk());
+    }
+
+    @Test
+    @DisplayName("일반 사용자 Session은 진단 페이지에서 관리자 권한 부족으로 차단")
+    void regularSessionCannotAccessDiagnosticPage() throws Exception {
+        Cookie customerSession = login("customer.a", csrfSession())
+                .getResponse().getCookie("MIB_IDENTITY_SESSION");
+
+        mockMvc.perform(get("/mapinboot/test").cookie(customerSession))
+                .andExpect(status().isForbidden());
     }
 
     @Test

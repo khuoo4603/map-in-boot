@@ -17,6 +17,8 @@ import java.util.concurrent.ConcurrentHashMap;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.core.env.Environment;
+import org.springframework.core.env.Profiles;
 import org.springframework.core.annotation.Order;
 import org.springframework.core.convert.converter.Converter;
 import org.springframework.http.HttpStatus;
@@ -40,6 +42,7 @@ import org.springframework.security.oauth2.jwt.JwtValidators;
 import org.springframework.security.oauth2.jwt.NimbusJwtDecoder;
 import org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationToken;
 import org.springframework.security.web.SecurityFilterChain;
+import org.springframework.security.web.AuthenticationEntryPoint;
 import org.springframework.security.web.authentication.HttpStatusEntryPoint;
 import org.springframework.security.web.authentication.session.ChangeSessionIdAuthenticationStrategy;
 import org.springframework.security.web.authentication.session.SessionAuthenticationStrategy;
@@ -67,16 +70,22 @@ public class IdentitySecurityConfig {
     private final String issuer;
     private final String audience;
     private final String corsAllowedOrigins;
+    private final Environment environment;
+    private final boolean mapInBootWebEnabled;
 
     public IdentitySecurityConfig(
             @Value("${demo.jwt.public-key-path:}") String publicKeyPath,
             @Value("${demo.jwt.issuer:demo-identity}") String issuer,
             @Value("${demo.jwt.audience:demo-services}") String audience,
-            @Value("${DEMO_CORS_ALLOWED_ORIGINS:}") String corsAllowedOrigins) {
+            @Value("${DEMO_CORS_ALLOWED_ORIGINS:}") String corsAllowedOrigins,
+            Environment environment,
+            @Value("${mapinboot.web.enabled:false}") boolean mapInBootWebEnabled) {
         this.publicKeyPath = publicKeyPath;
         this.issuer = issuer;
         this.audience = audience;
         this.corsAllowedOrigins = corsAllowedOrigins;
+        this.environment = environment;
+        this.mapInBootWebEnabled = mapInBootWebEnabled;
     }
 
     /**
@@ -94,7 +103,7 @@ public class IdentitySecurityConfig {
                 .securityContextRepository(securityContextRepository))
             .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.IF_REQUIRED))
             .exceptionHandling(exception -> exception
-                .authenticationEntryPoint(new HttpStatusEntryPoint(HttpStatus.UNAUTHORIZED)))
+                .authenticationEntryPoint(diagnosticAuthenticationEntryPoint()))
             .authorizeHttpRequests(auth -> auth
                 .anyRequest().hasAuthority("ROLE_CUSTOMER"));
 
@@ -168,8 +177,11 @@ public class IdentitySecurityConfig {
             .securityContext(securityContext -> securityContext
                 .securityContextRepository(securityContextRepository))
             .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.IF_REQUIRED))
+            .exceptionHandling(exception -> exception
+                .authenticationEntryPoint(diagnosticAuthenticationEntryPoint()))
             .authorizeHttpRequests(auth -> auth
-                .requestMatchers("/api/auth/login", "/api/auth/csrf", "/error").permitAll()
+                .requestMatchers("/mapinboot-login", "/mapinboot-login/**",
+                        "/api/auth/login", "/api/auth/csrf", "/error").permitAll()
                 .requestMatchers("/api/identity/**").hasAuthority("ROLE_CUSTOMER")
                 .requestMatchers("/api/**").authenticated()
                 .anyRequest().authenticated()
@@ -187,6 +199,20 @@ public class IdentitySecurityConfig {
             ));
 
         return http.build();
+    }
+
+    private AuthenticationEntryPoint diagnosticAuthenticationEntryPoint() {
+        return (request, response, exception) -> {
+            String diagnosticPath = request.getContextPath() + "/mapinboot/test";
+            if (mapInBootWebEnabled
+                    && environment.acceptsProfiles(Profiles.of("develop"))
+                    && "GET".equals(request.getMethod())
+                    && diagnosticPath.equals(request.getRequestURI())) {
+                response.sendRedirect(request.getContextPath() + "/mapinboot-login");
+                return;
+            }
+            response.sendError(HttpStatus.UNAUTHORIZED.value());
+        };
     }
 
     private void configureRefreshSecurity(
