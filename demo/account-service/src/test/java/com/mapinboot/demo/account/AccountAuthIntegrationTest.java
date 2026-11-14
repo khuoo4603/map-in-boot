@@ -10,6 +10,17 @@ import com.mapinboot.demo.account.repository.InMemoryLoanApplicationRepository;
 import com.mapinboot.demo.account.repository.InMemoryLoanProductRepository;
 import com.mapinboot.demo.account.repository.InMemorySavingsProductRepository;
 import com.mapinboot.demo.account.repository.InMemorySavingsSubscriptionRepository;
+import com.mapinboot.core.analysis.AnalysisProvider;
+import com.mapinboot.core.analysis.model.AnalysisContext;
+import com.mapinboot.core.analysis.model.AnalysisReport;
+import com.mapinboot.core.collection.CollectionProvider;
+import com.mapinboot.core.collection.model.CollectionContext;
+import com.mapinboot.core.collection.model.CollectionReport;
+import com.mapinboot.core.evidence.Fact;
+import com.mapinboot.security.analyzer.BusinessStateAnalysisAdapter;
+import com.mapinboot.security.collector.BusinessStateCollectorAdapter;
+import com.mapinboot.security.finding.StateBypassFindingRule;
+import com.mapinboot.starter.collector.EndpointMappingCollectorAdapter;
 import java.io.FileOutputStream;
 import java.nio.file.Path;
 import java.security.KeyPair;
@@ -47,6 +58,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Account 서비스 JWT 검증 및 본인 계좌 조회 인가 테스트
@@ -637,6 +650,32 @@ class AccountAuthIntegrationTest {
                 .get()
                 .extracting(application -> application.getApplicantId())
                 .isEqualTo("USER001");
+    }
+
+    @Test
+    @DisplayName("N09와 V09의 상태 선언·실제 Bytecode 평가가 분리됨")
+    void analyzesLoanStateRequirementAndBypassFromActualHandlers() {
+        CollectionReport collection = new CollectionProvider().execute(
+                new CollectionContext(context, "account", "test"),
+                List.of(new EndpointMappingCollectorAdapter(), new BusinessStateCollectorAdapter()));
+
+        List<Fact> evaluations = collection.facts().stream()
+                .filter(fact -> "BUSINESS_STATE_EVALUATION".equals(fact.type()))
+                .filter(fact -> fact.attributes().getOrDefault("handler", "")
+                        .contains("LoanApplicationController#create"))
+                .toList();
+        assertEquals(2, evaluations.size());
+        assertTrue(evaluations.stream().anyMatch(fact ->
+                fact.attributes().get("handler").contains("createApplication")
+                        && "ENFORCED".equals(fact.attributes().get("pathOutcome"))));
+        assertTrue(evaluations.stream().anyMatch(fact ->
+                fact.attributes().get("handler").contains("createVulnerableApplication")
+                        && "BYPASS_PATH".equals(fact.attributes().get("pathOutcome"))));
+
+        AnalysisReport analysis = new AnalysisProvider().execute(
+                new AnalysisContext(collection, "account"),
+                List.of(new BusinessStateAnalysisAdapter()));
+        assertEquals(1, new StateBypassFindingRule().evaluate(analysis).size());
     }
 
     @Test

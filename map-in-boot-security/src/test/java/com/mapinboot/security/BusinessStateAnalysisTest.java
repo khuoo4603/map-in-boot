@@ -20,6 +20,7 @@ import com.mapinboot.core.annotation.RequiresSecurityState;
 import com.mapinboot.security.analyzer.BusinessStateAnalysisAdapter;
 import com.mapinboot.security.autoconfigure.MapInBootSecurityAutoConfiguration;
 import com.mapinboot.security.collector.BusinessStateCollectorAdapter;
+import com.mapinboot.security.finding.StateBypassFindingRule;
 import com.mapinboot.starter.collector.EndpointMappingCollectorAdapter;
 import com.mapinboot.starter.snapshot.SnapshotAssembler;
 import java.util.List;
@@ -27,8 +28,11 @@ import org.junit.jupiter.api.Test;
 import org.springframework.context.annotation.AnnotationConfigApplicationContext;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.servlet.mvc.method.annotation.RequestMappingHandlerMapping;
 
@@ -91,6 +95,39 @@ class BusinessStateAnalysisTest {
         }
     }
 
+    @Test
+    void evaluatesCompiledStateChecksAndBypassPaths() {
+        try (AnnotationConfigApplicationContext context = context(LoanFixtureConfiguration.class)) {
+            CollectionReport collection = new CollectionProvider().execute(
+                    new CollectionContext(context, "fixture", "instance"),
+                    List.of(new EndpointMappingCollectorAdapter(), new BusinessStateCollectorAdapter()));
+
+            List<Fact> evaluations = collection.facts().stream()
+                    .filter(fact -> "BUSINESS_STATE_EVALUATION".equals(fact.type()))
+                    .toList();
+            assertEquals(2, evaluations.size());
+            assertTrue(evaluations.stream().anyMatch(fact ->
+                    "ENFORCED".equals(fact.attributes().get("pathOutcome"))));
+            assertTrue(evaluations.stream().anyMatch(fact ->
+                    "BYPASS_PATH".equals(fact.attributes().get("pathOutcome"))));
+            assertTrue(evaluations.stream().allMatch(fact ->
+                    "COMPLETE_SUPPORTED_PATH".equals(fact.attributes().get("coverage"))));
+
+            AnalysisReport analysis = new AnalysisProvider().execute(
+                    new AnalysisContext(collection, "fixture"),
+                    List.of(new BusinessStateAnalysisAdapter()));
+            SecurityGraph graph = new GraphBuilder().build("fixture", analysis);
+            assertTrue(graph.nodes().stream().anyMatch(node ->
+                    "BUSINESS_STATE_EVALUATION".equals(node.attributes().get("factType"))));
+
+            var findings = new StateBypassFindingRule().evaluate(analysis);
+            assertEquals(1, findings.size());
+            assertEquals("STATE_BYPASS", findings.get(0).ruleId());
+            assertTrue(findings.get(0).evidenceIds().stream()
+                    .allMatch(id -> analysis.evidence().stream().anyMatch(item -> item.id().equals(id))));
+        }
+    }
+
     private AnnotationConfigApplicationContext context(Class<?>... configurations) {
         AnnotationConfigApplicationContext context = new AnnotationConfigApplicationContext();
         context.register(configurations);
@@ -111,6 +148,19 @@ class BusinessStateAnalysisTest {
         }
     }
 
+    @Configuration(proxyBeanMethods = false)
+    static class LoanFixtureConfiguration {
+        @Bean
+        LoanStateController loanStateController() {
+            return new LoanStateController(new LoanRepository());
+        }
+
+        @Bean
+        RequestMappingHandlerMapping requestMappingHandlerMapping() {
+            return new RequestMappingHandlerMapping();
+        }
+    }
+
     @RestController
     static class StateController {
         @GetMapping("/state/required")
@@ -123,6 +173,51 @@ class BusinessStateAnalysisTest {
         @ProducesSecurityState("identity_verified")
         public ResponseEntity<Void> produced() {
             return ResponseEntity.ok().build();
+        }
+    }
+
+    @RestController
+    static class LoanStateController {
+        private final LoanRepository repository;
+
+        LoanStateController(LoanRepository repository) {
+            this.repository = repository;
+        }
+
+        @PostMapping("/loan/normal")
+        @RequiresSecurityState(value = "identity_verified", claim = "identity_verified")
+        ResponseEntity<Void> normal(Jwt jwt) {
+            if (!isIdentityVerified(jwt)) {
+                return denied();
+            }
+            return submit();
+        }
+
+        @PostMapping("/loan/bypass")
+        @RequiresSecurityState(value = "identity_verified", claim = "identity_verified")
+        ResponseEntity<Void> bypass(Jwt jwt) {
+            if (jwt == null) {
+                return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+            }
+            return submit();
+        }
+
+        private boolean isIdentityVerified(Jwt jwt) {
+            return Boolean.TRUE.equals(jwt.getClaims().get("identity_verified"));
+        }
+
+        private ResponseEntity<Void> denied() {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN).build();
+        }
+
+        private ResponseEntity<Void> submit() {
+            repository.save();
+            return ResponseEntity.status(HttpStatus.CREATED).build();
+        }
+    }
+
+    static class LoanRepository {
+        void save() {
         }
     }
 }

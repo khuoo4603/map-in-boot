@@ -1,5 +1,6 @@
 package com.mapinboot.demo.account.controller;
 
+import com.mapinboot.core.annotation.RequiresSecurityState;
 import com.mapinboot.demo.account.model.DemoLoanApplication;
 import com.mapinboot.demo.account.model.DemoLoanProduct;
 import com.mapinboot.demo.account.repository.InMemoryLoanApplicationRepository;
@@ -33,6 +34,7 @@ public class LoanApplicationController {
 
     /** 본인확인 완료 고객의 대출 신청 */
     @PostMapping("/api/secured/loans/applications")
+    @RequiresSecurityState(value = "identity_verified", claim = "identity_verified")
     public ResponseEntity<?> createApplication(
             @RequestBody LoanApplicationRequest request,
             @AuthenticationPrincipal Jwt jwt) {
@@ -54,6 +56,7 @@ public class LoanApplicationController {
      * Note: SDK는 이 주석을 탐지 근거로 사용하지 않음
      */
     @PostMapping("/api/loans/applications")
+    @RequiresSecurityState(value = "identity_verified", claim = "identity_verified")
     public ResponseEntity<?> createVulnerableApplication(
             @RequestBody LoanApplicationRequest request,
             @AuthenticationPrincipal Jwt jwt) {

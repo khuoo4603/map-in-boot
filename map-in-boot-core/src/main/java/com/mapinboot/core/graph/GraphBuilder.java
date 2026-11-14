@@ -47,7 +47,10 @@ public class GraphBuilder {
                     "handler", "declaringMethod", "requirementKind", "resourceType", "principalSource")),
             Map.entry("OBJECT_ACCESS_PATH", List.of(
                     "handler", "codeLocation", "resourceType", "requirementKey", "pathOutcome", "coverage", "principalSource")),
-            Map.entry("BUSINESS_SECURITY_STATE", List.of("stateName", "stateAction", "declaringMethod")));
+            Map.entry("BUSINESS_SECURITY_STATE", List.of("stateName", "stateAction", "declaringMethod")),
+            Map.entry("BUSINESS_STATE_EVALUATION", List.of(
+                    "handler", "requirementKey", "stateName", "claimName", "codeLocation",
+                    "pathOutcome", "coverage", "evaluationScope")));
 
     private final StableIdGenerator idGenerator = new StableIdGenerator();
 
@@ -97,6 +100,9 @@ public class GraphBuilder {
                     withFactType(fact), fact.evidenceIds(), nodesById, nodeIdsByStructuralKey);
             case "JWT_USAGE", "SESSION_USAGE", "HEADER_USAGE", "PRINCIPAL_USAGE", "AUTHORITY_MAPPING" -> addNode(serviceId, NodeType.SECURITY_DATA, fact.subjectKey(), fact.subjectKey(), fact.attributes(), fact.evidenceIds(), nodesById, nodeIdsByStructuralKey);
             case "BUSINESS_SECURITY_STATE" -> addNode(serviceId, NodeType.BUSINESS_SECURITY_STATE, fact.subjectKey(), fact.subjectKey(), fact.attributes(), fact.evidenceIds(), nodesById, nodeIdsByStructuralKey);
+            case "BUSINESS_STATE_EVALUATION" -> addNode(
+                    serviceId, NodeType.BUSINESS_SECURITY_STATE, fact.subjectKey(), fact.subjectKey(),
+                    withFactType(fact), fact.evidenceIds(), nodesById, nodeIdsByStructuralKey);
             default -> invalidGraph("지원하지 않는 Fact 유형");
         }
     }
@@ -178,6 +184,16 @@ public class GraphBuilder {
         if ("OBJECT_ACCESS_PATH".equals(fact.type())
                 && !Set.of("COMPLETE_SUPPORTED_PATH", "INCOMPLETE").contains(fact.attributes().get("coverage"))) {
             invalidGraph("객체 접근 경로 범위 오류");
+        }
+        if ("BUSINESS_STATE_EVALUATION".equals(fact.type())
+                && !Set.of("ENFORCED", "BYPASS_PATH", "UNRESOLVED")
+                .contains(fact.attributes().get("pathOutcome"))) {
+            invalidGraph("업무 상태 평가 결과 오류");
+        }
+        if ("BUSINESS_STATE_EVALUATION".equals(fact.type())
+                && !Set.of("COMPLETE_SUPPORTED_PATH", "INCOMPLETE")
+                .contains(fact.attributes().get("coverage"))) {
+            invalidGraph("업무 상태 평가 범위 오류");
         }
         if ("ENDPOINT_MAPPING".equals(fact.type()) && !fact.attributes().get("httpMethod").equals(fact.attributes().get("httpMethod").toUpperCase(Locale.ROOT))) {
             invalidGraph("HTTP Method 형식 오류");
