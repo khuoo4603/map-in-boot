@@ -24,17 +24,19 @@ button { font: inherit; font-weight: 400; cursor: pointer; }
 .dashboard-status span { display: block; color: #8994a2; font-size: 12px; }.dashboard-status .status-value { margin-top: 7px; color: #46576a; font-size: 14px; }
 .dashboard-counts { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; margin-bottom: 16px; }
 .dashboard-counts div { min-height: 61px; padding: 11px 13px; border: 1px solid #e2e6eb; border-radius: 6px; background: #fff; }.dashboard-counts span { display: block; color: #8994a2; font-size: 12px; }.dashboard-counts .count-value { margin-top: 5px; color: #3f5063; font-size: 17px; }
+.analysis-notice { margin: 0 0 16px; padding: 11px 13px; border: 1px solid #eadfb9; border-radius: 6px; color: #77621d; background: #fffbed; font-size: 12px; line-height: 1.6; }.analysis-notice strong { color: #5e4b0c; font-weight: 600; }.analysis-notice span { margin-left: 4px; }
 .list-area { width: 100%; min-width: 0; border: 1px solid #e2e6eb; border-radius: 7px; background: #fff; overflow: hidden; }
 .count { display: block; padding: 12px 14px; border-bottom: 1px solid #e8ebef; color: #7a8796; font-size: 12px; }
 .table-wrap { width: 100%; min-width: 0; overflow-x: auto; }
 table { width: 100%; min-width: 680px; border-collapse: collapse; table-layout: fixed; font-size: 13px; }
 .filter-table { min-width: 900px; }
+.analysis-table { min-width: 1080px; }
 th, td { padding: 10px 12px; border-bottom: 1px solid #edf0f2; color: #566576; text-align: left; vertical-align: middle; font-weight: 400; }
 th { color: #7e8b9b; white-space: nowrap; }
 tbody tr { cursor: pointer; }tbody tr:hover { background: #f7faff; }tbody tr:last-child td { border-bottom: 0; }tbody tr.not-selectable { cursor: default; }tbody tr.not-selectable:hover { background: transparent; }
 .truncate { display: block; max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 code { color: #425e7b; font-family: "Cascadia Code", Consolas, monospace; font-size: 12px; }
-.badge { display: inline-block; padding: 2px 6px; border-radius: 999px; color: #667788; background: #f0f3f6; font-size: 11px; font-weight: 400; }.badge.ready,.badge.completed,.badge.confirmed,.badge.matched,.badge.included { color: #357858; background: #edf8f0; }.badge.partial,.badge.likely { color: #8b6a18; background: #fff8df; }.badge.unmatched,.badge.not-selected { color: #7b8795; background: #f1f3f5; }.badge.security { color: #2f68a0; background: #edf5ff; }.badge.servlet { color: #6b5a8e; background: #f2effa; }.badge.unknown,.badge.failed { color: #a54857; background: #fff1f2; }
+.badge { display: inline-block; padding: 2px 6px; border-radius: 999px; color: #667788; background: #f0f3f6; font-size: 11px; font-weight: 400; }.badge.ready,.badge.completed,.badge.confirmed,.badge.matched,.badge.included,.badge.guarded,.badge.enforced,.badge.complete_supported_path { color: #357858; background: #edf8f0; }.badge.partial,.badge.likely { color: #8b6a18; background: #fff8df; }.badge.unmatched,.badge.not-selected,.badge.incomplete { color: #7b8795; background: #f1f3f5; }.badge.security { color: #2f68a0; background: #edf5ff; }.badge.servlet { color: #6b5a8e; background: #f2effa; }.badge.unknown,.badge.failed,.badge.unresolved,.badge.unguarded,.badge.source_mismatch,.badge.bypass_path { color: #a54857; background: #fff1f2; }
 .inspector { margin: 12px; padding: 13px; border: 1px solid #dfe7f0; border-radius: 5px; background: #fafcff; }.key-values { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px 18px; }.key-values dl { min-width: 0; margin: 0; }.key-values dt { color: #8994a2; font-size: 11px; }.key-values dd { margin: 3px 0 0; color: #4d6075; overflow-wrap: anywhere; font-size: 13px; }
 .empty { padding: 22px; color: #8994a2; text-align: center; }
 .endpoint-select { margin: 0 0 10px; padding: 6px 8px; border: 1px solid #dfe4e9; border-radius: 5px; color: #566576; background: #fff; }

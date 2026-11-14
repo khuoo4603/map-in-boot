@@ -268,7 +268,9 @@ class WebAccessSmokeIntegrationTest {
             mvc.perform(get("/mapinboot/test").with(basic("admin", "password")))
                     .andExpect(status().isOk())
                     .andExpect(content().contentTypeCompatibleWith(MediaType.TEXT_HTML))
-                    .andExpect(content().string(org.hamcrest.Matchers.containsString("Map in Boot Development Diagnostics")));
+                    .andExpect(content().string(org.hamcrest.Matchers.containsString("Map in Boot Development Diagnostics")))
+                    .andExpect(content().string(org.hamcrest.Matchers.containsString("data-view=\"object-authorization\"")))
+                    .andExpect(content().string(org.hamcrest.Matchers.containsString("data-view=\"business-state\"")));
             mvc.perform(get("/mapinboot/test/assets/development-diagnostic.css"))
                     .andExpect(status().isUnauthorized());
             mvc.perform(get("/mapinboot/test/assets/development-diagnostic.css").with(basic("viewer", "password")))
@@ -278,7 +280,10 @@ class WebAccessSmokeIntegrationTest {
                     .andExpect(content().contentTypeCompatibleWith(MediaType.valueOf("text/css")));
             mvc.perform(get("/mapinboot/test/assets/development-diagnostic.js").with(basic("admin", "password")))
                     .andExpect(status().isOk())
-                    .andExpect(content().contentTypeCompatibleWith(MediaType.valueOf("text/javascript")));
+                    .andExpect(content().contentTypeCompatibleWith(MediaType.valueOf("text/javascript")))
+                    .andExpect(content().string(org.hamcrest.Matchers.containsString("OBJECT_AUTHORIZATION_REQUIREMENT")))
+                    .andExpect(content().string(org.hamcrest.Matchers.containsString("BUSINESS_STATE_EVALUATION")))
+                    .andExpect(content().string(org.hamcrest.Matchers.containsString("STATE_BYPASS Rule 미통합")));
             mvc.perform(get("/mapinboot/test/api/report"))
                     .andExpect(status().isUnauthorized());
             mvc.perform(get("/mapinboot/test/api/report").with(basic("viewer", "password")))

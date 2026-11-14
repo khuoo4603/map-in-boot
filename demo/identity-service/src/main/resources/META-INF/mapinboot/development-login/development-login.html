@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Map in Boot 관리자 인증</title>
+  <link rel="stylesheet" href="/mapinboot-login/assets/development-login.css">
+</head>
+<body>
+<main class="login-card" aria-labelledby="login-title">
+  <div class="brand">Map in Boot</div>
+  <h1 id="login-title">관리자 인증</h1>
+  <p class="description">진단 페이지에 접근하려면 관리자 비밀번호를 입력하세요.</p>
+  <form id="login-form" novalidate>
+    <label for="password">관리자 비밀번호</label>
+    <div class="password-field">
+      <input id="password" type="password" autocomplete="current-password" required>
+      <button id="password-toggle" type="button" aria-label="비밀번호 표시">보기</button>
+    </div>
+    <button id="login-button" class="login-button" type="submit">로그인</button>
+    <p id="login-status" class="login-status" role="alert" aria-live="polite"></p>
+  </form>
+</main>
+<script src="/mapinboot-login/assets/development-login.js"></script>
+</body>
+</html>

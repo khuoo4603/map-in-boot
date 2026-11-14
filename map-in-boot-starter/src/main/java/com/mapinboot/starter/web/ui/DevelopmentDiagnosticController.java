@@ -33,8 +33,8 @@ import org.springframework.web.bind.annotation.RestController;
 @RequestMapping("/mapinboot")
 public final class DevelopmentDiagnosticController {
     private static final String RESOURCE_PATH = "META-INF/mapinboot/development-diagnostic/";
-    private static final MediaType TEXT_CSS = MediaType.parseMediaType("text/css");
-    private static final MediaType TEXT_JAVASCRIPT = MediaType.parseMediaType("text/javascript");
+    private static final MediaType TEXT_CSS = MediaType.parseMediaType("text/css;charset=UTF-8");
+    private static final MediaType TEXT_JAVASCRIPT = MediaType.parseMediaType("text/javascript;charset=UTF-8");
 
     private final MapInBootBootstrap bootstrap;
     private final EvidenceDisplayCodeResolver evidenceDisplayCodeResolver = new EvidenceDisplayCodeResolver();
