@@ -128,6 +128,40 @@ class BusinessStateAnalysisTest {
         }
     }
 
+    @Test
+    void doesNotTreatUnreturnedOrUnresolvedStateChecksAsEnforced() {
+        try (AnnotationConfigApplicationContext context = context(StateBoundaryConfiguration.class)) {
+            CollectionReport collection = new CollectionProvider().execute(
+                    new CollectionContext(context, "state-boundary", "instance"),
+                    List.of(new EndpointMappingCollectorAdapter(), new BusinessStateCollectorAdapter()));
+
+            List<Fact> evaluations = collection.facts().stream()
+                    .filter(fact -> "BUSINESS_STATE_EVALUATION".equals(fact.type()))
+                    .toList();
+            assertEquals(4, evaluations.size());
+            assertTrue(evaluations.stream().anyMatch(fact ->
+                    fact.attributes().getOrDefault("handler", "").contains("discardedForbidden")
+                            && "BYPASS_PATH".equals(fact.attributes().get("pathOutcome"))));
+            assertTrue(evaluations.stream().anyMatch(fact ->
+                    fact.attributes().getOrDefault("handler", "").contains("ignoredComparison")
+                            && "BYPASS_PATH".equals(fact.attributes().get("pathOutcome"))));
+            assertTrue(evaluations.stream().anyMatch(fact ->
+                    fact.attributes().getOrDefault("handler", "").contains("businessFirst")
+                            && "BYPASS_PATH".equals(fact.attributes().get("pathOutcome"))));
+            assertTrue(evaluations.stream().anyMatch(fact ->
+                    fact.attributes().getOrDefault("handler", "").contains("externalVerification")
+                            && "UNRESOLVED".equals(fact.attributes().get("pathOutcome"))
+                            && "INCOMPLETE".equals(fact.attributes().get("coverage"))));
+            assertTrue(evaluations.stream().noneMatch(fact ->
+                    "ENFORCED".equals(fact.attributes().get("pathOutcome"))));
+
+            AnalysisReport analysis = new AnalysisProvider().execute(
+                    new AnalysisContext(collection, "state-boundary"),
+                    List.of(new BusinessStateAnalysisAdapter()));
+            assertEquals(3, new StateBypassFindingRule().evaluate(analysis).size());
+        }
+    }
+
     private AnnotationConfigApplicationContext context(Class<?>... configurations) {
         AnnotationConfigApplicationContext context = new AnnotationConfigApplicationContext();
         context.register(configurations);
@@ -153,6 +187,19 @@ class BusinessStateAnalysisTest {
         @Bean
         LoanStateController loanStateController() {
             return new LoanStateController(new LoanRepository());
+        }
+
+        @Bean
+        RequestMappingHandlerMapping requestMappingHandlerMapping() {
+            return new RequestMappingHandlerMapping();
+        }
+    }
+
+    @Configuration(proxyBeanMethods = false)
+    static class StateBoundaryConfiguration {
+        @Bean
+        StateBoundaryController stateBoundaryController() {
+            return new StateBoundaryController(new LoanRepository(), new ExternalStateVerifier());
         }
 
         @Bean
@@ -213,6 +260,71 @@ class BusinessStateAnalysisTest {
         private ResponseEntity<Void> submit() {
             repository.save();
             return ResponseEntity.status(HttpStatus.CREATED).build();
+        }
+    }
+
+    @RestController
+    static class StateBoundaryController {
+        private final LoanRepository repository;
+        private final ExternalStateVerifier stateVerifier;
+
+        StateBoundaryController(LoanRepository repository, ExternalStateVerifier stateVerifier) {
+            this.repository = repository;
+            this.stateVerifier = stateVerifier;
+        }
+
+        @PostMapping("/state-boundary/discarded")
+        @RequiresSecurityState(value = "identity_verified", claim = "identity_verified")
+        ResponseEntity<Void> discardedForbidden(Jwt jwt) {
+            if (!isIdentityVerified(jwt)) {
+                ResponseEntity.status(HttpStatus.FORBIDDEN).build();
+            }
+            return submit();
+        }
+
+        @PostMapping("/state-boundary/ignored")
+        @RequiresSecurityState(value = "identity_verified", claim = "identity_verified")
+        ResponseEntity<Void> ignoredComparison(Jwt jwt) {
+            Boolean.TRUE.equals(jwt.getClaims().get("identity_verified"));
+            return submit();
+        }
+
+        @PostMapping("/state-boundary/first")
+        @RequiresSecurityState(value = "identity_verified", claim = "identity_verified")
+        ResponseEntity<Void> businessFirst(Jwt jwt) {
+            ResponseEntity<Void> result = submit();
+            if (!isIdentityVerified(jwt)) {
+                return denied();
+            }
+            return result;
+        }
+
+        @PostMapping("/state-boundary/external")
+        @RequiresSecurityState(value = "identity_verified", claim = "identity_verified")
+        ResponseEntity<Void> externalVerification(Jwt jwt) {
+            if (!stateVerifier.isVerified(jwt)) {
+                return denied();
+            }
+            return submit();
+        }
+
+        private boolean isIdentityVerified(Jwt jwt) {
+            return Boolean.TRUE.equals(jwt.getClaims().get("identity_verified"));
+        }
+
+        private ResponseEntity<Void> denied() {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN).build();
+        }
+
+        private ResponseEntity<Void> submit() {
+            repository.save();
+            return ResponseEntity.status(HttpStatus.CREATED).build();
+        }
+    }
+
+    static class ExternalStateVerifier {
+        boolean isVerified(Jwt jwt) {
+            return false;
         }
     }
 

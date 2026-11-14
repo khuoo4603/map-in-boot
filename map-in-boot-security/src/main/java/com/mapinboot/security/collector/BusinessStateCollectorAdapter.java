@@ -119,8 +119,7 @@ public class BusinessStateCollectorAdapter extends AbstractCollectorAdapter {
             pathOutcome = "UNRESOLVED";
         } else if (outcome.enforced()) {
             pathOutcome = "ENFORCED";
-        } else if (outcome.businessReached() && !outcome.uncertain()
-                && !outcome.claimRead() && !outcome.comparison()) {
+        } else if (outcome.businessReached() && outcome.bypassPath() && !outcome.uncertain()) {
             pathOutcome = "BYPASS_PATH";
         } else {
             pathOutcome = "UNRESOLVED";
@@ -223,6 +222,7 @@ public class BusinessStateCollectorAdapter extends AbstractCollectorAdapter {
             boolean enforced,
             boolean denialPath,
             boolean businessReached,
+            boolean bypassPath,
             String codeLocation
     ) {
     }
@@ -291,7 +291,7 @@ public class BusinessStateCollectorAdapter extends AbstractCollectorAdapter {
             String descriptor = Type.getMethodDescriptor(method);
             String key = method.getName() + descriptor;
             if (!visited.add(key) || depth > MAX_DEPTH) {
-                return new StateScanOutcome(true, true, false, false, false, false, false, location(method));
+                return new StateScanOutcome(true, true, false, false, false, false, false, false, location(method));
             }
             String resourceName = targetClass.getName().replace('.', '/') + ".class";
             ClassLoader classLoader = targetClass.getClassLoader();
@@ -299,14 +299,14 @@ public class BusinessStateCollectorAdapter extends AbstractCollectorAdapter {
                     ? ClassLoader.getSystemResourceAsStream(resourceName)
                     : classLoader.getResourceAsStream(resourceName);
             if (input == null) {
-                return new StateScanOutcome(false, true, false, false, false, false, false, location(method));
+                return new StateScanOutcome(false, true, false, false, false, false, false, false, location(method));
             }
             try (input) {
                 StateVisitor visitor = new StateVisitor(method, depth, visited);
                 new ClassReader(input).accept(visitor, ClassReader.SKIP_FRAMES);
                 return visitor.result();
             } catch (IOException | RuntimeException exception) {
-                return new StateScanOutcome(false, true, false, false, false, false, false, location(method));
+                return new StateScanOutcome(false, true, false, false, false, false, false, false, location(method));
             }
         }
 
@@ -337,6 +337,7 @@ public class BusinessStateCollectorAdapter extends AbstractCollectorAdapter {
             private boolean claimRead;
             private boolean comparison;
             private boolean businessReached;
+            private boolean forbiddenBuilderPending;
 
             private StateVisitor(Method method, int depth, Set<String> visited) {
                 super(Opcodes.ASM9);
@@ -358,7 +359,7 @@ public class BusinessStateCollectorAdapter extends AbstractCollectorAdapter {
             private StateScanOutcome result() {
                 if (!found) {
                     return new StateScanOutcome(false, true, claimRead, comparison,
-                            false, hasDenial(), businessReached, location(method));
+                            false, hasDenial(), businessReached, false, location(method));
                 }
                 int firstBusiness = instructions.stream()
                         .filter(StateInstruction::business)
@@ -368,12 +369,20 @@ public class BusinessStateCollectorAdapter extends AbstractCollectorAdapter {
                         .filter(StateInstruction::denial)
                         .mapToInt(instructions::indexOf)
                         .min().orElse(Integer.MAX_VALUE);
-                boolean enforced = comparison && businessReached && firstBusiness < Integer.MAX_VALUE
+                int firstStateBranch = branches.stream()
+                        .mapToInt(StateBranch::eventIndex)
+                        .min().orElse(Integer.MAX_VALUE);
+                boolean businessBeforeStateBranch = firstBusiness < firstStateBranch;
+                boolean hasEffectiveDenialBranch = branches.stream().anyMatch(this::reachesDenial);
+                boolean bypassPath = businessReached && (!comparison || !claimRead || branches.isEmpty()
+                        || businessBeforeStateBranch || !hasEffectiveDenialBranch
+                        || firstBusiness < firstDenial);
+                boolean enforced = comparison && claimRead && businessReached && firstBusiness < Integer.MAX_VALUE
                         && firstDenial < firstBusiness
-                        && branches.stream().anyMatch(branch ->
-                        branch.eventIndex() < firstBusiness && reachesDenial(branch));
+                        && hasEffectiveDenialBranch
+                        && !businessBeforeStateBranch;
                 return new StateScanOutcome(true, uncertain, claimRead, comparison, enforced,
-                        hasDenial(), businessReached, location(method));
+                        hasDenial(), businessReached, bypassPath, location(method));
             }
 
             private boolean hasDenial() {
@@ -382,11 +391,19 @@ public class BusinessStateCollectorAdapter extends AbstractCollectorAdapter {
 
             private boolean reachesDenial(StateBranch branch) {
                 Integer targetIndex = labels.get(branch.target());
-                if (targetIndex == null) {
-                    return false;
-                }
-                int start = branch.opcode() == Opcodes.IFEQ
-                        ? targetIndex : branch.eventIndex() + 1;
+                return (targetIndex != null && reachesEvent(targetIndex, StateInstruction::denial))
+                        || reachesEvent(branch.eventIndex() + 1, StateInstruction::denial);
+            }
+
+            private boolean reachesEvent(int start, java.util.function.Predicate<StateInstruction> predicate) {
+                return reachesEvent(start, predicate, Set.of());
+            }
+
+            private boolean reachesEvent(
+                    int start,
+                    java.util.function.Predicate<StateInstruction> predicate,
+                    Set<Integer> blocked
+            ) {
                 Deque<Integer> pending = new ArrayDeque<>();
                 Set<Integer> seen = new HashSet<>();
                 pending.add(start);
@@ -395,8 +412,11 @@ public class BusinessStateCollectorAdapter extends AbstractCollectorAdapter {
                     if (index < 0 || index >= instructions.size() || !seen.add(index)) {
                         continue;
                     }
+                    if (blocked.contains(index)) {
+                        continue;
+                    }
                     StateInstruction instruction = instructions.get(index);
-                    if (instruction.denial()) {
+                    if (predicate.test(instruction)) {
                         return true;
                     }
                     if (instruction.terminal()) {
@@ -471,6 +491,7 @@ public class BusinessStateCollectorAdapter extends AbstractCollectorAdapter {
                             && HTTP_STATUS.equals(owner) && "FORBIDDEN".equals(name);
                     if (opcode == Opcodes.GETFIELD) {
                         popValue();
+                        stack.push(StateValue.other());
                     } else if (opcode == Opcodes.PUTFIELD) {
                         popValue();
                         popValue();
@@ -490,16 +511,19 @@ public class BusinessStateCollectorAdapter extends AbstractCollectorAdapter {
 
                 @Override
                 public void visitInsn(int opcode) {
+                    boolean effectiveDenial = false;
                     if (opcode == Opcodes.DUP) {
                         stack.push(stack.isEmpty() ? StateValue.unknown() : stack.peek());
-                    } else if (opcode == Opcodes.POP || opcode == Opcodes.POP2
-                            || opcode == Opcodes.IRETURN || opcode == Opcodes.ARETURN
-                            || opcode == Opcodes.ATHROW) {
+                    } else if (opcode == Opcodes.POP || opcode == Opcodes.POP2) {
                         popValue();
+                    } else if (opcode == Opcodes.IRETURN || opcode == Opcodes.ARETURN
+                            || opcode == Opcodes.ATHROW) {
+                        StateValue returned = popValue();
+                        effectiveDenial = returned.kind() == StateValueKind.DENIAL;
                     } else if (opcode == Opcodes.ACONST_NULL) {
                         stack.push(StateValue.other());
                     }
-                    addInstruction(opcode, null, false, false, isTerminal(opcode));
+                    addInstruction(opcode, null, effectiveDenial, false, isTerminal(opcode));
                 }
 
                 @Override
@@ -525,8 +549,25 @@ public class BusinessStateCollectorAdapter extends AbstractCollectorAdapter {
                     List<StateValue> arguments = arguments(methodDescriptor);
                     StateValue receiver = opcode == Opcodes.INVOKESTATIC ? StateValue.other() : popValue();
                     boolean denial = isForbiddenStatus(owner, name, arguments);
-                    boolean business = "save".equals(name) && !isFrameworkOwner(owner);
+                    boolean helperCall = isHelperCall(owner, name, methodDescriptor, opcode, receiver);
+                    boolean business = isBusinessCall(owner, name, opcode, receiver);
+                    boolean nestedDenial = false;
+                    boolean forbiddenBuilder = isForbiddenBuilder(owner, name, receiver)
+                            || (forbiddenBuilderPending && owner.endsWith("ResponseEntity$BodyBuilder")
+                            && ("build".equals(name) || "body".equals(name)));
                     StateValue returned = StateValue.other();
+
+                    if ((receiver.kind() == StateValueKind.JWT
+                            || arguments.stream().anyMatch(value -> value.kind() == StateValueKind.JWT))
+                            && !helperCall && !JWT.equals(owner) && !MAP.equals(owner)
+                            && !BOOLEAN.equals(owner) && !RESPONSE_ENTITY.equals(owner)) {
+                        uncertain = true;
+                    }
+                    if (denial) {
+                        forbiddenBuilderPending = true;
+                    } else if (forbiddenBuilder) {
+                        forbiddenBuilderPending = false;
+                    }
 
                     if (JWT.equals(owner) && "getClaims".equals(name)
                             && receiver.kind() == StateValueKind.JWT) {
@@ -546,7 +587,7 @@ public class BusinessStateCollectorAdapter extends AbstractCollectorAdapter {
                             && arguments.stream().anyMatch(value -> value.kind() == StateValueKind.CLAIM)) {
                         comparison = true;
                         returned = new StateValue(StateValueKind.CHECK, null);
-                    } else if (isHelperCall(owner, name, methodDescriptor, opcode, receiver)) {
+                    } else if (helperCall) {
                         Method helper = resolveMethod(owner, name, methodDescriptor);
                         if (helper != null && depth < MAX_DEPTH) {
                             StateScanOutcome nested = new StateBytecodeAnalyzer(targetClass, claimName)
@@ -556,6 +597,7 @@ public class BusinessStateCollectorAdapter extends AbstractCollectorAdapter {
                             uncertain |= nested.uncertain();
                             business |= nested.businessReached();
                             denial |= nested.denialPath();
+                            nestedDenial = nested.denialPath();
                             if (nested.comparison()) {
                                 returned = new StateValue(StateValueKind.CHECK, null);
                             } else if (nested.denialPath()) {
@@ -565,8 +607,9 @@ public class BusinessStateCollectorAdapter extends AbstractCollectorAdapter {
                             uncertain = true;
                         }
                     }
-                    addInstruction(Opcodes.INVOKEVIRTUAL, null, denial, business, false);
-                    if (denial) {
+                    addInstruction(opcode, null, nestedDenial, business, false);
+                    if (denial || forbiddenBuilder
+                            || isAccessDeniedConstructor(owner, name)) {
                         returned = new StateValue(StateValueKind.DENIAL, null);
                     }
                     if (!Type.VOID_TYPE.equals(Type.getReturnType(methodDescriptor))) {
@@ -610,9 +653,27 @@ public class BusinessStateCollectorAdapter extends AbstractCollectorAdapter {
                             && resolveMethod(owner, name, methodDescriptor) != null;
                 }
 
+                private boolean isBusinessCall(String owner, String name, int opcode, StateValue receiver) {
+                    return opcode != Opcodes.INVOKESTATIC
+                            && receiver.kind() != StateValueKind.UNKNOWN
+                            && !isFrameworkOwner(owner)
+                            && owner.endsWith("Repository")
+                            && Set.of("save", "persist", "insert", "update", "delete").contains(name);
+                }
+
                 private boolean isForbiddenStatus(String owner, String name, List<StateValue> arguments) {
                     return RESPONSE_ENTITY.equals(owner) && "status".equals(name)
                             && arguments.stream().anyMatch(value -> value.kind() == StateValueKind.DENIAL_STATUS);
+                }
+
+                private boolean isForbiddenBuilder(String owner, String name, StateValue receiver) {
+                    return receiver.kind() == StateValueKind.DENIAL
+                            && ("build".equals(name) || "body".equals(name))
+                            && owner.endsWith("ResponseEntity$BodyBuilder");
+                }
+
+                private boolean isAccessDeniedConstructor(String owner, String name) {
+                    return "<init>".equals(name) && owner.endsWith("AccessDeniedException");
                 }
 
                 private List<StateValue> arguments(String methodDescriptor) {
