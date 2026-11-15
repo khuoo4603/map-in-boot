@@ -13,10 +13,15 @@ import com.mapinboot.core.common.status.Confidence;
 import com.mapinboot.core.common.type.EdgeType;
 import com.mapinboot.core.evidence.Fact;
 import com.mapinboot.core.finding.Finding;
+import com.mapinboot.security.analyzer.AuthorizationAnalysisAdapter;
 import com.mapinboot.security.analyzer.EndpointChainMatchingAnalysisAdapter;
 import com.mapinboot.security.analyzer.FilterRegistrationAnalysisAdapter;
 import com.mapinboot.security.analyzer.MethodSecurityAnalysisAdapter;
 import com.mapinboot.security.collector.MethodSecurityCollectorAdapter;
+import com.mapinboot.security.collector.HeaderUsageCollectorAdapter;
+import com.mapinboot.security.collector.JwtUsageCollectorAdapter;
+import com.mapinboot.security.collector.ObjectAuthorizationCollectorAdapter;
+import com.mapinboot.security.collector.PrincipalUsageCollectorAdapter;
 import com.mapinboot.security.collector.SecurityChainCollectorAdapter;
 import com.mapinboot.security.finding.SecurityRuleEngine;
 import com.mapinboot.starter.collector.EndpointMappingCollectorAdapter;
@@ -164,6 +169,8 @@ class IdentityAuthIntegrationTest {
 
         assertThat(collection.statusByAdapter().get("security-chain"))
                 .isNotEqualTo(AnalysisStatus.UNKNOWN);
+        assertThat(analysis.statusByAdapter().get("security-filter-registration-analysis"))
+                .isEqualTo(AnalysisStatus.READY);
         assertThat(analysis.relations()).anyMatch(relation -> relation.type() == EdgeType.MATCHED_BY);
 
         Fact normalEndpoint = endpoint(collection, "/api/auth/secured/refresh");
@@ -207,6 +214,49 @@ class IdentityAuthIntegrationTest {
                 .count()).isZero();
         assertThat(findings.stream().filter(finding -> "FILTER_ORDER".equals(finding.ruleId()))
                 .findFirst().orElseThrow().confidence()).isEqualTo(Confidence.LIKELY);
+    }
+
+    @Test
+    @DisplayName("실제 Identity N06/V06 객체 접근 경로와 OBJECT_BINDING 판정 구분")
+    void sdkObjectAuthorizationAnalysisDistinguishesN06FromV06() {
+        CollectionProvider collectionProvider = context.getBean(CollectionProvider.class);
+        AnalysisProvider analysisProvider = context.getBean(AnalysisProvider.class);
+
+        CollectionReport collection = collectionProvider.execute(
+                new CollectionContext(context, "identity", "test"),
+                List.of(
+                        new EndpointMappingCollectorAdapter(),
+                        new JwtUsageCollectorAdapter(),
+                        new HeaderUsageCollectorAdapter(),
+                        new PrincipalUsageCollectorAdapter(),
+                        new ObjectAuthorizationCollectorAdapter()));
+
+        List<Fact> paths = collection.facts().stream()
+                .filter(fact -> "OBJECT_ACCESS_PATH".equals(fact.type()))
+                .filter(fact -> fact.attributes().getOrDefault("handler", "")
+                        .contains("SessionProfileController#get"))
+                .toList();
+        Fact normalPath = paths.stream()
+                .filter(fact -> fact.attributes().get("handler").contains("getSecuredProfile"))
+                .findFirst().orElseThrow();
+        Fact vulnerablePath = paths.stream()
+                .filter(fact -> fact.attributes().get("handler").contains("getProfileWithoutOwnerCheck"))
+                .findFirst().orElseThrow();
+
+        assertThat(normalPath.attributes().get("pathOutcome"))
+                .as("N06 diagnostics=%s paths=%s", collection.diagnostics(), paths)
+                .isEqualTo("GUARDED");
+        assertThat(normalPath.attributes().get("coverage")).isEqualTo("COMPLETE_SUPPORTED_PATH");
+        assertThat(vulnerablePath.attributes().get("pathOutcome")).isEqualTo("UNGUARDED");
+        assertThat(vulnerablePath.attributes().get("coverage")).isEqualTo("COMPLETE_SUPPORTED_PATH");
+
+        AnalysisReport analysis = analysisProvider.execute(
+                new AnalysisContext(collection, "identity"), List.of(new AuthorizationAnalysisAdapter()));
+        List<Finding> findings = context.getBean(SecurityRuleEngine.class).evaluate(analysis);
+        assertThat(findings).anyMatch(finding -> "OBJECT_BINDING".equals(finding.ruleId())
+                && finding.evidenceIds().containsAll(vulnerablePath.evidenceIds()));
+        assertThat(findings).noneMatch(finding -> "OBJECT_BINDING".equals(finding.ruleId())
+                && finding.evidenceIds().containsAll(normalPath.evidenceIds()));
     }
 
     @Test

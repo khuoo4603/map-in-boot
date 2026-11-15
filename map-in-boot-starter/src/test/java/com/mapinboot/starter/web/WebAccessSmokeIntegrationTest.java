@@ -15,6 +15,7 @@ import com.mapinboot.core.snapshot.Snapshot;
 import com.mapinboot.starter.bootstrap.MapInBootBootstrap;
 import com.mapinboot.starter.snapshot.LocalSnapshotStore;
 import com.mapinboot.starter.snapshot.SnapshotAssembler;
+import com.mapinboot.starter.web.api.StatusController;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.charset.StandardCharsets;
@@ -166,6 +167,24 @@ class WebAccessSmokeIntegrationTest {
     }
 
     @Test
+    void diagnosticConversionPreservesDetailedSummaryAndUsesSafeFallback() {
+        List<StatusController.DiagnosticResponse> responses = StatusController.StatusResponse.toDiagnostics(List.of(
+                new AdapterDiagnostic("adapter-a", ErrorCode.INVALID_STATE, "객체 인가 경로 2건의 매핑 범위 미확인"),
+                new AdapterDiagnostic("adapter-b", ErrorCode.INVALID_STATE, "객체 인가 경로 1건의 매핑 범위 미확인"),
+                new AdapterDiagnostic("adapter-c", ErrorCode.INVALID_STATE, null),
+                new AdapterDiagnostic("adapter-d", ErrorCode.INVALID_STATE, "   "),
+                new AdapterDiagnostic("adapter-e", null, "상세 원인")));
+
+        assertEquals("adapter-a", responses.get(0).adapterId());
+        assertEquals("MIB-004", responses.get(0).errorCode());
+        assertEquals("객체 인가 경로 2건의 매핑 범위 미확인", responses.get(0).summary());
+        assertEquals("객체 인가 경로 1건의 매핑 범위 미확인", responses.get(1).summary());
+        assertEquals(ErrorCode.INVALID_STATE.getDescription(), responses.get(2).summary());
+        assertEquals(ErrorCode.INVALID_STATE.getDescription(), responses.get(3).summary());
+        assertEquals("상세 원인", responses.get(4).summary());
+    }
+
+    @Test
     void persistedSnapshotAndCurrentPartialStatusRemainSeparate() throws Exception {
         Path directory = tempDirectory.resolve("partial-snapshots");
         Snapshot previous = previousSnapshot();
@@ -186,7 +205,7 @@ class WebAccessSmokeIntegrationTest {
             mvc.perform(get("/mapinboot/api/status").with(principal(true)))
                     .andExpect(status().isOk())
                     .andExpect(jsonPath("$.analysisStatuses.analyzer").value("PARTIAL"))
-                    .andExpect(jsonPath("$.diagnostics[0].summary").value(ErrorCode.ADAPTER_FAILED.getDescription()))
+                    .andExpect(jsonPath("$.diagnostics[0].summary").value("분석 대상 경로의 일부를 확인하지 못함"))
                     .andExpect(jsonPath("$.persistedSnapshotPresent").value(true))
                     .andExpect(jsonPath("$.persistedSnapshotId").value(previous.snapshotId()));
             mvc.perform(get("/mapinboot/api/snapshot").with(principal(true)))
@@ -199,7 +218,7 @@ class WebAccessSmokeIntegrationTest {
                     .andExpect(jsonPath("$.collectionPresent").value(true))
                     .andExpect(jsonPath("$.analysisPresent").value(true))
                     .andExpect(jsonPath("$.analysisStatuses.analyzer").value("PARTIAL"))
-                    .andExpect(jsonPath("$.diagnostics[0].summary").value(ErrorCode.ADAPTER_FAILED.getDescription()))
+                    .andExpect(jsonPath("$.diagnostics[0].summary").value("분석 대상 경로의 일부를 확인하지 못함"))
                     .andExpect(jsonPath("$.currentSnapshotPresent").value(true))
                     .andExpect(jsonPath("$.currentSnapshot.snapshotId").value(bootstrap.snapshot().snapshotId()))
                     .andExpect(jsonPath("$.persistedSnapshotPresent").value(true))
@@ -531,7 +550,7 @@ class WebAccessSmokeIntegrationTest {
         public AnalysisResult analyze(AnalysisContext context) {
             return new AnalysisResult(id(), List.of(), List.of(), AnalysisStatus.PARTIAL,
                     List.of(new AdapterDiagnostic(id(), ErrorCode.ADAPTER_FAILED,
-                            "secret-token=/var/run/mapinboot/token")));
+                            "분석 대상 경로의 일부를 확인하지 못함")));
         }
     }
 }

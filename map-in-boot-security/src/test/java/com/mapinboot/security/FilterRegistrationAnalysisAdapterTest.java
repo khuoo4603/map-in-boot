@@ -115,6 +115,65 @@ class FilterRegistrationAnalysisAdapterTest {
     }
 
     @Test
+    void connectsExplicitGlobalUrlPatternAndRetainsDispatcherTypes() {
+        Fact servlet = fact("servlet", "SERVLET_REGISTRATION", "servlet|dispatcherServlet|/",
+                Map.of("servletName", "dispatcherServlet", "urlPattern", "/"), "e-servlet");
+        Fact filter = fact("url-filter", "FILTER_REGISTRATION", "filter|url",
+                Map.of(
+                        "filterClass", "example.UrlFilter",
+                        "registrationKind", "SERVLET",
+                        "registrationName", "urlFilter",
+                        "urlPatterns", "/*",
+                        "dispatcherTypes", "ASYNC,REQUEST"), "e-url-filter");
+        CollectionReport collection = new CollectionReport(
+                List.of(servlet, filter),
+                evidence("e-servlet", "e-url-filter"),
+                Map.of(
+                        "starter-servlet-registration", AnalysisStatus.READY,
+                        "starter-servlet-filter", AnalysisStatus.READY),
+                List.of());
+
+        AnalysisReport report = analyze(collection);
+
+        assertEquals(AnalysisStatus.READY, report.statusByAdapter().get(
+                "security-filter-registration-analysis"));
+        assertEquals(1, report.relations().size());
+        assertEquals("servlet|dispatcherServlet|/", report.relations().get(0).sourceKey());
+        assertEquals("filter|url", report.relations().get(0).targetKey());
+        assertEquals("/", report.relations().get(0).attributes().get("urlPattern"));
+        assertEquals("/*", report.relations().get(0).attributes().get("urlPatterns"));
+        assertEquals("ASYNC,REQUEST", report.relations().get(0).attributes().get("dispatcherTypes"));
+    }
+
+    @Test
+    void keepsMixedServletFilterMappingsPartial() {
+        Fact servlet = fact("servlet", "SERVLET_REGISTRATION", "servlet|dispatcherServlet|/",
+                Map.of("servletName", "dispatcherServlet", "urlPattern", "/"), "e-servlet");
+        Fact filter = fact("mixed-filter", "FILTER_REGISTRATION", "filter|mixed",
+                Map.of(
+                        "filterClass", "example.MixedFilter",
+                        "registrationKind", "SERVLET",
+                        "registrationName", "mixedFilter",
+                        "servletNames", "dispatcherServlet",
+                        "urlPatterns", "/api/*"), "e-mixed-filter");
+        CollectionReport collection = new CollectionReport(
+                List.of(servlet, filter),
+                evidence("e-servlet", "e-mixed-filter"),
+                Map.of(
+                        "starter-servlet-registration", AnalysisStatus.READY,
+                        "starter-servlet-filter", AnalysisStatus.READY),
+                List.of());
+
+        AnalysisReport report = analyze(collection);
+
+        assertEquals(AnalysisStatus.PARTIAL, report.statusByAdapter().get(
+                "security-filter-registration-analysis"));
+        assertTrue(report.relations().isEmpty());
+        assertTrue(report.diagnostics().stream().anyMatch(diagnostic ->
+                diagnostic.summary().contains("혼합")));
+    }
+
+    @Test
     void reusesStarterServletFactsForExplicitServletNameMapping() {
         ServletRegistration servletRegistration = registration(
                 ServletRegistration.class, "dispatcherServlet", TestServlet.class.getName());

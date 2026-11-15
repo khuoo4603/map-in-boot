@@ -196,53 +196,101 @@ public class FilterRegistrationAnalysisAdapter extends AbstractAnalysisAdapter {
                 continue;
             }
             String names = filter.attributes().get("servletNames");
-            if (isBlank(names)) {
-                if (!isBlank(filter.attributes().get("urlPatterns"))) {
-                    partial = true;
-                    diagnostics.add(diagnostic("Servlet URL Filter 매핑 범위 미확인: " + filter.subjectKey()));
-                } else {
-                    partial = true;
-                    diagnostics.add(diagnostic("Servlet Filter 매핑 정보 부재: " + filter.subjectKey()));
-                }
-                continue;
-            }
-            Set<String> servletNames = splitValues(names);
-            if (servletNames.isEmpty()) {
+            String patterns = filter.attributes().get("urlPatterns");
+            if (!isBlank(names) && !isBlank(patterns)) {
                 partial = true;
-                diagnostics.add(diagnostic("Servlet Filter Servlet 이름 매핑 부재: " + filter.subjectKey()));
+                diagnostics.add(diagnostic("Servlet Filter Servlet 이름·URL 패턴 혼합 매핑 범위 미확인: " + filter.subjectKey()));
                 continue;
             }
-            for (Fact servlet : servlets) {
-                String servletName = servlet.attributes().get("servletName");
-                String urlPattern = servlet.attributes().get("urlPattern");
-                if (isBlank(servletName) || isBlank(urlPattern) || !servletNames.contains(servletName)) {
-                    continue;
-                }
-                Set<String> evidenceIds = mergedEvidence(servlet, filter);
-                if (!hasEvidence(availableEvidence, evidenceIds)) {
+            if (!isBlank(names)) {
+                Set<String> servletNames = splitValues(names);
+                if (servletNames.isEmpty()) {
                     partial = true;
-                    diagnostics.add(diagnostic("Servlet Filter Evidence 참조 불완전: " + filter.subjectKey()));
+                    diagnostics.add(diagnostic("Servlet Filter Servlet 이름 매핑 부재: " + filter.subjectKey()));
                     continue;
                 }
-                Map<String, String> attributes = new TreeMap<>();
-                attributes.put("filterClass", filterClass);
-                attributes.put("registrationKind", "SERVLET");
-                attributes.put("registrationName", registrationName);
-                attributes.put("servletName", servletName);
-                attributes.put("urlPattern", urlPattern);
-                copyIfPresent(attributes, filter.attributes(), "urlPatterns");
-                copyIfPresent(attributes, filter.attributes(), "servletNames");
-                Map<String, String> identity = new TreeMap<>();
-                identity.put("filterClass", filterClass);
-                identity.put("registrationKind", "SERVLET");
-                String sourceId = idGenerator.generate(serviceId, NodeType.SERVLET, servlet.subjectKey());
-                String targetId = idGenerator.generate(serviceId, NodeType.FILTER, filter.subjectKey());
-                String relationId = idGenerator.generateEdge(sourceId, targetId, EdgeType.FILTERED_BY, identity);
-                relations.add(new Relation(relationId, servlet.subjectKey(), filter.subjectKey(),
-                        EdgeType.FILTERED_BY, attributes, Confidence.CONFIRMED, List.copyOf(evidenceIds)));
+                for (Fact servlet : servlets) {
+                    if (!servletNames.contains(servlet.attributes().get("servletName"))) {
+                        continue;
+                    }
+                    Relation relation = servletRelation(serviceId, filter, servlet, availableEvidence, diagnostics);
+                    if (relation == null) {
+                        partial = true;
+                    } else {
+                        relations.add(relation);
+                    }
+                }
+                continue;
+            }
+            if (isBlank(patterns)) {
+                partial = true;
+                diagnostics.add(diagnostic("Servlet Filter 매핑 정보 부재: " + filter.subjectKey()));
+                continue;
+            }
+            Set<String> urlPatterns = splitValues(patterns);
+            List<Fact> matchedServlets = servlets.stream()
+                    .filter(servlet -> urlPatterns.stream().anyMatch(pattern ->
+                            urlPatternMatches(pattern, servlet.attributes().get("urlPattern"))))
+                    .toList();
+            boolean allPatternsResolved = !urlPatterns.isEmpty() && urlPatterns.stream().allMatch(pattern ->
+                    servlets.stream().anyMatch(servlet ->
+                            urlPatternMatches(pattern, servlet.attributes().get("urlPattern"))));
+            if (!allPatternsResolved) {
+                partial = true;
+                diagnostics.add(diagnostic("Servlet URL Filter 매핑 범위 미확인: " + filter.subjectKey()));
+            }
+            for (Fact servlet : matchedServlets) {
+                Relation relation = servletRelation(serviceId, filter, servlet, availableEvidence, diagnostics);
+                if (relation == null) {
+                    partial = true;
+                } else {
+                    relations.add(relation);
+                }
             }
         }
         return partial;
+    }
+
+    private Relation servletRelation(
+            String serviceId,
+            Fact filter,
+            Fact servlet,
+            Set<String> availableEvidence,
+            List<AdapterDiagnostic> diagnostics
+    ) {
+        String servletName = servlet.attributes().get("servletName");
+        String urlPattern = servlet.attributes().get("urlPattern");
+        if (isBlank(servletName) || isBlank(urlPattern)) {
+            diagnostics.add(diagnostic("Servlet Registration Fact 구조 불완전: " + servlet.subjectKey()));
+            return null;
+        }
+        Set<String> evidenceIds = mergedEvidence(servlet, filter);
+        if (!hasEvidence(availableEvidence, evidenceIds)) {
+            diagnostics.add(diagnostic("Servlet Filter Evidence 참조 불완전: " + filter.subjectKey()));
+            return null;
+        }
+        Map<String, String> attributes = new TreeMap<>();
+        attributes.put("filterClass", filter.attributes().get("filterClass"));
+        attributes.put("registrationKind", "SERVLET");
+        attributes.put("registrationName", filter.attributes().get("registrationName"));
+        attributes.put("servletName", servletName);
+        attributes.put("urlPattern", urlPattern);
+        copyIfPresent(attributes, filter.attributes(), "urlPatterns");
+        copyIfPresent(attributes, filter.attributes(), "servletNames");
+        copyIfPresent(attributes, filter.attributes(), "dispatcherTypes");
+        Map<String, String> identity = new TreeMap<>();
+        identity.put("filterClass", filter.attributes().get("filterClass"));
+        identity.put("registrationKind", "SERVLET");
+        String sourceId = idGenerator.generate(serviceId, NodeType.SERVLET, servlet.subjectKey());
+        String targetId = idGenerator.generate(serviceId, NodeType.FILTER, filter.subjectKey());
+        String relationId = idGenerator.generateEdge(sourceId, targetId, EdgeType.FILTERED_BY, identity);
+        return new Relation(relationId, servlet.subjectKey(), filter.subjectKey(),
+                EdgeType.FILTERED_BY, attributes, Confidence.CONFIRMED, List.copyOf(evidenceIds));
+    }
+
+    private boolean urlPatternMatches(String filterPattern, String servletPattern) {
+        return !isBlank(filterPattern) && !isBlank(servletPattern)
+                && ("/*".equals(filterPattern) || filterPattern.equals(servletPattern));
     }
 
     private boolean collectorIncomplete(CollectionReport report, String collectorId) {
