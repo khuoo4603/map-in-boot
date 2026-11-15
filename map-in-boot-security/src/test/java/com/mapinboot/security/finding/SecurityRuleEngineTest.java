@@ -44,6 +44,29 @@ class SecurityRuleEngineTest {
     }
 
     @Test
+    void doesNotTreatProducedBusinessStateAsRequiredState() {
+        Fact requirement = fact("state", "produced", "BUSINESS_SECURITY_STATE", "state|produced", Map.of(
+                "handler", "OrdersController#submit()",
+                "stateName", "IDENTITY_VERIFIED",
+                "stateAction", "PRODUCES",
+                "claim", "identity_verified",
+                "declaringMethod", "OrdersController#submit()"));
+        Fact evaluation = fact("state-evaluation", "produced", "BUSINESS_STATE_EVALUATION",
+                "state-evaluation|produced", Map.of(
+                        "handler", "OrdersController#submit()",
+                        "requirementKey", requirement.subjectKey(),
+                        "stateName", "IDENTITY_VERIFIED",
+                        "claimName", "identity_verified",
+                        "codeLocation", "OrdersController#submit():21",
+                        "pathOutcome", "BYPASS_PATH",
+                        "coverage", "COMPLETE_SUPPORTED_PATH",
+                        "evaluationScope", "HANDLER_LOCAL"));
+
+        assertTrue(evaluate(List.of(requirement, evaluation), Map.of()).stream()
+                .noneMatch(finding -> "STATE_BYPASS".equals(finding.ruleId())));
+    }
+
+    @Test
     void confirmsChainMissingForProvenNoMatchAndConfirmedObjectAuthorization() {
         Fact endpoint = endpoint("orders", "/api/orders");
         Fact chain = chain("admin", 1, "/api/admin/**");

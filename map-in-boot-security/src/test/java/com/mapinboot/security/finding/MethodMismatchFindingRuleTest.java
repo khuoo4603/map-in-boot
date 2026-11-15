@@ -1,5 +1,6 @@
 package com.mapinboot.security.finding;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.mapinboot.core.analysis.AnalysisProvider;
@@ -9,8 +10,10 @@ import com.mapinboot.core.collection.model.CollectionReport;
 import com.mapinboot.core.common.status.AnalysisStatus;
 import com.mapinboot.core.common.status.Confidence;
 import com.mapinboot.core.common.status.EvidenceSource;
+import com.mapinboot.core.common.type.EdgeType;
 import com.mapinboot.core.evidence.Evidence;
 import com.mapinboot.core.evidence.Fact;
+import com.mapinboot.core.evidence.Relation;
 import com.mapinboot.core.finding.Finding;
 import com.mapinboot.security.analyzer.EndpointChainMatchingAnalysisAdapter;
 import com.mapinboot.security.analyzer.MethodSecurityAnalysisAdapter;
@@ -20,6 +23,44 @@ import java.util.Map;
 import org.junit.jupiter.api.Test;
 
 class MethodMismatchFindingRuleTest {
+
+    @Test
+    void confirmsSelfInvocationMismatchFromCompleteStructuredEvidence() {
+        Fact endpoint = endpoint("self-positive", DirectController.class, "handle", "/self-positive");
+        Fact chain = chain("self-positive", "/self-positive");
+        Fact policy = policy("self-positive-policy", chain, "AUTHENTICATED", null);
+        Fact method = method("self-positive-method", DirectController.class, "handle", "ROLE_STAFF");
+        List<Fact> facts = List.of(endpoint, chain, policy, method);
+        List<Evidence> evidence = facts.stream()
+                .flatMap(fact -> fact.evidenceIds().stream())
+                .map(id -> new Evidence(id, EvidenceSource.RUNTIME, "test", "test evidence"))
+                .toList();
+        String handler = endpoint.attributes().get("handler");
+        List<Relation> relations = List.of(
+                new Relation("matched-self-positive", endpoint.subjectKey(), chain.subjectKey(), EdgeType.MATCHED_BY,
+                        Map.of("chainKey", chain.attributes().get("chainKey"), "chainOrder", "1"),
+                        Confidence.CONFIRMED, List.of(endpoint.evidenceIds().get(0), chain.evidenceIds().get(0))),
+                new Relation("url-self-positive", handler, policy.subjectKey(), EdgeType.SECURED_BY,
+                        Map.of("policySource", "URL", "chainKey", chain.attributes().get("chainKey"),
+                                "chainOrder", "1", "policyOrder", "1"),
+                        Confidence.CONFIRMED, List.of(policy.evidenceIds().get(0))),
+                new Relation("method-self-positive", handler, method.subjectKey(), EdgeType.SECURED_BY,
+                        Map.of("policySource", "METHOD", "proxyApplicability", "CONFIRMED",
+                                "invocationKind", "SELF_INVOCATION"),
+                        Confidence.CONFIRMED, List.of(method.evidenceIds().get(0))));
+        AnalysisReport report = new AnalysisReport(
+                new CollectionReport(facts, evidence, readyStatuses(), List.of()),
+                relations, evidence,
+                Map.of("security-endpoint-chain-matching", AnalysisStatus.READY,
+                        "security-method-authorization-analysis", AnalysisStatus.READY),
+                List.of());
+
+        List<Finding> findings = new MethodMismatchFindingRule().evaluate(report);
+
+        assertEquals(1, findings.size());
+        assertEquals("METHOD_MISMATCH", findings.get(0).ruleId());
+        assertEquals(Confidence.CONFIRMED, findings.get(0).confidence());
+    }
 
     @Test
     void doesNotFlagConfirmedMethodProtectionBehindPermitAll() {
