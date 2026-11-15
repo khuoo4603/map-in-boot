@@ -490,18 +490,18 @@ class IdentityAuthIntegrationTest {
     }
 
     @Test
-    @DisplayName("미인증 진단 접근은 비밀번호 전용 개발 로그인으로 연결되고 관리자 Session을 재사용")
+    @DisplayName("미인증 진단 접근은 동일 URL에서 비밀번호 로그인 화면을 제공하고 관리자 Session을 재사용")
     void diagnosticLoginUsesPasswordOnlyAndAdminSession() throws Exception {
         mockMvc.perform(get("/mapinboot/test"))
-                .andExpect(status().isFound())
-                .andExpect(header().string(HttpHeaders.LOCATION, "/mapinboot-login"));
-
-        mockMvc.perform(get("/mapinboot-login"))
                 .andExpect(status().isOk())
                 .andExpect(header().string(HttpHeaders.CONTENT_TYPE, org.hamcrest.Matchers.containsString("text/html")))
                 .andExpect(content().string(org.hamcrest.Matchers.containsString("type=\"password\"")))
                 .andExpect(content().string(org.hamcrest.Matchers.not(org.hamcrest.Matchers.containsString("mib.dev"))))
                 .andExpect(content().string(org.hamcrest.Matchers.not(org.hamcrest.Matchers.containsString("name=\"username\""))));
+        mockMvc.perform(get("/mapinboot-assets/development-login.css"))
+                .andExpect(status().isOk());
+        mockMvc.perform(get("/mapinboot-assets/development-login.js"))
+                .andExpect(status().isOk());
 
         CsrfSession csrf = csrfSession();
         MvcResult login = mockMvc.perform(post("/api/auth/login")
@@ -515,6 +515,8 @@ class IdentityAuthIntegrationTest {
 
         mockMvc.perform(get("/mapinboot/test").cookie(adminSession))
                 .andExpect(status().isOk());
+        mockMvc.perform(get("/mapinboot-login").cookie(adminSession))
+                .andExpect(status().isNotFound());
     }
 
     @Test

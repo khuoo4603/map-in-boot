@@ -283,7 +283,15 @@ class WebAccessSmokeIntegrationTest {
                     .andExpect(content().contentTypeCompatibleWith(MediaType.valueOf("text/javascript")))
                     .andExpect(content().string(org.hamcrest.Matchers.containsString("OBJECT_AUTHORIZATION_REQUIREMENT")))
                     .andExpect(content().string(org.hamcrest.Matchers.containsString("BUSINESS_STATE_EVALUATION")))
-                    .andExpect(content().string(org.hamcrest.Matchers.containsString("STATE_BYPASS Rule 미통합")));
+                    .andExpect(content().string(org.hamcrest.Matchers.containsString("findingsForObjectRow")))
+                    .andExpect(content().string(org.hamcrest.Matchers.containsString("findingsForStateRow")))
+                    .andExpect(content().string(org.hamcrest.Matchers.containsString("Graph Node ID")))
+                    .andExpect(content().string(org.hamcrest.Matchers.not(
+                            org.hamcrest.Matchers.containsString("item.severity"))))
+                    .andExpect(content().string(org.hamcrest.Matchers.not(
+                            org.hamcrest.Matchers.containsString("OBJECT_BINDING Rule 미통합"))))
+                    .andExpect(content().string(org.hamcrest.Matchers.not(
+                            org.hamcrest.Matchers.containsString("STATE_BYPASS Rule 미통합"))));
             mvc.perform(get("/mapinboot/test/api/report"))
                     .andExpect(status().isUnauthorized());
             mvc.perform(get("/mapinboot/test/api/report").with(basic("viewer", "password")))
