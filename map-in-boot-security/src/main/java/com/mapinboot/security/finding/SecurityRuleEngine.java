@@ -4,12 +4,17 @@ import com.mapinboot.core.analysis.model.AnalysisReport;
 import com.mapinboot.core.common.error.AdapterDiagnostic;
 import com.mapinboot.core.common.error.ErrorCode;
 import com.mapinboot.core.common.error.FindingEvaluationException;
+import com.mapinboot.core.common.type.NodeType;
 import com.mapinboot.core.finding.Finding;
 import com.mapinboot.core.finding.FindingEvaluation;
 import com.mapinboot.core.finding.FindingEvaluator;
+import com.mapinboot.core.graph.model.GraphNode;
+import com.mapinboot.core.graph.model.SecurityGraph;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.TreeMap;
 import java.util.function.Function;
 import org.jeasy.rules.api.Facts;
@@ -67,6 +72,19 @@ public class SecurityRuleEngine implements FindingEvaluator {
 
     @Override
     public FindingEvaluation evaluateWithDiagnostics(AnalysisReport report) {
+        return evaluateWithDiagnostics(report, null);
+    }
+
+    @Override
+    public FindingEvaluation evaluateWithDiagnostics(AnalysisReport report, SecurityGraph graph) {
+        FindingEvaluation evaluation = evaluateWithoutGraph(report);
+        if (graph == null || !evaluation.diagnostics().isEmpty() || evaluation.findings().isEmpty()) {
+            return evaluation;
+        }
+        return new FindingEvaluation(linkGraphNodes(evaluation.findings(), graph), evaluation.diagnostics());
+    }
+
+    private FindingEvaluation evaluateWithoutGraph(AnalysisReport report) {
         List<Finding> findings = new ArrayList<>();
         List<AdapterDiagnostic> diagnostics = new ArrayList<>();
         Facts facts = new Facts();
@@ -81,6 +99,67 @@ public class SecurityRuleEngine implements FindingEvaluator {
                     "Finding 식별 충돌"));
             return new FindingEvaluation(List.of(), List.copyOf(diagnostics));
         }
+    }
+
+    // 실제 Graph Node가 유일하게 대응되는 신규 Finding에만 참조 ID 연결
+    private List<Finding> linkGraphNodes(List<Finding> findings, SecurityGraph graph) {
+        return findings.stream()
+                .map(finding -> {
+                    if ("OBJECT_BINDING".equals(finding.ruleId())) {
+                        return withNodeIds(finding, matchingNodeIds(finding, graph,
+                                Set.of("OBJECT_AUTHORIZATION_REQUIREMENT", "OBJECT_ACCESS_PATH"), Set.of()));
+                    }
+                    if ("STATE_BYPASS".equals(finding.ruleId())) {
+                        return withNodeIds(finding, matchingStateNodeIds(finding, graph));
+                    }
+                    return finding;
+                })
+                .toList();
+    }
+
+    private List<String> matchingNodeIds(
+            Finding finding, SecurityGraph graph, Set<String> requiredFactTypes, Set<String> excludedFactTypes) {
+        List<GraphNode> candidates = graph.nodes().stream()
+                .filter(node -> node.attributes().get("factType") != null
+                        && requiredFactTypes.contains(node.attributes().get("factType")))
+                .filter(node -> !excludedFactTypes.contains(node.attributes().get("factType")))
+                .filter(node -> finding.evidenceIds().containsAll(node.evidenceIds()))
+                .toList();
+        if (candidates.size() != requiredFactTypes.size()) {
+            return List.of();
+        }
+        Set<String> factTypes = new HashSet<>();
+        for (GraphNode candidate : candidates) {
+            factTypes.add(candidate.attributes().get("factType"));
+        }
+        if (!factTypes.equals(requiredFactTypes)) {
+            return List.of();
+        }
+        return candidates.stream().map(GraphNode::id).sorted().toList();
+    }
+
+    private List<String> matchingStateNodeIds(Finding finding, SecurityGraph graph) {
+        List<GraphNode> candidates = graph.nodes().stream()
+                .filter(node -> node.type() == NodeType.BUSINESS_SECURITY_STATE)
+                .filter(node -> finding.evidenceIds().containsAll(node.evidenceIds()))
+                .filter(node -> !"BUSINESS_STATE_EVALUATION".equals(node.attributes().get("factType")))
+                .toList();
+        List<GraphNode> evaluations = graph.nodes().stream()
+                .filter(node -> "BUSINESS_STATE_EVALUATION".equals(node.attributes().get("factType")))
+                .filter(node -> finding.evidenceIds().containsAll(node.evidenceIds()))
+                .toList();
+        if (candidates.size() != 1 || evaluations.size() != 1) {
+            return List.of();
+        }
+        return List.of(candidates.get(0).id(), evaluations.get(0).id()).stream().sorted().toList();
+    }
+
+    private Finding withNodeIds(Finding finding, List<String> nodeIds) {
+        if (nodeIds.isEmpty()) {
+            return finding;
+        }
+        return new Finding(finding.id(), finding.ruleId(), finding.title(), finding.description(),
+                finding.confidence(), nodeIds, finding.edgeIds(), finding.evidenceIds(), finding.guide());
     }
 
     private static Rules rules(List<Rule> registeredRules) {

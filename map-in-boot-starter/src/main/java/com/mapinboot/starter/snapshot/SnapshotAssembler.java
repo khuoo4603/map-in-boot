@@ -106,7 +106,7 @@ public class SnapshotAssembler {
             return List.of();
         }
         try {
-            FindingEvaluation evaluation = findingEvaluators.get(0).evaluateWithDiagnostics(report);
+            FindingEvaluation evaluation = findingEvaluators.get(0).evaluateWithDiagnostics(report, graph);
             if (evaluation == null || evaluation.findings() == null
                     || evaluation.findings().stream().anyMatch(finding -> finding == null)) {
                 throw new MapInBootException(ErrorCode.INVALID_SNAPSHOT, "Finding 결과가 올바르지 않습니다.");

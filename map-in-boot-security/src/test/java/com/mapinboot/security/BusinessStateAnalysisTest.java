@@ -140,6 +140,13 @@ class BusinessStateAnalysisTest {
             assertTrue(snapshot.findings().stream()
                     .flatMap(finding -> finding.evidenceIds().stream())
                     .allMatch(id -> snapshot.evidence().stream().anyMatch(item -> item.id().equals(id))));
+            var stateFinding = snapshot.findings().stream()
+                    .filter(finding -> "STATE_BYPASS".equals(finding.ruleId()))
+                    .findFirst().orElseThrow();
+            assertEquals(2, stateFinding.nodeIds().size());
+            assertTrue(stateFinding.nodeIds().stream()
+                    .allMatch(id -> snapshot.nodes().stream().anyMatch(node -> node.id().equals(id))));
+            assertTrue(stateFinding.edgeIds().isEmpty());
         }
     }
 

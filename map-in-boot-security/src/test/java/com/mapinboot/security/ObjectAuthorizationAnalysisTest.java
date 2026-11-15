@@ -175,6 +175,13 @@ class ObjectAuthorizationAnalysisTest {
             assertTrue(snapshot.findings().stream()
                     .flatMap(finding -> finding.evidenceIds().stream())
                     .allMatch(id -> snapshot.evidence().stream().anyMatch(item -> item.id().equals(id))));
+            var objectFinding = snapshot.findings().stream()
+                    .filter(finding -> "OBJECT_BINDING".equals(finding.ruleId()))
+                    .findFirst().orElseThrow();
+            assertEquals(2, objectFinding.nodeIds().size());
+            assertTrue(objectFinding.nodeIds().stream()
+                    .allMatch(id -> snapshot.nodes().stream().anyMatch(node -> node.id().equals(id))));
+            assertTrue(objectFinding.edgeIds().isEmpty());
         }
     }
 
