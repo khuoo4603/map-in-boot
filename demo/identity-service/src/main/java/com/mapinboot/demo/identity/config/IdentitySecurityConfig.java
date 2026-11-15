@@ -17,6 +17,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.core.io.ClassPathResource;
 import org.springframework.core.env.Environment;
 import org.springframework.core.env.Profiles;
 import org.springframework.core.annotation.Order;
@@ -180,7 +181,7 @@ public class IdentitySecurityConfig {
             .exceptionHandling(exception -> exception
                 .authenticationEntryPoint(diagnosticAuthenticationEntryPoint()))
             .authorizeHttpRequests(auth -> auth
-                .requestMatchers("/mapinboot-login", "/mapinboot-login/**",
+                .requestMatchers("/mapinboot-assets/**",
                         "/api/auth/login", "/api/auth/csrf", "/error").permitAll()
                 .requestMatchers("/api/identity/**").hasAuthority("ROLE_CUSTOMER")
                 .requestMatchers("/api/**").authenticated()
@@ -208,7 +209,18 @@ public class IdentitySecurityConfig {
                     && environment.acceptsProfiles(Profiles.of("develop"))
                     && "GET".equals(request.getMethod())
                     && diagnosticPath.equals(request.getRequestURI())) {
-                response.sendRedirect(request.getContextPath() + "/mapinboot-login");
+                // 미인증 동일 URL 로그인 화면 제공
+                ClassPathResource loginPage = new ClassPathResource(
+                        "META-INF/mapinboot/development-login/development-login.html");
+                if (!loginPage.exists()) {
+                    response.sendError(HttpStatus.NOT_FOUND.value());
+                    return;
+                }
+                response.setStatus(HttpStatus.OK.value());
+                response.setContentType("text/html;charset=UTF-8");
+                try (var input = loginPage.getInputStream()) {
+                    input.transferTo(response.getOutputStream());
+                }
                 return;
             }
             response.sendError(HttpStatus.UNAUTHORIZED.value());

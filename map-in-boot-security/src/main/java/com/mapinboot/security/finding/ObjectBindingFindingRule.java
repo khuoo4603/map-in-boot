@@ -1,7 +1,10 @@
 package com.mapinboot.security.finding;
 
 import com.mapinboot.core.analysis.model.AnalysisReport;
+import com.mapinboot.core.common.error.ErrorCode;
+import com.mapinboot.core.common.error.MapInBootException;
 import com.mapinboot.core.common.status.Confidence;
+import com.mapinboot.core.evidence.Evidence;
 import com.mapinboot.core.evidence.Fact;
 import com.mapinboot.core.finding.Finding;
 import java.util.Comparator;
@@ -23,20 +26,16 @@ public final class ObjectBindingFindingRule {
         if (report == null || report.collectionReport() == null) {
             return List.of();
         }
-        Set<String> availableEvidence = report.evidence().stream()
-                .map(item -> item.id())
-                .collect(java.util.stream.Collectors.toSet());
-        Map<String, Fact> requirements = facts(report, REQUIREMENT_TYPE).stream()
-                .collect(java.util.stream.Collectors.toMap(
-                        Fact::subjectKey, fact -> fact, (first, second) -> first,
-                        LinkedHashMap::new));
+        Set<String> availableEvidence = evidenceById(report).keySet();
+        Map<String, Fact> requirements = factsBySubject(report, REQUIREMENT_TYPE);
+        Map<String, Fact> paths = factsBySubject(report, PATH_TYPE);
         Map<String, Finding> findings = new LinkedHashMap<>();
 
         for (Fact requirement : requirements.values()) {
             if (!hasEvidence(requirement, availableEvidence)) {
                 continue;
             }
-            for (Fact path : facts(report, PATH_TYPE)) {
+            for (Fact path : paths.values()) {
                 if (!matches(requirement, path)
                         || !POSITIVE_OUTCOMES.contains(path.attributes().get("pathOutcome"))
                         || !"COMPLETE_SUPPORTED_PATH".equals(path.attributes().get("coverage"))
@@ -56,7 +55,7 @@ public final class ObjectBindingFindingRule {
                         List.of(),
                         evidenceIds.stream().toList(),
                         "객체 조회 이후 요구된 Owner 또는 Assignment 기준의 인증정보 출처와 불일치 거부 경로를 확인하세요.");
-                findings.putIfAbsent(finding.id(), finding);
+                addFinding(findings, finding);
             }
         }
         return findings.values().stream()
@@ -66,18 +65,64 @@ public final class ObjectBindingFindingRule {
 
     private List<Fact> facts(AnalysisReport report, String type) {
         return report.collectionReport().facts().stream()
-                .filter(fact -> type.equals(fact.type()))
+                .filter(fact -> fact != null && type.equals(fact.type()))
                 .sorted(Comparator.comparing(Fact::subjectKey).thenComparing(Fact::id))
                 .toList();
     }
 
+    private Map<String, Fact> factsBySubject(AnalysisReport report, String type) {
+        Map<String, Fact> factsBySubject = new LinkedHashMap<>();
+        for (Fact fact : facts(report, type)) {
+            Fact existing = factsBySubject.putIfAbsent(fact.subjectKey(), fact);
+            if (existing != null && !existing.equals(fact)) {
+                throw new MapInBootException(ErrorCode.INVALID_STATE,
+                        "객체 인가 Fact 식별 충돌");
+            }
+        }
+        return factsBySubject;
+    }
+
     private boolean matches(Fact requirement, Fact path) {
-        return requirement.attributes().get("handler").equals(path.attributes().get("handler"))
-                && requirement.attributes().get("resourceType").equals(path.attributes().get("resourceType"))
-                && requirement.subjectKey().equals(path.attributes().get("requirementKey"));
+        return same(requirement.attributes().get("handler"), path.attributes().get("handler"))
+                && same(requirement.attributes().get("resourceType"), path.attributes().get("resourceType"))
+                && same(requirement.subjectKey(), path.attributes().get("requirementKey"));
     }
 
     private boolean hasEvidence(Fact fact, Set<String> availableEvidence) {
-        return !fact.evidenceIds().isEmpty() && availableEvidence.containsAll(fact.evidenceIds());
+        return fact != null && !fact.evidenceIds().isEmpty()
+                && fact.evidenceIds().stream().allMatch(id -> !isBlank(id))
+                && availableEvidence.containsAll(fact.evidenceIds());
+    }
+
+    private Map<String, Evidence> evidenceById(AnalysisReport report) {
+        Map<String, Evidence> evidenceById = new LinkedHashMap<>();
+        for (Evidence evidence : report.evidence()) {
+            if (evidence == null || isBlank(evidence.id())) {
+                throw new MapInBootException(ErrorCode.INVALID_STATE,
+                        "객체 인가 Evidence 식별자 누락");
+            }
+            Evidence existing = evidenceById.putIfAbsent(evidence.id(), evidence);
+            if (existing != null && !existing.equals(evidence)) {
+                throw new MapInBootException(ErrorCode.INVALID_STATE,
+                        "객체 인가 Evidence 식별 충돌");
+            }
+        }
+        return evidenceById;
+    }
+
+    private void addFinding(Map<String, Finding> findings, Finding finding) {
+        Finding existing = findings.putIfAbsent(finding.id(), finding);
+        if (existing != null && !existing.equals(finding)) {
+            throw new MapInBootException(ErrorCode.INVALID_STATE,
+                    "객체 인가 Finding 식별 충돌");
+        }
+    }
+
+    private boolean same(String first, String second) {
+        return !isBlank(first) && first.equals(second);
+    }
+
+    private boolean isBlank(String value) {
+        return value == null || value.isBlank();
     }
 }

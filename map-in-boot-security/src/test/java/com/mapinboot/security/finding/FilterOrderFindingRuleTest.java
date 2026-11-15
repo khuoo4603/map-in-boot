@@ -13,6 +13,8 @@ import com.mapinboot.core.evidence.Evidence;
 import com.mapinboot.core.evidence.Fact;
 import com.mapinboot.core.evidence.Relation;
 import com.mapinboot.core.finding.Finding;
+import com.mapinboot.core.graph.GraphBuilder;
+import com.mapinboot.core.graph.model.SecurityGraph;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -55,6 +57,52 @@ class FilterOrderFindingRuleTest {
         assertEquals(Confidence.LIKELY, findings.get(0).confidence());
         assertTrue(findings.get(0).evidenceIds().stream()
                 .allMatch(id -> report.evidence().stream().anyMatch(evidence -> evidence.id().equals(id))));
+    }
+
+    @Test
+    void connectsFindingToExactEndpointChainFiltersAndRelationsInGraph() {
+        Fact endpoint = endpoint("graph", "/graph");
+        Fact chain = chain("graph");
+        Fact guard = guardedFilter("graph-guard", chain, 1);
+        Fact bearer = securityFilter("graph-bearer", chain, 2,
+                "org.springframework.security.oauth2.server.resource.web.authentication.BearerTokenAuthenticationFilter",
+                Map.of("filterRole", "AUTHENTICATION_PROVIDER"));
+        AnalysisReport report = report(List.of(endpoint, chain, guard, bearer), List.of(
+                matched(endpoint, chain), filtered(chain, guard), filtered(chain, bearer)));
+
+        SecurityGraph graph = new GraphBuilder().build("identity", report);
+        Finding finding = new SecurityRuleEngine().evaluateWithDiagnostics(report, graph).findings().stream()
+                .filter(item -> "FILTER_ORDER".equals(item.ruleId()))
+                .findFirst().orElseThrow();
+
+        assertEquals(4, finding.nodeIds().size());
+        assertEquals(3, finding.edgeIds().size());
+        assertTrue(finding.nodeIds().stream().allMatch(id -> graph.nodes().stream()
+                .anyMatch(node -> node.id().equals(id))));
+        assertTrue(finding.edgeIds().stream().allMatch(id -> graph.edges().stream()
+                .anyMatch(edge -> edge.id().equals(id))));
+    }
+
+    @Test
+    void keepsFindingUnlinkedWhenFilterOrderGraphRelationIsMissing() {
+        Fact endpoint = endpoint("missing-edge", "/missing-edge");
+        Fact chain = chain("missing-edge");
+        Fact guard = guardedFilter("missing-edge-guard", chain, 1);
+        Fact bearer = securityFilter("missing-edge-bearer", chain, 2,
+                "org.springframework.security.oauth2.server.resource.web.authentication.BearerTokenAuthenticationFilter",
+                Map.of("filterRole", "AUTHENTICATION_PROVIDER"));
+        AnalysisReport report = report(List.of(endpoint, chain, guard, bearer), List.of(
+                matched(endpoint, chain), filtered(chain, guard), filtered(chain, bearer)));
+
+        SecurityGraph complete = new GraphBuilder().build("identity", report);
+        SecurityGraph incomplete = new SecurityGraph(
+                complete.nodes(), complete.edges().subList(0, complete.edges().size() - 1));
+        Finding finding = new SecurityRuleEngine().evaluateWithDiagnostics(report, incomplete).findings().stream()
+                .filter(item -> "FILTER_ORDER".equals(item.ruleId()))
+                .findFirst().orElseThrow();
+
+        assertTrue(finding.nodeIds().isEmpty());
+        assertTrue(finding.edgeIds().isEmpty());
     }
 
     @Test
@@ -209,7 +257,8 @@ class FilterOrderFindingRuleTest {
 
     private Fact chain(String key) {
         return fact("chain", key, "SECURITY_CHAIN", "chain|" + key, Map.of(
-                "chainKey", "proxy|" + key, "chainOrder", "1", "proxyBeanName", "proxy"));
+                "chainKey", "proxy|" + key, "chainOrder", "1", "proxyBeanName", "proxy",
+                "matcherType", "PATH"));
     }
 
     private Fact guardedFilter(String key, Fact chain, int order) {

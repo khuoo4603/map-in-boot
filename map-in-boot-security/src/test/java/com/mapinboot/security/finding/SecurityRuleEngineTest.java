@@ -1,12 +1,15 @@
 package com.mapinboot.security.finding;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.mapinboot.core.analysis.AnalysisProvider;
 import com.mapinboot.core.analysis.model.AnalysisContext;
 import com.mapinboot.core.analysis.model.AnalysisReport;
 import com.mapinboot.core.collection.model.CollectionReport;
+import com.mapinboot.core.common.error.FindingEvaluationException;
 import com.mapinboot.core.common.status.AnalysisStatus;
 import com.mapinboot.core.common.status.Confidence;
 import com.mapinboot.core.common.status.EvidenceSource;
@@ -15,13 +18,20 @@ import com.mapinboot.core.evidence.Evidence;
 import com.mapinboot.core.evidence.Fact;
 import com.mapinboot.core.evidence.Relation;
 import com.mapinboot.core.finding.Finding;
+import com.mapinboot.core.finding.FindingEvaluation;
+import com.mapinboot.core.graph.GraphBuilder;
+import com.mapinboot.core.graph.model.GraphNode;
+import com.mapinboot.core.graph.model.SecurityGraph;
 import com.mapinboot.security.analyzer.EndpointChainMatchingAnalysisAdapter;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Consumer;
 import org.junit.jupiter.api.Test;
+import org.jeasy.rules.api.Facts;
+import org.jeasy.rules.api.Rule;
 
 class SecurityRuleEngineTest {
 
@@ -34,6 +44,29 @@ class SecurityRuleEngineTest {
         List<Finding> findings = evaluate(List.of(endpoint, chain, requirement), readyStatuses());
 
         assertTrue(findings.isEmpty());
+    }
+
+    @Test
+    void doesNotTreatProducedBusinessStateAsRequiredState() {
+        Fact requirement = fact("state", "produced", "BUSINESS_SECURITY_STATE", "state|produced", Map.of(
+                "handler", "OrdersController#submit()",
+                "stateName", "IDENTITY_VERIFIED",
+                "stateAction", "PRODUCES",
+                "claim", "identity_verified",
+                "declaringMethod", "OrdersController#submit()"));
+        Fact evaluation = fact("state-evaluation", "produced", "BUSINESS_STATE_EVALUATION",
+                "state-evaluation|produced", Map.of(
+                        "handler", "OrdersController#submit()",
+                        "requirementKey", requirement.subjectKey(),
+                        "stateName", "IDENTITY_VERIFIED",
+                        "claimName", "identity_verified",
+                        "codeLocation", "OrdersController#submit():21",
+                        "pathOutcome", "BYPASS_PATH",
+                        "coverage", "COMPLETE_SUPPORTED_PATH",
+                        "evaluationScope", "HANDLER_LOCAL"));
+
+        assertTrue(evaluate(List.of(requirement, evaluation), Map.of()).stream()
+                .noneMatch(finding -> "STATE_BYPASS".equals(finding.ruleId())));
     }
 
     @Test
@@ -419,6 +452,132 @@ class SecurityRuleEngineTest {
     }
 
     @Test
+    void keepsIntegratedObjectAndStateFindingIdsAndEvidenceStableForRepeatedInput() {
+        Fact objectRequirement = fact("object-requirement", "stable",
+                "OBJECT_AUTHORIZATION_REQUIREMENT", "object-requirement|stable", Map.of(
+                        "handler", "OrdersController#load(java.lang.String)",
+                        "declaringMethod", "OrdersController#load(java.lang.String)",
+                        "requirementKind", "OWNER",
+                        "resourceType", "com.example.Account",
+                        "principalSource", "JWT_SUBJECT"));
+        Fact objectPath = fact("object-path", "stable", "OBJECT_ACCESS_PATH", "object-path|stable", Map.of(
+                "handler", "OrdersController#load(java.lang.String)",
+                "codeLocation", "OrdersController#load(java.lang.String):20",
+                "resourceType", "com.example.Account",
+                "requirementKey", objectRequirement.subjectKey(),
+                "pathOutcome", "UNGUARDED",
+                "coverage", "COMPLETE_SUPPORTED_PATH",
+                "principalSource", "JWT_SUBJECT"));
+        Fact stateRequirement = fact("state-requirement", "stable",
+                "BUSINESS_SECURITY_STATE", "state-requirement|stable", Map.of(
+                        "handler", "OrdersController#submit()",
+                        "stateName", "IDENTITY_VERIFIED",
+                        "stateAction", "REQUIRES",
+                        "claim", "identity_verified",
+                        "declaringMethod", "OrdersController#submit()"));
+        Fact stateEvaluation = fact("state-evaluation", "stable", "BUSINESS_STATE_EVALUATION",
+                "state-evaluation|stable", Map.of(
+                        "handler", "OrdersController#submit()",
+                        "requirementKey", stateRequirement.subjectKey(),
+                        "stateName", "IDENTITY_VERIFIED",
+                        "claimName", "identity_verified",
+                        "codeLocation", "OrdersController#submit():21",
+                        "pathOutcome", "BYPASS_PATH",
+                        "coverage", "COMPLETE_SUPPORTED_PATH",
+                        "evaluationScope", "HANDLER_LOCAL"));
+        List<Fact> facts = List.of(objectRequirement, objectPath, stateRequirement, stateEvaluation);
+
+        List<Finding> first = evaluate(facts, Map.of());
+        List<Fact> reversed = new ArrayList<>(facts);
+        Collections.reverse(reversed);
+        List<Finding> second = evaluate(reversed, Map.of());
+
+        assertEquals(first, second);
+        assertEquals(2, first.size());
+        assertTrue(first.stream().flatMap(finding -> finding.evidenceIds().stream())
+                .allMatch(id -> facts.stream().flatMap(fact -> fact.evidenceIds().stream())
+                        .anyMatch(id::equals)));
+    }
+
+    @Test
+    void linksObjectFindingToItsOwnRequirementAndPathWhenHandlersShareEvidence() {
+        String sharedEvidenceId = "shared-object-evidence";
+        Fact firstRequirement = objectRequirement("OrdersController#loadA(java.lang.String)", "object-requirement|a",
+                sharedEvidenceId);
+        Fact firstPath = objectPath(firstRequirement, "OrdersController#loadA(java.lang.String):20", "object-path|a",
+                sharedEvidenceId);
+        Fact secondRequirement = objectRequirement("OrdersController#loadB(java.lang.String)", "object-requirement|b",
+                sharedEvidenceId);
+        Fact secondPath = objectPath(secondRequirement, "OrdersController#loadB(java.lang.String):20", "object-path|b",
+                sharedEvidenceId);
+        List<Fact> facts = List.of(firstRequirement, firstPath, secondRequirement, secondPath);
+        List<Evidence> evidence = List.of(
+                new Evidence(sharedEvidenceId, EvidenceSource.RUNTIME, "test", "shared evidence"));
+        AnalysisReport report = new AnalysisReport(
+                new CollectionReport(facts, evidence, Map.of(), List.of()),
+                List.of(), evidence, Map.of(), List.of());
+        SecurityGraph graph = new GraphBuilder().build("orders", report);
+
+        FindingEvaluation evaluation = new SecurityRuleEngine().evaluateWithDiagnostics(report, graph);
+
+        assertTrue(evaluation.diagnostics().isEmpty());
+        Finding firstFinding = evaluation.findings().stream()
+                .filter(finding -> finding.id().equals(new FindingIdGenerator().generate(
+                        "OBJECT_BINDING", List.of(firstRequirement.subjectKey(), firstPath.subjectKey()))))
+                .findFirst().orElseThrow();
+        Finding secondFinding = evaluation.findings().stream()
+                .filter(finding -> finding.id().equals(new FindingIdGenerator().generate(
+                        "OBJECT_BINDING", List.of(secondRequirement.subjectKey(), secondPath.subjectKey()))))
+                .findFirst().orElseThrow();
+
+        assertEquals(List.of(nodeId(graph, firstRequirement.subjectKey()), nodeId(graph, firstPath.subjectKey()))
+                        .stream().sorted().toList(), firstFinding.nodeIds());
+        assertEquals(List.of(nodeId(graph, secondRequirement.subjectKey()), nodeId(graph, secondPath.subjectKey()))
+                        .stream().sorted().toList(), secondFinding.nodeIds());
+    }
+
+    @Test
+    void linksStateFindingToRequiredStateAndEvaluationWhenProducedStateSharesEvidence() {
+        String sharedEvidenceId = "shared-state-evidence";
+        Fact firstRequirement = stateRequirement("OrdersController#submitA()", "state-requirement|a", "REQUIRES",
+                sharedEvidenceId);
+        Fact firstEvaluation = stateEvaluation(firstRequirement, "OrdersController#submitA()", "state-evaluation|a",
+                sharedEvidenceId);
+        Fact secondRequirement = stateRequirement("OrdersController#submitB()", "state-requirement|b", "REQUIRES",
+                sharedEvidenceId);
+        Fact secondEvaluation = stateEvaluation(secondRequirement, "OrdersController#submitB()", "state-evaluation|b",
+                sharedEvidenceId);
+        Fact producedState = stateRequirement("OrdersController#produce()", "state-produced", "PRODUCES",
+                sharedEvidenceId);
+        List<Fact> facts = List.of(firstRequirement, firstEvaluation, secondRequirement, secondEvaluation, producedState);
+        List<Evidence> evidence = List.of(
+                new Evidence(sharedEvidenceId, EvidenceSource.RUNTIME, "test", "shared evidence"));
+        AnalysisReport report = new AnalysisReport(
+                new CollectionReport(facts, evidence, Map.of(), List.of()),
+                List.of(), evidence, Map.of(), List.of());
+        SecurityGraph graph = new GraphBuilder().build("orders", report);
+
+        FindingEvaluation evaluation = new SecurityRuleEngine().evaluateWithDiagnostics(report, graph);
+
+        assertTrue(evaluation.diagnostics().isEmpty());
+        Finding firstFinding = evaluation.findings().stream()
+                .filter(finding -> finding.id().equals(new FindingIdGenerator().generate(
+                        "STATE_BYPASS", List.of(firstRequirement.subjectKey(), firstEvaluation.subjectKey()))))
+                .findFirst().orElseThrow();
+        Finding secondFinding = evaluation.findings().stream()
+                .filter(finding -> finding.id().equals(new FindingIdGenerator().generate(
+                        "STATE_BYPASS", List.of(secondRequirement.subjectKey(), secondEvaluation.subjectKey()))))
+                .findFirst().orElseThrow();
+
+        assertEquals(List.of(nodeId(graph, firstRequirement.subjectKey()), nodeId(graph, firstEvaluation.subjectKey()))
+                        .stream().sorted().toList(), firstFinding.nodeIds());
+        assertEquals(List.of(nodeId(graph, secondRequirement.subjectKey()), nodeId(graph, secondEvaluation.subjectKey()))
+                        .stream().sorted().toList(), secondFinding.nodeIds());
+        assertTrue(firstFinding.nodeIds().stream().noneMatch(id -> id.equals(nodeId(graph, producedState.subjectKey()))));
+        assertTrue(secondFinding.nodeIds().stream().noneMatch(id -> id.equals(nodeId(graph, producedState.subjectKey()))));
+    }
+
+    @Test
     void keepsExistingChainFindingWhenMethodMismatchHasNoStructuredBypassEvidence() {
         Fact endpoint = endpoint("reports", "/api/reports/summary");
         Fact broad = chain("broad", 1, "/api/reports/**");
@@ -494,6 +653,287 @@ class SecurityRuleEngineTest {
         assertEquals(1, findings.stream().filter(finding -> "FILTER_ORDER".equals(finding.ruleId())).count());
     }
 
+    @Test
+    void ignoresIncompleteRuleInputWhileContinuingOtherRules() {
+        Fact endpoint = endpoint("orders", "/api/orders");
+        Fact chain = chain("admin", 1, "/api/admin/**");
+        Fact objectAuthorization = objectAuthorization("orders", endpoint);
+        Fact malformedRequirement = fact("object-requirement", "broken",
+                "OBJECT_AUTHORIZATION_REQUIREMENT", "object-requirement|broken", Map.of(
+                        "resourceType", "com.example.Account",
+                        "requirementKind", "OWNER",
+                        "principalSource", "JWT_SUBJECT"));
+        Fact malformedPath = fact("object-path", "broken", "OBJECT_ACCESS_PATH", "object-path|broken", Map.of(
+                "resourceType", "com.example.Account",
+                "requirementKey", malformedRequirement.subjectKey(),
+                "pathOutcome", "UNGUARDED",
+                "coverage", "COMPLETE_SUPPORTED_PATH",
+                "principalSource", "JWT_SUBJECT"));
+
+        FindingEvaluation evaluation = evaluateWithDiagnostics(
+                List.of(endpoint, chain, objectAuthorization, malformedRequirement, malformedPath),
+                readyStatuses(),
+                List.of(objectAuthorizationRelation(endpoint, objectAuthorization)));
+
+        assertTrue(evaluation.findings().stream().anyMatch(finding -> "CHAIN_MISSING".equals(finding.ruleId())));
+        assertTrue(evaluation.findings().stream().noneMatch(finding -> "OBJECT_BINDING".equals(finding.ruleId())));
+        assertTrue(evaluation.diagnostics().isEmpty());
+    }
+
+    @Test
+    void reportsRuleFailureWithoutHidingLaterPositiveFinding() {
+        AnalysisReport report = new AnalysisReport(
+                new CollectionReport(List.of(), List.of(), Map.of(), List.of()),
+                List.of(), List.of(), Map.of(), List.of());
+        Finding laterFinding = new Finding(
+                "later-finding", "TEST_RULE", "테스트 Finding", "후속 Rule 양성", Confidence.LIKELY,
+                List.of(), List.of(), List.of(), "후속 Rule 근거 확인");
+        Rule firstFailure = rule("FIRST_FAILURE", 1, facts -> {
+            throw new IllegalStateException("secret details must not be exposed");
+        });
+        Rule laterPositive = rule("LATER_POSITIVE", 2,
+                facts -> facts.<List<Finding>>get("findings").add(laterFinding));
+
+        SecurityRuleEngine engine = new SecurityRuleEngine(List.of(firstFailure, laterPositive));
+
+        FindingEvaluation evaluation = engine.evaluateWithDiagnostics(report);
+
+        assertEquals(List.of(laterFinding), evaluation.findings());
+        assertEquals(1, evaluation.diagnostics().size());
+        assertEquals("finding-rule:FIRST_FAILURE", evaluation.diagnostics().get(0).adapterId());
+        assertThrows(FindingEvaluationException.class, () -> engine.evaluate(report));
+    }
+
+    @Test
+    void reportsConflictingDuplicateObjectRequirementsInsteadOfDroppingOne() {
+        String requirementKey = "object-requirement|duplicate";
+        Fact firstRequirement = fact("object-requirement-a", "duplicate",
+                "OBJECT_AUTHORIZATION_REQUIREMENT", requirementKey, Map.of(
+                        "handler", "OrdersController#loadA(java.lang.String)",
+                        "declaringMethod", "OrdersController#loadA(java.lang.String)",
+                        "requirementKind", "OWNER",
+                        "resourceType", "com.example.Account",
+                        "principalSource", "JWT_SUBJECT"));
+        Fact secondRequirement = fact("object-requirement-b", "duplicate",
+                "OBJECT_AUTHORIZATION_REQUIREMENT", requirementKey, Map.of(
+                        "handler", "OrdersController#loadB(java.lang.String)",
+                        "declaringMethod", "OrdersController#loadB(java.lang.String)",
+                        "requirementKind", "OWNER",
+                        "resourceType", "com.example.Account",
+                        "principalSource", "JWT_SUBJECT"));
+        Fact path = fact("object-path", "duplicate", "OBJECT_ACCESS_PATH", "object-path|duplicate", Map.of(
+                "handler", "OrdersController#loadB(java.lang.String)",
+                "codeLocation", "OrdersController#loadB(java.lang.String):20",
+                "resourceType", "com.example.Account",
+                "requirementKey", requirementKey,
+                "pathOutcome", "UNGUARDED",
+                "coverage", "COMPLETE_SUPPORTED_PATH",
+                "principalSource", "JWT_SUBJECT"));
+        List<Fact> facts = List.of(firstRequirement, secondRequirement, path);
+        AnalysisReport report = new AnalysisReport(
+                new CollectionReport(facts, evidenceFor(facts), Map.of(), List.of()),
+                List.of(), evidenceFor(facts), Map.of(), List.of());
+
+        FindingEvaluation evaluation = new SecurityRuleEngine().evaluateWithDiagnostics(report);
+
+        assertTrue(evaluation.findings().isEmpty());
+        assertEquals(List.of("finding-rule:OBJECT_BINDING"),
+                evaluation.diagnostics().stream().map(diagnostic -> diagnostic.adapterId()).toList());
+    }
+
+    @Test
+    void keepsDistinctFindingIdsForMultiplePathsOfOneHandler() {
+        Fact requirement = fact("object-requirement", "multi-path",
+                "OBJECT_AUTHORIZATION_REQUIREMENT", "object-requirement|multi-path", Map.of(
+                        "handler", "OrdersController#load(java.lang.String)",
+                        "declaringMethod", "OrdersController#load(java.lang.String)",
+                        "requirementKind", "OWNER",
+                        "resourceType", "com.example.Account",
+                        "principalSource", "JWT_SUBJECT"));
+        Fact firstPath = fact("object-path", "multi-path-a", "OBJECT_ACCESS_PATH", "object-path|multi-path-a",
+                Map.of(
+                        "handler", "OrdersController#load(java.lang.String)",
+                        "codeLocation", "OrdersController#load(java.lang.String):20",
+                        "resourceType", "com.example.Account",
+                        "requirementKey", requirement.subjectKey(),
+                        "pathOutcome", "UNGUARDED",
+                        "coverage", "COMPLETE_SUPPORTED_PATH",
+                        "principalSource", "JWT_SUBJECT"));
+        Fact secondPath = fact("object-path", "multi-path-b", "OBJECT_ACCESS_PATH", "object-path|multi-path-b",
+                Map.of(
+                        "handler", "OrdersController#load(java.lang.String)",
+                        "codeLocation", "OrdersController#load(java.lang.String):30",
+                        "resourceType", "com.example.Account",
+                        "requirementKey", requirement.subjectKey(),
+                        "pathOutcome", "SOURCE_MISMATCH",
+                        "coverage", "COMPLETE_SUPPORTED_PATH",
+                        "principalSource", "JWT_SUBJECT"));
+
+        List<Finding> findings = evaluate(List.of(requirement, firstPath, secondPath), Map.of());
+
+        assertEquals(2, findings.size());
+        assertNotEquals(findings.get(0).id(), findings.get(1).id());
+        assertTrue(findings.stream().allMatch(finding -> finding.confidence() == Confidence.CONFIRMED));
+        assertTrue(findings.stream().allMatch(finding -> finding.guide().contains("확인하세요")));
+    }
+
+    @Test
+    void doesNotCreateStateBypassWhenRequirementEvidenceIsMissing() {
+        Fact requirement = fact("state-requirement", "missing-evidence",
+                "BUSINESS_SECURITY_STATE", "state-requirement|missing-evidence", Map.of(
+                        "handler", "OrdersController#submit()",
+                        "stateName", "IDENTITY_VERIFIED",
+                        "stateAction", "REQUIRES",
+                        "claim", "identity_verified",
+                        "declaringMethod", "OrdersController#submit()"));
+        Fact evaluation = fact("state-evaluation", "missing-evidence", "BUSINESS_STATE_EVALUATION",
+                "state-evaluation|missing-evidence", Map.of(
+                        "handler", "OrdersController#submit()",
+                        "requirementKey", requirement.subjectKey(),
+                        "stateName", "IDENTITY_VERIFIED",
+                        "claimName", "identity_verified",
+                        "codeLocation", "OrdersController#submit():21",
+                        "pathOutcome", "BYPASS_PATH",
+                        "coverage", "COMPLETE_SUPPORTED_PATH",
+                        "evaluationScope", "HANDLER_LOCAL"));
+
+        assertTrue(evaluate(List.of(withoutEvidence(requirement), evaluation), Map.of()).isEmpty());
+    }
+
+    @Test
+    void diagnosesConflictingEvidenceIdsInsteadOfCreatingFinding() {
+        Fact requirement = new Fact(
+                "object-requirement-fact", "OBJECT_AUTHORIZATION_REQUIREMENT", "object-requirement|evidence-conflict",
+                Map.of(
+                        "handler", "OrdersController#load(java.lang.String)",
+                        "declaringMethod", "OrdersController#load(java.lang.String)",
+                        "requirementKind", "OWNER",
+                        "resourceType", "com.example.Account",
+                        "principalSource", "JWT_SUBJECT"),
+                List.of("evidence-conflict"));
+        Fact path = new Fact(
+                "object-path-fact", "OBJECT_ACCESS_PATH", "object-path|evidence-conflict",
+                Map.of(
+                        "handler", "OrdersController#load(java.lang.String)",
+                        "codeLocation", "OrdersController#load(java.lang.String):20",
+                        "resourceType", "com.example.Account",
+                        "requirementKey", requirement.subjectKey(),
+                        "pathOutcome", "UNGUARDED",
+                        "coverage", "COMPLETE_SUPPORTED_PATH",
+                        "principalSource", "JWT_SUBJECT"),
+                List.of("path-evidence"));
+        List<Evidence> evidence = List.of(
+                new Evidence("evidence-conflict", EvidenceSource.RUNTIME, "test", "first"),
+                new Evidence("evidence-conflict", EvidenceSource.CODE_PATTERN, "test", "second"),
+                new Evidence("path-evidence", EvidenceSource.RUNTIME, "test", "path"));
+        AnalysisReport report = new AnalysisReport(
+                new CollectionReport(List.of(requirement, path), evidence, Map.of(), List.of()),
+                List.of(), evidence, Map.of(), List.of());
+
+        FindingEvaluation evaluation = new SecurityRuleEngine().evaluateWithDiagnostics(report);
+
+        assertTrue(evaluation.findings().isEmpty());
+        assertTrue(evaluation.diagnostics().stream()
+                .anyMatch(diagnostic -> "finding-rule:OBJECT_BINDING".equals(diagnostic.adapterId())));
+    }
+
+    @Test
+    void diagnosesConflictingFindingIdsInsteadOfKeepingOneContent() {
+        Finding first = new Finding("collision", "TEST_RULE", "첫 번째", "첫 번째", Confidence.CONFIRMED,
+                List.of(), List.of(), List.of(), "첫 번째 근거");
+        Finding second = new Finding("collision", "TEST_RULE", "두 번째", "두 번째", Confidence.LIKELY,
+                List.of(), List.of(), List.of(), "두 번째 근거");
+        SecurityRuleEngine engine = new SecurityRuleEngine(List.of(
+                rule("FIRST", 1, facts -> facts.<List<Finding>>get("findings").add(first)),
+                rule("SECOND", 2, facts -> facts.<List<Finding>>get("findings").add(second))));
+        AnalysisReport report = new AnalysisReport(
+                new CollectionReport(List.of(), List.of(), Map.of(), List.of()),
+                List.of(), List.of(), Map.of(), List.of());
+
+        FindingEvaluation evaluation = engine.evaluateWithDiagnostics(report);
+
+        assertTrue(evaluation.findings().isEmpty());
+        assertEquals(List.of("finding-engine"),
+                evaluation.diagnostics().stream().map(diagnostic -> diagnostic.adapterId()).toList());
+    }
+
+    private Rule rule(String name, int priority, Consumer<Facts> action) {
+        return new Rule() {
+            @Override
+            public String getName() {
+                return name;
+            }
+
+            @Override
+            public int getPriority() {
+                return priority;
+            }
+
+            @Override
+            public boolean evaluate(Facts facts) {
+                return true;
+            }
+
+            @Override
+            public void execute(Facts facts) {
+                action.accept(facts);
+            }
+
+            @Override
+            public int compareTo(Rule other) {
+                return Integer.compare(priority, other.getPriority());
+            }
+        };
+    }
+
+    private Fact objectRequirement(String handler, String subjectKey, String evidenceId) {
+        return new Fact("requirement-" + subjectKey, "OBJECT_AUTHORIZATION_REQUIREMENT", subjectKey, Map.of(
+                "handler", handler,
+                "declaringMethod", handler,
+                "requirementKind", "OWNER",
+                "resourceType", "com.example.Account",
+                "principalSource", "JWT_SUBJECT"), List.of(evidenceId));
+    }
+
+    private Fact objectPath(Fact requirement, String codeLocation, String subjectKey, String evidenceId) {
+        return new Fact("path-" + subjectKey, "OBJECT_ACCESS_PATH", subjectKey, Map.of(
+                "handler", requirement.attributes().get("handler"),
+                "codeLocation", codeLocation,
+                "resourceType", "com.example.Account",
+                "requirementKey", requirement.subjectKey(),
+                "pathOutcome", "UNGUARDED",
+                "coverage", "COMPLETE_SUPPORTED_PATH",
+                "principalSource", "JWT_SUBJECT"), List.of(evidenceId));
+    }
+
+    private Fact stateRequirement(String handler, String subjectKey, String action, String evidenceId) {
+        return new Fact("state-" + subjectKey, "BUSINESS_SECURITY_STATE", subjectKey, Map.of(
+                "handler", handler,
+                "stateName", "IDENTITY_VERIFIED",
+                "stateAction", action,
+                "claim", "identity_verified",
+                "declaringMethod", handler), List.of(evidenceId));
+    }
+
+    private Fact stateEvaluation(Fact requirement, String handler, String subjectKey, String evidenceId) {
+        return new Fact("evaluation-" + subjectKey, "BUSINESS_STATE_EVALUATION", subjectKey, Map.of(
+                "handler", handler,
+                "requirementKey", requirement.subjectKey(),
+                "stateName", "IDENTITY_VERIFIED",
+                "claimName", "identity_verified",
+                "codeLocation", handler + ":20",
+                "pathOutcome", "BYPASS_PATH",
+                "coverage", "COMPLETE_SUPPORTED_PATH",
+                "evaluationScope", "HANDLER_LOCAL"), List.of(evidenceId));
+    }
+
+    private String nodeId(SecurityGraph graph, String label) {
+        return graph.nodes().stream()
+                .filter(node -> label.equals(node.label()))
+                .map(GraphNode::id)
+                .findFirst().orElseThrow();
+    }
+
     private List<Finding> evaluate(List<Fact> facts, Map<String, AnalysisStatus> statuses) {
         List<Evidence> evidence = facts.stream()
                 .flatMap(fact -> fact.evidenceIds().stream())
@@ -509,6 +949,36 @@ class SecurityRuleEngineTest {
             List<Evidence> evidence
     ) {
         return evaluateWithEvidence(facts, statuses, evidence, List.of());
+    }
+
+    private FindingEvaluation evaluateWithDiagnostics(
+            List<Fact> facts,
+            Map<String, AnalysisStatus> statuses,
+            List<Relation> additionalRelations
+    ) {
+        List<Evidence> evidence = facts.stream()
+                .flatMap(fact -> fact.evidenceIds().stream())
+                .distinct()
+                .map(id -> new Evidence(id, EvidenceSource.RUNTIME, "test", "test evidence"))
+                .toList();
+        CollectionReport collection = new CollectionReport(facts, evidence, statuses, List.of());
+        AnalysisReport analyzed = new AnalysisProvider().execute(
+                new AnalysisContext(collection, "main"), List.of(new EndpointChainMatchingAnalysisAdapter()));
+        AnalysisReport report = new AnalysisReport(
+                collection,
+                java.util.stream.Stream.concat(analyzed.relations().stream(), additionalRelations.stream()).toList(),
+                analyzed.evidence(),
+                analyzed.statusByAdapter(),
+                analyzed.diagnostics());
+        return new SecurityRuleEngine().evaluateWithDiagnostics(report);
+    }
+
+    private List<Evidence> evidenceFor(List<Fact> facts) {
+        return facts.stream()
+                .flatMap(fact -> fact.evidenceIds().stream())
+                .distinct()
+                .map(id -> new Evidence(id, EvidenceSource.RUNTIME, "test", "test evidence"))
+                .toList();
     }
 
     private List<Finding> evaluate(

@@ -408,10 +408,94 @@
     return [...ids];
   }
 
-  function findingsForEvidence(ruleId, evidenceIds) {
-    const ids = new Set(evidenceIds || []);
-    return findingsOf(ruleId).filter((finding) =>
-      (finding.evidenceIds || []).some((id) => ids.has(id)));
+  // Finding Evidence와 구조 키의 정확한 일치 여부 확인
+  function exactFindingEvidence(finding, items) {
+    const expected = new Set(evidenceIdsOf(items));
+    const actual = new Set(finding.evidenceIds || []);
+    return expected.size > 0
+      && expected.size === actual.size
+      && [...expected].every((id) => actual.has(id));
+  }
+
+  // Finding의 실제 Graph Node가 행 Fact의 구조와 일치하는지 확인
+  function graphNodesForFact(fact) {
+    const nodes = state.report.currentSnapshot && state.report.currentSnapshot.nodes || [];
+    return nodes.filter((node) => {
+      const nodeAttributes = attributesOf(node);
+      if (!fact || node.label !== fact.subjectKey
+        || !(fact.evidenceIds || []).every((id) => (node.evidenceIds || []).includes(id))) return false;
+      if (fact.type === "BUSINESS_SECURITY_STATE") {
+        if (node.type !== "BUSINESS_SECURITY_STATE" || Object.prototype.hasOwnProperty.call(nodeAttributes, "factType")) return false;
+      } else if (node.type !== (fact.type === "BUSINESS_STATE_EVALUATION" ? "BUSINESS_SECURITY_STATE" : "AUTHORIZATION")
+        || nodeAttributes.factType !== fact.type) return false;
+      return Object.entries(attributesOf(fact)).every(([key, item]) => nodeAttributes[key] === item);
+    });
+  }
+
+  // Finding Node 참조와 상세 행 Fact의 일대일 대응 확인
+  function findingReferencesFacts(finding, facts) {
+    const expectedNodeIds = [];
+    for (const fact of facts) {
+      const candidates = graphNodesForFact(fact);
+      if (candidates.length !== 1) return false;
+      expectedNodeIds.push(candidates[0].id);
+    }
+    const actualNodeIds = new Set(finding.nodeIds || []);
+    return actualNodeIds.size === expectedNodeIds.length
+      && expectedNodeIds.every((id) => actualNodeIds.has(id));
+  }
+
+  function objectFindingMatches(finding, row) {
+    const requirement = row.requirement;
+    const path = row.path;
+    const requirementAttributes = attributesOf(requirement);
+    const pathAttributes = attributesOf(path);
+    return finding.ruleId === "OBJECT_BINDING"
+      && requirement && path
+      && pathAttributes.pathOutcome !== "GUARDED"
+      && (pathAttributes.pathOutcome === "UNGUARDED" || pathAttributes.pathOutcome === "SOURCE_MISMATCH")
+      && pathAttributes.coverage === "COMPLETE_SUPPORTED_PATH"
+      && requirementAttributes.handler
+      && requirementAttributes.handler === pathAttributes.handler
+      && requirementAttributes.resourceType
+      && requirementAttributes.resourceType === pathAttributes.resourceType
+      && requirement.subjectKey
+      && requirement.subjectKey === pathAttributes.requirementKey
+      && exactFindingEvidence(finding, [requirement, path])
+      && findingReferencesFacts(finding, [requirement, path]);
+  }
+
+  function stateFindingMatches(finding, row) {
+    const state = row.state;
+    const evaluation = row.evaluation;
+    const stateAttributes = attributesOf(state);
+    const evaluationAttributes = attributesOf(evaluation);
+    const claim = stateAttributes.claim || stateAttributes.claimName;
+    return finding.ruleId === "STATE_BYPASS"
+      && state && evaluation
+      && stateAttributes.stateAction === "REQUIRES"
+      && evaluationAttributes.pathOutcome === "BYPASS_PATH"
+      && evaluationAttributes.coverage === "COMPLETE_SUPPORTED_PATH"
+      && stateAttributes.handler
+      && stateAttributes.handler === evaluationAttributes.handler
+      && stateAttributes.stateName
+      && stateAttributes.stateName === evaluationAttributes.stateName
+      && claim
+      && claim === (evaluationAttributes.claimName || evaluationAttributes.claim)
+      && state.subjectKey
+      && state.subjectKey === evaluationAttributes.requirementKey
+      && exactFindingEvidence(finding, [state, evaluation])
+      && findingReferencesFacts(finding, [state, evaluation]);
+  }
+
+  function findingsForObjectRow(row) {
+    const matches = findingsOf("OBJECT_BINDING").filter((finding) => objectFindingMatches(finding, row));
+    return matches.length === 1 ? matches : [];
+  }
+
+  function findingsForStateRow(row) {
+    const matches = findingsOf("STATE_BYPASS").filter((finding) => stateFindingMatches(finding, row));
+    return matches.length === 1 ? matches : [];
   }
 
   function appendFactDetails(details, label, fact) {
@@ -439,7 +523,9 @@
   function appendFindingDetails(details, label, finding) {
     details.push([`${label} Rule`, finding.ruleId], [`${label} ID`, finding.id],
       [`${label} 제목`, finding.title], [`${label} 설명`, finding.description],
-      [`${label} Confidence`, confidenceLabel(finding.confidence)], [`${label} 가이드`, finding.guide]);
+      [`${label} Confidence`, confidenceLabel(finding.confidence)], [`${label} 가이드`, finding.guide],
+      [`${label} Graph Node ID`, (finding.nodeIds || []).join(", ") || "없음"],
+      [`${label} Graph Edge ID`, (finding.edgeIds || []).join(", ") || "없음"]);
     details.push(...evidenceDetails(finding.evidenceIds).map(([key, item]) => [`${label} ${key}`, item]));
   }
 
@@ -484,7 +570,7 @@
           checks: objectChecks,
           credentials: linkedCredentials,
           relations: [...securedRelations, ...usesRelations],
-          findings: findingsForEvidence("OBJECT_BINDING", evidenceIds),
+          findings: findingsForObjectRow({ requirement, path }),
           evidenceIds,
           handler: requirementAttributes.handler,
           resourceType: requirementAttributes.resourceType,
@@ -505,14 +591,46 @@
     row.relations.forEach((relation, index) => appendRelationDetails(details, `관계 ${index + 1}`, relation));
     if (!row.relations.length) details.push(["관계", "확정 관계 없음"]);
     row.findings.forEach((finding, index) => appendFindingDetails(details, `Finding ${index + 1}`, finding));
-    if (!row.findings.length) details.push(["OBJECT_BINDING Finding", "현재 Report에 없음. Finding 0건은 안전 판정이 아님"]);
+    if (!row.findings.length) details.push(["OBJECT_BINDING Finding", noFindingMessage("OBJECT_BINDING", row)]);
     return details;
   }
 
   function renderObjectAuthorization(parent) {
     const rows = objectAuthorizationRows();
-    analysisNotice(parent, "OBJECT_BINDING Rule 미통합",
-      "객체 인가 Fact·Relation·Evidence는 표시하지만 현재 SecurityRuleEngine에 등록되지 않은 독립 Rule이다. Finding 0건은 안전 판정이 아니다.");
+    const paths = factsOf("OBJECT_ACCESS_PATH");
+    const findings = new Set(rows.flatMap((row) => row.findings.map((finding) => finding.id)));
+    const pathCounts = ["GUARDED", "UNGUARDED", "SOURCE_MISMATCH", "UNRESOLVED"]
+      .map((outcome) => [analysisOutcomeLabel(outcome), paths.filter((path) => attributesOf(path).pathOutcome === outcome).length]);
+    const coverageCounts = ["COMPLETE_SUPPORTED_PATH", "INCOMPLETE"]
+      .map((coverage) => [coverageLabel(coverage), paths.filter((path) => attributesOf(path).coverage === coverage).length]);
+    const collectionStatus = state.report.collectionStatuses && state.report.collectionStatuses["security-object-authorization"];
+    const analysisStatus = state.report.analysisStatuses && state.report.analysisStatuses["security-authorization-analysis"];
+    let notice;
+    if (["COLLECTING", "ANALYZING", "RUNNING", "NOT_STARTED"].includes(collectionStatus)) {
+      notice = "객체 인가 Collector가 아직 실행 중입니다.";
+    } else if (["FAILED", "UNKNOWN"].includes(collectionStatus)) {
+      notice = `객체 인가 Collector 상태 ${statusLabel(collectionStatus)}. 수집되지 않은 영역은 안전 판정이 아님`;
+    } else if (["FAILED", "UNKNOWN"].includes(analysisStatus)) {
+      notice = `객체 인가 Analyzer 상태 ${statusLabel(analysisStatus)}. 분석되지 않은 영역은 안전 판정이 아님`;
+    } else if (collectionStatus === "PARTIAL" || analysisStatus === "PARTIAL") {
+      notice = "객체 인가 분석이 부분 완료되어 미확정 경로가 포함될 수 있음. 안전 판정이 아님";
+    } else if (!factsOf("OBJECT_AUTHORIZATION_REQUIREMENT").length) {
+      notice = "현재 서비스에서 객체 인가 분석 대상이 발견되지 않았습니다. 분석 대상 0건은 서비스가 안전하다는 의미가 아닙니다.";
+    } else if (paths.some((path) => attributesOf(path).pathOutcome === "UNRESOLVED"
+        || attributesOf(path).coverage === "INCOMPLETE")) {
+      notice = "객체 인가 분석 대상 중 미확정 또는 불완전 경로가 있어 안전 판정이 아님";
+    } else if (!findings.size) {
+      notice = "객체 인가 분석 대상은 있으나 현재 일치하는 Finding이 없음. 안전 판정이 아님";
+    } else {
+      notice = `객체 인가 관련 Finding ${findings.size}건 확인`;
+    }
+    renderAnalysisSummary(parent, "객체 인가 분석 요약", [
+      ["객체 인가 요구 수", factsOf("OBJECT_AUTHORIZATION_REQUIREMENT").length],
+      ["접근 경로 분석 수", paths.length],
+      ...pathCounts,
+      ...coverageCounts,
+      ["관련 Finding 수", findings.size]
+    ], notice);
     renderList(parent, rows, [
       { label: "Handler", value: (item) => item.handler, code: true, truncate: true, width: "27%" },
       { label: "Resource", value: (item) => item.resourceType, truncate: true, width: "18%" },
@@ -521,6 +639,24 @@
       { label: "경로 판정", value: (item) => item.pathOutcome || "미수집", display: (item) => item === "미수집" ? item : analysisOutcomeLabel(item), badge: true, badgeTone: (item) => item.pathOutcome || "unknown", width: "18%" },
       { label: "Coverage", value: (item) => item.coverage || "미수집", display: (item) => item === "미수집" ? item : coverageLabel(item), badge: true, badgeTone: (item) => item.coverage || "unknown", width: "18%" }
     ], objectAuthorizationDetails, null, "analysis-table");
+  }
+
+  function renderAnalysisSummary(parent, title, entries, notice) {
+    const section = create("section", undefined, "analysis-summary");
+    section.append(create("h2", title, "analysis-summary-title"));
+    const counts = create("div", undefined, "analysis-summary-counts");
+    entries.forEach(([label, count]) => {
+      const item = document.createElement("div");
+      item.append(create("span", label), create("span", count, "count-value"));
+      counts.append(item);
+    });
+    section.append(counts);
+    if (notice) {
+      const message = create("p", undefined, "analysis-notice");
+      message.append(create("strong", "분석 상태"), create("span", ` ${notice}`));
+      section.append(message);
+    }
+    parent.append(section);
   }
 
   function businessStateRows() {
@@ -532,9 +668,11 @@
       const stateAttributes = attributesOf(stateFact);
       const stateEvaluations = evaluations.filter((evaluation) => {
         const attributes = attributesOf(evaluation);
-        return attributes.requirementKey === stateFact.subjectKey
+        return stateAttributes.stateAction === "REQUIRES"
+          && attributes.requirementKey === stateFact.subjectKey
           && attributes.handler === stateAttributes.handler
-          && attributes.stateName === stateAttributes.stateName;
+          && attributes.stateName === stateAttributes.stateName
+          && (attributes.claimName || attributes.claim) === (stateAttributes.claim || stateAttributes.claimName);
       });
       const evaluationItems = stateEvaluations.length ? stateEvaluations : [null];
       evaluationItems.forEach((evaluation) => {
@@ -547,7 +685,7 @@
           state: stateFact,
           evaluation,
           relations: related,
-          findings: findingsForEvidence("STATE_BYPASS", evidenceIds),
+          findings: findingsForStateRow({ state: stateFact, evaluation }),
           handler: stateAttributes.handler,
           stateName: stateAttributes.stateName,
           stateAction: stateAttributes.stateAction,
@@ -567,14 +705,59 @@
     row.relations.forEach((relation, index) => appendRelationDetails(details, `관계 ${index + 1}`, relation));
     if (!row.relations.length) details.push(["관계", "확정 관계 없음"]);
     row.findings.forEach((finding, index) => appendFindingDetails(details, `Finding ${index + 1}`, finding));
-    if (!row.findings.length) details.push(["STATE_BYPASS Finding", "현재 Report에 없음. Finding 0건은 안전 판정이 아님"]);
+    if (!row.findings.length) details.push(["STATE_BYPASS Finding", noFindingMessage("STATE_BYPASS", row)]);
     return details;
+  }
+
+  // 부분 분석·비위반·미일치 상태 구분
+  function noFindingMessage(ruleId, row) {
+    if (ruleId === "STATE_BYPASS" && row.stateAction === "PRODUCES") {
+      return "PRODUCES 상태 선언은 STATE_BYPASS 위반 평가 대상이 아님";
+    }
+    if (!state.report.currentSnapshotPresent || !state.report.currentSnapshot) {
+      return "현재 Snapshot 미수집으로 Finding을 평가할 수 없음";
+    }
+    if (!row.path && ruleId === "OBJECT_BINDING") {
+      return "객체 접근 경로 미수집으로 상세 귀속을 보류함. Finding 0건은 안전 판정이 아님";
+    }
+    if (!row.evaluation && ruleId === "STATE_BYPASS") {
+      return "업무 상태 평가 미수집으로 상세 귀속을 보류함. Finding 0건은 안전 판정이 아님";
+    }
+    if (row.coverage !== "COMPLETE_SUPPORTED_PATH") {
+      return "지원 경로가 완결되지 않아 상세 귀속을 보류함. Finding 0건은 안전 판정이 아님";
+    }
+    return "현재 행에 일치하는 Finding 없음. Finding 0건은 안전 판정이 아님";
   }
 
   function renderBusinessState(parent) {
     const rows = businessStateRows();
-    analysisNotice(parent, "STATE_BYPASS Rule 미통합",
-      "업무 보안 상태 Fact·Relation·Evidence는 표시하지만 현재 SecurityRuleEngine에 등록되지 않은 독립 Rule이다. 미확정·부분 분석을 성공으로 해석하지 않는다.");
+    const stateFacts = factsOf("BUSINESS_SECURITY_STATE");
+    const findings = new Set(rows.flatMap((row) => row.findings.map((finding) => finding.id)));
+    const collectionStatus = state.report.collectionStatuses && state.report.collectionStatuses["security-business-state"];
+    const analysisStatus = state.report.analysisStatuses && state.report.analysisStatuses["security-business-state-analysis"];
+    let notice;
+    if (["COLLECTING", "ANALYZING", "RUNNING", "NOT_STARTED"].includes(collectionStatus)) {
+      notice = "업무 보안 상태 수집·분석이 진행 중입니다.";
+    } else if (["FAILED", "UNKNOWN"].includes(collectionStatus)) {
+      notice = `업무 보안 상태 Collector 상태 ${statusLabel(collectionStatus)}. 수집되지 않은 영역은 안전 판정이 아님`;
+    } else if (analysisStatus === "PARTIAL") {
+      notice = "업무 보안 상태 Analyzer가 PARTIAL입니다. 미확정 경로는 안전 판정이 아님";
+    } else if (["FAILED", "UNKNOWN"].includes(analysisStatus)) {
+      notice = `업무 보안 상태 Analyzer 상태 ${statusLabel(analysisStatus)}. 분석되지 않은 영역은 안전 판정이 아님`;
+    } else if (!stateFacts.length && collectionStatus === "READY" && analysisStatus === "READY") {
+      notice = "현재 서비스에서 업무 보안 상태 분석 대상이 발견되지 않았습니다. 분석 대상 0건은 서비스가 안전하다는 의미가 아닙니다.";
+    } else if (stateFacts.length && !findings.size) {
+      notice = "업무 보안 상태 분석 대상은 있으나 현재 일치하는 Finding이 없음. 안전 판정이 아님";
+    } else if (findings.size) {
+      notice = `업무 보안 상태 관련 Finding ${findings.size}건 확인`;
+    } else {
+      notice = "업무 보안 상태 수집·분석 상태를 확인할 수 없음. 안전 판정이 아님";
+    }
+    renderAnalysisSummary(parent, "업무 보안 상태 분석 요약", [
+      ["업무 보안 상태 선언 수", stateFacts.length],
+      ["업무 보안 상태 평가 수", factsOf("BUSINESS_STATE_EVALUATION").length],
+      ["관련 Finding 수", findings.size]
+    ], notice);
     renderList(parent, rows, [
       { label: "Handler", value: (item) => item.handler, code: true, truncate: true, width: "28%" },
       { label: "상태", value: (item) => item.stateName, code: true, width: "15%" },
@@ -583,12 +766,6 @@
       { label: "평가 판정", value: (item) => item.pathOutcome || "미수집", display: (item) => item === "미수집" ? item : analysisOutcomeLabel(item), badge: true, badgeTone: (item) => item.pathOutcome || "unknown", width: "17%" },
       { label: "Coverage", value: (item) => item.coverage || "미수집", display: (item) => item === "미수집" ? item : coverageLabel(item), badge: true, badgeTone: (item) => item.coverage || "unknown", width: "18%" }
     ], businessStateDetails, null, "analysis-table");
-  }
-
-  function analysisNotice(parent, title, message) {
-    const notice = create("p", undefined, "analysis-notice");
-    notice.append(create("strong", title), create("span", ` ${message}`));
-    parent.append(notice);
   }
 
   function renderDashboard(parent) {
@@ -748,13 +925,33 @@
 
   function renderFindings(parent) {
     const findings = state.report.currentSnapshot && state.report.currentSnapshot.findings || [];
+    const notice = create("p", undefined, "analysis-notice");
+    const analysisStatus = statusSummary(state.report.analysisStatuses);
+    const analysisStatuses = Object.values(state.report.analysisStatuses || {});
+    const incomplete = !analysisStatuses.length
+      || analysisStatuses.some((status) => ["PARTIAL", "UNKNOWN", "FAILED", "NOT_STARTED"].includes(status));
+    const message = !state.report.currentSnapshotPresent
+      ? "현재 Snapshot이 없어 Finding을 표시할 수 없음"
+      : incomplete
+        ? `현재 Snapshot Finding ${findings.length}건 · 분석 상태 ${analysisStatus}. 미수집 영역은 안전 판정이 아님`
+        : findings.length
+          ? `현재 Snapshot Finding ${findings.length}건`
+          : "현재 Snapshot Finding 0건. 안전 판정이 아님";
+    notice.append(create("strong", "Finding 상태"), create("span", ` ${message}`));
+    parent.append(notice);
     renderList(parent, findings, [
       { label: "Rule", value: (item) => item.ruleId, code: true },
       { label: "제목", value: (item) => item.title, truncate: true },
-      { label: "심각도", value: (item) => item.severity, badge: true },
       { label: "Confidence", value: (item) => item.confidence, display: confidenceLabel, badge: true },
-      { label: "대상", value: (item) => item.subjectKey, code: true, truncate: true }
-    ], (item) => [["Rule", item.ruleId], ["설명", item.description], ["가이드", item.guide], ["Confidence", confidenceLabel(item.confidence)], ...evidenceDetails(item.evidenceIds)]);
+      { label: "Graph Node", value: (item) => (item.nodeIds || []).join(", ") || "없음", code: true, truncate: true },
+      { label: "Graph Edge", value: (item) => (item.edgeIds || []).join(", ") || "없음", code: true, truncate: true }
+    ], (item) => [
+      ["Rule", item.ruleId], ["ID", item.id], ["제목", item.title], ["설명", item.description],
+      ["Confidence", confidenceLabel(item.confidence)], ["가이드", item.guide],
+      ["Graph Node ID", (item.nodeIds || []).join(", ") || "없음"],
+      ["Graph Edge ID", (item.edgeIds || []).join(", ") || "없음"],
+      ...evidenceDetails(item.evidenceIds)
+    ]);
   }
 
   function referencesForEvidence(id) {
@@ -789,11 +986,53 @@
       { label: "Adapter", value: (item) => item.adapter, code: true, truncate: true },
       { label: "상태", value: (item) => item.status, display: statusLabel, badge: true }
     ], (item) => [["영역", item.area], ["Adapter", item.adapter], ["상태", statusLabel(item.status)]]);
-    renderList(parent, state.report.diagnostics || [], [
-      { label: "Adapter", value: (item) => item.adapterId, code: true, truncate: true },
-      { label: "오류 코드", value: (item) => item.errorCode, badge: true },
-      { label: "내용", value: (item) => item.summary, truncate: true }
-    ], (item) => [["Adapter", item.adapterId], ["오류 코드", item.errorCode], ["내용", item.summary]]);
+    renderDiagnosticGroups(parent, state.report.diagnostics || []);
+  }
+
+  function renderDiagnosticGroups(parent, diagnostics) {
+    const groups = [];
+    const groupByKey = new Map();
+    diagnostics.forEach((item) => {
+      const key = [item.adapterId, item.errorCode, item.summary].map((part) => value(part, "미확인")).join("\u0000");
+      let group = groupByKey.get(key);
+      if (!group) {
+        group = { adapterId: item.adapterId, errorCode: item.errorCode, summary: item.summary, items: [] };
+        groupByKey.set(key, group);
+        groups.push(group);
+      }
+      group.items.push(item);
+    });
+
+    const area = create("section", undefined, "list-area");
+    area.append(create("span", `전체 Diagnostic ${diagnostics.length}건 · 그룹 ${groups.length}개`, "count"));
+    if (!groups.length) {
+      area.append(create("p", "Diagnostic 없음", "empty"));
+      parent.append(area);
+      return;
+    }
+    const groupList = create("div", undefined, "diagnostic-groups");
+    groups.forEach((group) => {
+      const groupDetails = document.createElement("details");
+      groupDetails.className = "diagnostic-group";
+      const groupSummary = document.createElement("summary");
+      groupSummary.append(
+        create("span", `${value(group.adapterId)} | ${value(group.errorCode)} | ${value(group.summary)}`, "diagnostic-group-title"),
+        badge("diagnostic", `${group.items.length}건`));
+      const groupBody = create("div", undefined, "diagnostic-group-body");
+      group.items.forEach((item, index) => {
+        const detail = document.createElement("details");
+        detail.className = "diagnostic-detail";
+        detail.append(
+          create("summary", `진단 ${index + 1} · ${value(item.summary)}`),
+          keyValues([["Adapter", item.adapterId], ["오류 코드", item.errorCode], ["상세 Summary", item.summary]])
+        );
+        groupBody.append(detail);
+      });
+      groupDetails.append(groupSummary, groupBody);
+      groupList.append(groupDetails);
+    });
+    area.append(groupList);
+    parent.append(area);
   }
 
   const renderers = {

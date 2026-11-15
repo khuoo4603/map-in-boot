@@ -3,10 +3,12 @@ package com.mapinboot.starter.snapshot;
 import com.mapinboot.core.analysis.model.AnalysisReport;
 import com.mapinboot.core.collection.model.CollectionReport;
 import com.mapinboot.core.common.error.ErrorCode;
+import com.mapinboot.core.common.error.FindingEvaluationException;
 import com.mapinboot.core.common.error.MapInBootException;
 import com.mapinboot.core.common.status.AnalysisStatus;
 import com.mapinboot.core.evidence.Evidence;
 import com.mapinboot.core.finding.Finding;
+import com.mapinboot.core.finding.FindingEvaluation;
 import com.mapinboot.core.finding.FindingEvaluator;
 import com.mapinboot.core.graph.GraphBuilder;
 import com.mapinboot.core.graph.GraphFingerprintGenerator;
@@ -58,7 +60,7 @@ public class SnapshotAssembler {
 
         SecurityGraph graph = graphBuilder.build(serviceId, report);
         String graphFingerprint = fingerprintGenerator.generate(graph);
-        List<Finding> findings = evaluateFindings(report);
+        List<Finding> findings = evaluateFindings(report, graph);
         Map<String, AnalysisStatus> analysisStatus = mergeStatuses(report.collectionReport(), report);
         validateSnapshotContents(graph, report.evidence(), findings, analysisStatus);
 
@@ -99,16 +101,20 @@ public class SnapshotAssembler {
         }
     }
 
-    private List<Finding> evaluateFindings(AnalysisReport report) {
+    private List<Finding> evaluateFindings(AnalysisReport report, SecurityGraph graph) {
         if (findingEvaluators.isEmpty()) {
             return List.of();
         }
         try {
-            List<Finding> findings = findingEvaluators.get(0).evaluate(report);
-            if (findings == null || findings.stream().anyMatch(finding -> finding == null)) {
+            FindingEvaluation evaluation = findingEvaluators.get(0).evaluateWithDiagnostics(report, graph);
+            if (evaluation == null || evaluation.findings() == null
+                    || evaluation.findings().stream().anyMatch(finding -> finding == null)) {
                 throw new MapInBootException(ErrorCode.INVALID_SNAPSHOT, "Finding 결과가 올바르지 않습니다.");
             }
-            return List.copyOf(findings);
+            if (!evaluation.diagnostics().isEmpty()) {
+                throw new FindingEvaluationException(evaluation.diagnostics());
+            }
+            return List.copyOf(evaluation.findings());
         } catch (MapInBootException exception) {
             throw exception;
         } catch (RuntimeException exception) {

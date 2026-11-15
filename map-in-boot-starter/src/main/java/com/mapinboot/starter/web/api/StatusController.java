@@ -69,6 +69,7 @@ public class StatusController {
             if (analysis != null) {
                 diagnostics.addAll(toDiagnostics(analysis.diagnostics()));
             }
+            diagnostics.addAll(toDiagnostics(bootstrap.findingDiagnostics()));
             return new StatusResponse(
                     bootstrap.executionPhase(),
                     collection == null ? Map.of() : collection.statusByAdapter(),
@@ -86,10 +87,18 @@ public class StatusController {
                     .map(diagnostic -> new DiagnosticResponse(
                             diagnostic.adapterId(),
                             diagnostic.errorCode() == null ? null : diagnostic.errorCode().getCode(),
-                            diagnostic.errorCode() == null
-                                    ? "Adapter 진단 설명 없음"
-                                    : diagnostic.errorCode().getDescription()))
+                            diagnosticSummary(diagnostic)))
                     .toList();
+        }
+
+        // 상세 진단 원인 보존 및 설명 누락 시 공통 오류 설명 대체
+        private static String diagnosticSummary(AdapterDiagnostic diagnostic) {
+            if (diagnostic.summary() != null && !diagnostic.summary().isBlank()) {
+                return diagnostic.summary();
+            }
+            return diagnostic.errorCode() == null
+                    ? "Adapter 진단 설명 없음"
+                    : diagnostic.errorCode().getDescription();
         }
     }
 

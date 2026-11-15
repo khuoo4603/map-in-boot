@@ -9,7 +9,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RestController;
 
-// Identity 개발 진단용 비밀번호 로그인 화면 제공
+// Identity 개발 진단용 로그인 자원 제공
 @RestController
 @Profile("develop")
 @ConditionalOnProperty(name = "mapinboot.web.enabled", havingValue = "true")
@@ -18,17 +18,12 @@ public final class DevelopmentLoginController {
     private static final MediaType TEXT_CSS = MediaType.parseMediaType("text/css;charset=UTF-8");
     private static final MediaType TEXT_JAVASCRIPT = MediaType.parseMediaType("text/javascript;charset=UTF-8");
 
-    @GetMapping(value = "/mapinboot-login", produces = MediaType.TEXT_HTML_VALUE)
-    public ResponseEntity<Resource> loginPage() {
-        return resource("development-login.html", MediaType.TEXT_HTML);
-    }
-
-    @GetMapping(value = "/mapinboot-login/assets/development-login.css", produces = "text/css")
+    @GetMapping(value = "/mapinboot-assets/development-login.css", produces = "text/css")
     public ResponseEntity<Resource> stylesheet() {
         return resource("development-login.css", TEXT_CSS);
     }
 
-    @GetMapping(value = "/mapinboot-login/assets/development-login.js", produces = "text/javascript")
+    @GetMapping(value = "/mapinboot-assets/development-login.js", produces = "text/javascript")
     public ResponseEntity<Resource> script() {
         return resource("development-login.js", TEXT_JAVASCRIPT);
     }

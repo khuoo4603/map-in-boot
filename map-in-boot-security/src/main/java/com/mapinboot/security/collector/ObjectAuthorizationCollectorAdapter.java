@@ -425,6 +425,7 @@ public class ObjectAuthorizationCollectorAdapter extends AbstractCollectorAdapte
         OBJECT,
         OWNER,
         SUBJECT,
+        AUTHENTICATION_CHECK,
         CHECK,
         FORBIDDEN,
         THIS,
@@ -475,6 +476,10 @@ public class ObjectAuthorizationCollectorAdapter extends AbstractCollectorAdapte
 
         private static Value subject(SourceRef source) {
             return new Value(ValueKind.SUBJECT, source, null, null, null, null, null);
+        }
+
+        private static Value authenticationCheck() {
+            return new Value(ValueKind.AUTHENTICATION_CHECK, null, null, null, null, null, null);
         }
 
         private static Value check(CheckCandidate candidate) {
@@ -966,6 +971,10 @@ public class ObjectAuthorizationCollectorAdapter extends AbstractCollectorAdapte
                             && receiver.kind() == ValueKind.AUTHENTICATION) {
                         return Value.subject(SourceRef.authentication(location(method), owner, name, descriptor));
                     }
+                    if (isAuthenticationCheck(owner, name, descriptor)
+                            && receiver.kind() == ValueKind.AUTHENTICATION) {
+                        return Value.authenticationCheck();
+                    }
                     if (isOptionalResult(descriptor) && !isFrameworkOwner(owner)) {
                         return Value.optional(owner + "#" + name + descriptor);
                     }
@@ -1067,11 +1076,18 @@ public class ObjectAuthorizationCollectorAdapter extends AbstractCollectorAdapte
                     return isProtectedTarget(owner, name, descriptor, arguments)
                             || isHelperCall(owner, name, descriptor, Opcodes.INVOKEVIRTUAL, receiver)
                             || isOwnerGetter(name, descriptor)
+                            || isResourceAccessor(name, descriptor)
                             || isStringEquals(owner, name, descriptor)
                             || isObjectsEquals(owner, name, descriptor)
                             || "<init>".equals(name)
                             || (("java/util/Map".equals(owner) || "java/util/List".equals(owner))
                             && name.startsWith("of"));
+                }
+
+                private boolean isResourceAccessor(String name, String descriptor) {
+                    return Type.getArgumentTypes(descriptor).length == 0
+                            && !Type.VOID_TYPE.equals(Type.getReturnType(descriptor))
+                            && (name.startsWith("get") || name.startsWith("is"));
                 }
 
                 private boolean isForbiddenStatusCall(String owner, String name, List<Value> arguments) {
@@ -1142,6 +1158,10 @@ public class ObjectAuthorizationCollectorAdapter extends AbstractCollectorAdapte
 
     private boolean isAuthenticationName(String owner, String name, String descriptor) {
         return AUTHENTICATION.equals(owner) && "getName".equals(name) && "()Ljava/lang/String;".equals(descriptor);
+    }
+
+    private boolean isAuthenticationCheck(String owner, String name, String descriptor) {
+        return AUTHENTICATION.equals(owner) && "isAuthenticated".equals(name) && "()Z".equals(descriptor);
     }
 
     private boolean isOwnerGetter(String name, String descriptor) {

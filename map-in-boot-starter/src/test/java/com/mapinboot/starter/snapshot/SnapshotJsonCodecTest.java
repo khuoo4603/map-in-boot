@@ -75,6 +75,21 @@ class SnapshotJsonCodecTest {
     }
 
     @Test
+    void findingChangesDoNotChangeGraphFingerprint() {
+        Finding first = new Finding("finding-first", "RULE-1", "title", "description", Confidence.LIKELY,
+                List.of(), List.of(), List.of("evidence-1"), "guide");
+        Finding second = new Finding("finding-second", "RULE-2", "title", "description", Confidence.UNKNOWN,
+                List.of(), List.of(), List.of("evidence-1"), "guide");
+
+        Snapshot firstSnapshot = new SnapshotAssembler(List.of(ignored -> List.of(first)), "1", sdkVersion())
+                .assemble(report(), "service", "instance", "1.2.3");
+        Snapshot secondSnapshot = new SnapshotAssembler(List.of(ignored -> List.of(second)), "1", sdkVersion())
+                .assemble(report(), "service", "instance", "1.2.3");
+
+        assertEquals(firstSnapshot.graphFingerprint(), secondSnapshot.graphFingerprint());
+    }
+
+    @Test
     void assemblerAllowsNoEvaluatorAndRejectsMultipleEvaluators() {
         AnalysisReport report = report();
 

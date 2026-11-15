@@ -13,10 +13,17 @@ import com.mapinboot.core.common.status.Confidence;
 import com.mapinboot.core.common.type.EdgeType;
 import com.mapinboot.core.evidence.Fact;
 import com.mapinboot.core.finding.Finding;
+import com.mapinboot.core.graph.GraphBuilder;
+import com.mapinboot.core.graph.model.SecurityGraph;
+import com.mapinboot.security.analyzer.AuthorizationAnalysisAdapter;
 import com.mapinboot.security.analyzer.EndpointChainMatchingAnalysisAdapter;
 import com.mapinboot.security.analyzer.FilterRegistrationAnalysisAdapter;
 import com.mapinboot.security.analyzer.MethodSecurityAnalysisAdapter;
 import com.mapinboot.security.collector.MethodSecurityCollectorAdapter;
+import com.mapinboot.security.collector.HeaderUsageCollectorAdapter;
+import com.mapinboot.security.collector.JwtUsageCollectorAdapter;
+import com.mapinboot.security.collector.ObjectAuthorizationCollectorAdapter;
+import com.mapinboot.security.collector.PrincipalUsageCollectorAdapter;
 import com.mapinboot.security.collector.SecurityChainCollectorAdapter;
 import com.mapinboot.security.finding.SecurityRuleEngine;
 import com.mapinboot.starter.collector.EndpointMappingCollectorAdapter;
@@ -164,6 +171,8 @@ class IdentityAuthIntegrationTest {
 
         assertThat(collection.statusByAdapter().get("security-chain"))
                 .isNotEqualTo(AnalysisStatus.UNKNOWN);
+        assertThat(analysis.statusByAdapter().get("security-filter-registration-analysis"))
+                .isEqualTo(AnalysisStatus.READY);
         assertThat(analysis.relations()).anyMatch(relation -> relation.type() == EdgeType.MATCHED_BY);
 
         Fact normalEndpoint = endpoint(collection, "/api/auth/secured/refresh");
@@ -207,6 +216,61 @@ class IdentityAuthIntegrationTest {
                 .count()).isZero();
         assertThat(findings.stream().filter(finding -> "FILTER_ORDER".equals(finding.ruleId()))
                 .findFirst().orElseThrow().confidence()).isEqualTo(Confidence.LIKELY);
+
+        SecurityGraph graph = new GraphBuilder().build("identity", analysis);
+        Finding graphFinding = ruleEngine.evaluateWithDiagnostics(analysis, graph).findings().stream()
+                .filter(finding -> "FILTER_ORDER".equals(finding.ruleId()))
+                .filter(finding -> finding.evidenceIds().stream().anyMatch(id -> vulnerableEndpoint.evidenceIds().contains(id)))
+                .findFirst().orElseThrow();
+        assertThat(graphFinding.nodeIds()).hasSize(4);
+        assertThat(graphFinding.edgeIds()).hasSize(3);
+        assertThat(graphFinding.nodeIds()).allMatch(id -> graph.nodes().stream()
+                .anyMatch(node -> node.id().equals(id)));
+        assertThat(graphFinding.edgeIds()).allMatch(id -> graph.edges().stream()
+                .anyMatch(edge -> edge.id().equals(id)));
+    }
+
+    @Test
+    @DisplayName("실제 Identity N06/V06 객체 접근 경로와 OBJECT_BINDING 판정 구분")
+    void sdkObjectAuthorizationAnalysisDistinguishesN06FromV06() {
+        CollectionProvider collectionProvider = context.getBean(CollectionProvider.class);
+        AnalysisProvider analysisProvider = context.getBean(AnalysisProvider.class);
+
+        CollectionReport collection = collectionProvider.execute(
+                new CollectionContext(context, "identity", "test"),
+                List.of(
+                        new EndpointMappingCollectorAdapter(),
+                        new JwtUsageCollectorAdapter(),
+                        new HeaderUsageCollectorAdapter(),
+                        new PrincipalUsageCollectorAdapter(),
+                        new ObjectAuthorizationCollectorAdapter()));
+
+        List<Fact> paths = collection.facts().stream()
+                .filter(fact -> "OBJECT_ACCESS_PATH".equals(fact.type()))
+                .filter(fact -> fact.attributes().getOrDefault("handler", "")
+                        .contains("SessionProfileController#get"))
+                .toList();
+        Fact normalPath = paths.stream()
+                .filter(fact -> fact.attributes().get("handler").contains("getSecuredProfile"))
+                .findFirst().orElseThrow();
+        Fact vulnerablePath = paths.stream()
+                .filter(fact -> fact.attributes().get("handler").contains("getProfileWithoutOwnerCheck"))
+                .findFirst().orElseThrow();
+
+        assertThat(normalPath.attributes().get("pathOutcome"))
+                .as("N06 diagnostics=%s paths=%s", collection.diagnostics(), paths)
+                .isEqualTo("GUARDED");
+        assertThat(normalPath.attributes().get("coverage")).isEqualTo("COMPLETE_SUPPORTED_PATH");
+        assertThat(vulnerablePath.attributes().get("pathOutcome")).isEqualTo("UNGUARDED");
+        assertThat(vulnerablePath.attributes().get("coverage")).isEqualTo("COMPLETE_SUPPORTED_PATH");
+
+        AnalysisReport analysis = analysisProvider.execute(
+                new AnalysisContext(collection, "identity"), List.of(new AuthorizationAnalysisAdapter()));
+        List<Finding> findings = context.getBean(SecurityRuleEngine.class).evaluate(analysis);
+        assertThat(findings).anyMatch(finding -> "OBJECT_BINDING".equals(finding.ruleId())
+                && finding.evidenceIds().containsAll(vulnerablePath.evidenceIds()));
+        assertThat(findings).noneMatch(finding -> "OBJECT_BINDING".equals(finding.ruleId())
+                && finding.evidenceIds().containsAll(normalPath.evidenceIds()));
     }
 
     @Test
@@ -490,18 +554,18 @@ class IdentityAuthIntegrationTest {
     }
 
     @Test
-    @DisplayName("미인증 진단 접근은 비밀번호 전용 개발 로그인으로 연결되고 관리자 Session을 재사용")
+    @DisplayName("미인증 진단 접근은 동일 URL에서 비밀번호 로그인 화면을 제공하고 관리자 Session을 재사용")
     void diagnosticLoginUsesPasswordOnlyAndAdminSession() throws Exception {
         mockMvc.perform(get("/mapinboot/test"))
-                .andExpect(status().isFound())
-                .andExpect(header().string(HttpHeaders.LOCATION, "/mapinboot-login"));
-
-        mockMvc.perform(get("/mapinboot-login"))
                 .andExpect(status().isOk())
                 .andExpect(header().string(HttpHeaders.CONTENT_TYPE, org.hamcrest.Matchers.containsString("text/html")))
                 .andExpect(content().string(org.hamcrest.Matchers.containsString("type=\"password\"")))
                 .andExpect(content().string(org.hamcrest.Matchers.not(org.hamcrest.Matchers.containsString("mib.dev"))))
                 .andExpect(content().string(org.hamcrest.Matchers.not(org.hamcrest.Matchers.containsString("name=\"username\""))));
+        mockMvc.perform(get("/mapinboot-assets/development-login.css"))
+                .andExpect(status().isOk());
+        mockMvc.perform(get("/mapinboot-assets/development-login.js"))
+                .andExpect(status().isOk());
 
         CsrfSession csrf = csrfSession();
         MvcResult login = mockMvc.perform(post("/api/auth/login")
@@ -515,6 +579,8 @@ class IdentityAuthIntegrationTest {
 
         mockMvc.perform(get("/mapinboot/test").cookie(adminSession))
                 .andExpect(status().isOk());
+        mockMvc.perform(get("/mapinboot-login").cookie(adminSession))
+                .andExpect(status().isNotFound());
     }
 
     @Test

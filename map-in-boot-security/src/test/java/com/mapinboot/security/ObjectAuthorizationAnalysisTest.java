@@ -16,6 +16,7 @@ import com.mapinboot.core.common.type.EdgeType;
 import com.mapinboot.core.evidence.Fact;
 import com.mapinboot.core.graph.GraphBuilder;
 import com.mapinboot.core.graph.model.SecurityGraph;
+import com.mapinboot.core.snapshot.Snapshot;
 import com.mapinboot.security.analyzer.AuthorizationAnalysisAdapter;
 import com.mapinboot.security.autoconfigure.MapInBootSecurityAutoConfiguration;
 import com.mapinboot.security.collector.HeaderUsageCollectorAdapter;
@@ -23,7 +24,9 @@ import com.mapinboot.security.collector.JwtUsageCollectorAdapter;
 import com.mapinboot.security.collector.ObjectAuthorizationCollectorAdapter;
 import com.mapinboot.security.collector.PrincipalUsageCollectorAdapter;
 import com.mapinboot.security.finding.ObjectBindingFindingRule;
+import com.mapinboot.security.finding.SecurityRuleEngine;
 import com.mapinboot.starter.collector.EndpointMappingCollectorAdapter;
+import com.mapinboot.starter.snapshot.SnapshotAssembler;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -158,6 +161,27 @@ class ObjectAuthorizationAnalysisTest {
             assertEquals("OBJECT_BINDING", findings.get(0).ruleId());
             assertTrue(findings.get(0).evidenceIds().stream()
                     .allMatch(id -> analysis.evidence().stream().anyMatch(item -> item.id().equals(id))));
+
+            var integratedFindings = new SecurityRuleEngine().evaluate(analysis);
+            assertEquals(1, integratedFindings.stream()
+                    .filter(finding -> "OBJECT_BINDING".equals(finding.ruleId()))
+                    .count());
+
+            Snapshot snapshot = new SnapshotAssembler(List.of(new SecurityRuleEngine()), "1")
+                    .assemble(analysis, "fixture", "instance", "test");
+            assertEquals(1, snapshot.findings().stream()
+                    .filter(finding -> "OBJECT_BINDING".equals(finding.ruleId()))
+                    .count());
+            assertTrue(snapshot.findings().stream()
+                    .flatMap(finding -> finding.evidenceIds().stream())
+                    .allMatch(id -> snapshot.evidence().stream().anyMatch(item -> item.id().equals(id))));
+            var objectFinding = snapshot.findings().stream()
+                    .filter(finding -> "OBJECT_BINDING".equals(finding.ruleId()))
+                    .findFirst().orElseThrow();
+            assertEquals(2, objectFinding.nodeIds().size());
+            assertTrue(objectFinding.nodeIds().stream()
+                    .allMatch(id -> snapshot.nodes().stream().anyMatch(node -> node.id().equals(id))));
+            assertTrue(objectFinding.edgeIds().isEmpty());
         }
     }
 
