@@ -13,6 +13,8 @@ import com.mapinboot.core.common.status.Confidence;
 import com.mapinboot.core.common.type.EdgeType;
 import com.mapinboot.core.evidence.Fact;
 import com.mapinboot.core.finding.Finding;
+import com.mapinboot.core.graph.GraphBuilder;
+import com.mapinboot.core.graph.model.SecurityGraph;
 import com.mapinboot.security.analyzer.AuthorizationAnalysisAdapter;
 import com.mapinboot.security.analyzer.EndpointChainMatchingAnalysisAdapter;
 import com.mapinboot.security.analyzer.FilterRegistrationAnalysisAdapter;
@@ -214,6 +216,18 @@ class IdentityAuthIntegrationTest {
                 .count()).isZero();
         assertThat(findings.stream().filter(finding -> "FILTER_ORDER".equals(finding.ruleId()))
                 .findFirst().orElseThrow().confidence()).isEqualTo(Confidence.LIKELY);
+
+        SecurityGraph graph = new GraphBuilder().build("identity", analysis);
+        Finding graphFinding = ruleEngine.evaluateWithDiagnostics(analysis, graph).findings().stream()
+                .filter(finding -> "FILTER_ORDER".equals(finding.ruleId()))
+                .filter(finding -> finding.evidenceIds().stream().anyMatch(id -> vulnerableEndpoint.evidenceIds().contains(id)))
+                .findFirst().orElseThrow();
+        assertThat(graphFinding.nodeIds()).hasSize(4);
+        assertThat(graphFinding.edgeIds()).hasSize(3);
+        assertThat(graphFinding.nodeIds()).allMatch(id -> graph.nodes().stream()
+                .anyMatch(node -> node.id().equals(id)));
+        assertThat(graphFinding.edgeIds()).allMatch(id -> graph.edges().stream()
+                .anyMatch(edge -> edge.id().equals(id)));
     }
 
     @Test

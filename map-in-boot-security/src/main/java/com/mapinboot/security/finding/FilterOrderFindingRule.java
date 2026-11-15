@@ -30,13 +30,21 @@ final class FilterOrderFindingRule {
     private final FindingIdGenerator idGenerator = new FindingIdGenerator();
 
     List<Finding> evaluate(AnalysisReport report) {
+        return targets(report).stream()
+                .map(this::finding)
+                .sorted(Comparator.comparing(Finding::id))
+                .toList();
+    }
+
+    // Finding과 Graph 참조가 공유하는 필터 순서 판정 대상 구성
+    List<FilterOrderTarget> targets(AnalysisReport report) {
         if (!available(report)) {
             return List.of();
         }
         Map<String, Fact> chains = factsBySubject(report, CHAIN_TYPE);
         Map<String, Fact> filters = factsBySubject(report, FILTER_TYPE);
         Map<String, Evidence> evidenceById = evidenceById(report);
-        List<Finding> findings = new ArrayList<>();
+        List<FilterOrderTarget> targets = new ArrayList<>();
         for (Fact endpoint : facts(report, ENDPOINT_TYPE)) {
             SelectedChain selected = selectedChain(report, endpoint, chains);
             if (selected == null) {
@@ -54,11 +62,17 @@ final class FilterOrderFindingRule {
             if (!hasEvidence(evidenceById, evidenceIds)) {
                 continue;
             }
-            findings.add(finding(endpoint, selected, issue, evidenceIds));
+            targets.add(new FilterOrderTarget(
+                    endpoint,
+                    selected.chain(),
+                    selected.matchedBy(),
+                    issue.guard().fact(),
+                    issue.guard().relation(),
+                    issue.provider().fact(),
+                    issue.provider().relation(),
+                    evidenceIds));
         }
-        return findings.stream()
-                .sorted(Comparator.comparing(Finding::id))
-                .toList();
+        return List.copyOf(targets);
     }
 
     private boolean available(AnalysisReport report) {
@@ -192,14 +206,16 @@ final class FilterOrderFindingRule {
         return evidenceIds;
     }
 
-    private Finding finding(Fact endpoint, SelectedChain selected, OrderIssue issue, Set<String> evidenceIds) {
-        Fact guard = issue.guard().fact();
-        Fact provider = issue.provider().fact();
+    private Finding finding(FilterOrderTarget target) {
+        Fact endpoint = target.endpoint();
+        Fact chain = target.chain();
+        Fact guard = target.guard();
+        Fact provider = target.provider();
         String path = endpoint.attributes().get("path");
         String httpMethod = endpoint.attributes().get("httpMethod");
         return new Finding(
                 idGenerator.generate("FILTER_ORDER", List.of(
-                        endpoint.subjectKey(), selected.chain().subjectKey(),
+                        endpoint.subjectKey(), chain.subjectKey(),
                         guard.subjectKey(), provider.subjectKey())),
                 "FILTER_ORDER",
                 "인증 필터 처리 순서 오류",
@@ -211,7 +227,7 @@ final class FilterOrderFindingRule {
                 Confidence.LIKELY,
                 List.of(),
                 List.of(),
-                List.copyOf(evidenceIds),
+                List.copyOf(target.evidenceIds()),
                 "실제 적용 Chain의 Filter 순서와 인증정보 의존성·미인증 거부 코드를 함께 확인하고, 유효한 인증 요청이 인증 전에 거부될 수 있는지 검증할 것");
     }
 
@@ -268,5 +284,20 @@ final class FilterOrderFindingRule {
     }
 
     private record OrderIssue(RegisteredFilter guard, RegisteredFilter provider) {
+    }
+
+    record FilterOrderTarget(
+            Fact endpoint,
+            Fact chain,
+            Relation matchedBy,
+            Fact guard,
+            Relation guardRelation,
+            Fact provider,
+            Relation providerRelation,
+            Set<String> evidenceIds
+    ) {
+        FilterOrderTarget {
+            evidenceIds = Set.copyOf(evidenceIds);
+        }
     }
 }

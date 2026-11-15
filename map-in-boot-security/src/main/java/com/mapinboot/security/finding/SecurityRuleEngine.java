@@ -7,9 +7,11 @@ import com.mapinboot.core.common.error.FindingEvaluationException;
 import com.mapinboot.core.common.type.NodeType;
 import com.mapinboot.core.evidence.Evidence;
 import com.mapinboot.core.evidence.Fact;
+import com.mapinboot.core.evidence.Relation;
 import com.mapinboot.core.finding.Finding;
 import com.mapinboot.core.finding.FindingEvaluation;
 import com.mapinboot.core.finding.FindingEvaluator;
+import com.mapinboot.core.graph.model.GraphEdge;
 import com.mapinboot.core.graph.model.GraphNode;
 import com.mapinboot.core.graph.model.SecurityGraph;
 import java.util.ArrayList;
@@ -113,9 +115,48 @@ public class SecurityRuleEngine implements FindingEvaluator {
                     if ("STATE_BYPASS".equals(finding.ruleId())) {
                         return withNodeIds(finding, matchingStateNodeIds(finding, report, graph));
                     }
+                    if ("FILTER_ORDER".equals(finding.ruleId())) {
+                        return withGraphReferences(finding, matchingFilterOrderReferences(finding, report, graph));
+                    }
                     return finding;
                 })
                 .toList();
+    }
+
+    // FILTER_ORDER Finding의 Endpoint·Chain·Filter·Relation 일대일 대응 확인
+    private GraphReferences matchingFilterOrderReferences(
+            Finding finding,
+            AnalysisReport report,
+            SecurityGraph graph
+    ) {
+        List<FilterOrderFindingRule.FilterOrderTarget> candidates = new FilterOrderFindingRule().targets(report).stream()
+                .filter(target -> finding.id().equals(new FindingIdGenerator().generate(
+                        "FILTER_ORDER", List.of(
+                                target.endpoint().subjectKey(), target.chain().subjectKey(),
+                                target.guard().subjectKey(), target.provider().subjectKey()))))
+                .filter(target -> sameIds(finding.evidenceIds(), target.evidenceIds()))
+                .toList();
+        if (candidates.size() != 1) {
+            return GraphReferences.empty();
+        }
+        FilterOrderFindingRule.FilterOrderTarget target = candidates.get(0);
+        String endpointId = uniqueNodeId(graph, target.endpoint(), NodeType.ENDPOINT);
+        String chainId = uniqueNodeId(graph, target.chain(), NodeType.SECURITY_CHAIN);
+        String guardId = uniqueNodeId(graph, target.guard(), NodeType.FILTER);
+        String providerId = uniqueNodeId(graph, target.provider(), NodeType.FILTER);
+        if (endpointId == null || chainId == null || guardId == null || providerId == null) {
+            return GraphReferences.empty();
+        }
+
+        String matchedById = uniqueEdgeId(graph, target.matchedBy(), endpointId, chainId);
+        String guardRelationId = uniqueEdgeId(graph, target.guardRelation(), chainId, guardId);
+        String providerRelationId = uniqueEdgeId(graph, target.providerRelation(), chainId, providerId);
+        if (matchedById == null || guardRelationId == null || providerRelationId == null) {
+            return GraphReferences.empty();
+        }
+        return new GraphReferences(
+                List.of(endpointId, chainId, guardId, providerId).stream().distinct().sorted().toList(),
+                List.of(matchedById, guardRelationId, providerRelationId).stream().distinct().sorted().toList());
     }
 
     private List<String> matchingObjectNodeIds(Finding finding, AnalysisReport report, SecurityGraph graph) {
@@ -225,6 +266,33 @@ public class SecurityRuleEngine implements FindingEvaluator {
         return nodeIds.stream().distinct().sorted().toList();
     }
 
+    // Fact와 Graph Node의 구조·Evidence 유일성 확인
+    private String uniqueNodeId(SecurityGraph graph, Fact fact, NodeType type) {
+        List<GraphNode> candidates = graph.nodes().stream()
+                .filter(node -> matchesFactNode(node, fact, type))
+                .toList();
+        return candidates.size() == 1 ? candidates.get(0).id() : null;
+    }
+
+    // Relation과 Graph Edge의 방향·속성·Evidence 유일성 확인
+    private String uniqueEdgeId(SecurityGraph graph, Relation relation,
+                                String sourceId, String targetId) {
+        List<GraphEdge> candidates = graph.edges().stream()
+                .filter(edge -> edge.type() == relation.type()
+                        && sourceId.equals(edge.sourceId())
+                        && targetId.equals(edge.targetId())
+                        && edge.confidence() == relation.confidence()
+                        && edge.attributes().entrySet().stream()
+                        .allMatch(entry -> entry.getValue().equals(relation.attributes().get(entry.getKey())))
+                        && edge.evidenceIds().containsAll(relation.evidenceIds()))
+                .toList();
+        return candidates.size() == 1 ? candidates.get(0).id() : null;
+    }
+
+    private boolean sameIds(List<String> first, Set<String> second) {
+        return first.size() == second.size() && second.containsAll(first);
+    }
+
     private boolean matchesFactNode(GraphNode node, Fact fact) {
         if (node.type() != expectedNodeType(fact.type()) || !fact.subjectKey().equals(node.label())
                 || !node.evidenceIds().containsAll(fact.evidenceIds())) {
@@ -238,6 +306,14 @@ public class SecurityRuleEngine implements FindingEvaluator {
             return false;
         }
         return fact.attributes().entrySet().stream()
+                .allMatch(entry -> entry.getValue().equals(node.attributes().get(entry.getKey())));
+    }
+
+    private boolean matchesFactNode(GraphNode node, Fact fact, NodeType expectedType) {
+        return node.type() == expectedType
+                && fact.subjectKey().equals(node.label())
+                && node.evidenceIds().containsAll(fact.evidenceIds())
+                && fact.attributes().entrySet().stream()
                 .allMatch(entry -> entry.getValue().equals(node.attributes().get(entry.getKey())));
     }
 
@@ -261,6 +337,15 @@ public class SecurityRuleEngine implements FindingEvaluator {
         }
         return new Finding(finding.id(), finding.ruleId(), finding.title(), finding.description(),
                 finding.confidence(), nodeIds, finding.edgeIds(), finding.evidenceIds(), finding.guide());
+    }
+
+    // 완전한 Graph 참조 세트에 한정한 Finding 재구성
+    private Finding withGraphReferences(Finding finding, GraphReferences references) {
+        if (references.nodeIds().isEmpty() || references.edgeIds().isEmpty()) {
+            return finding;
+        }
+        return new Finding(finding.id(), finding.ruleId(), finding.title(), finding.description(),
+                finding.confidence(), references.nodeIds(), references.edgeIds(), finding.evidenceIds(), finding.guide());
     }
 
     private static Rules rules(List<Rule> registeredRules) {
@@ -352,5 +437,11 @@ public class SecurityRuleEngine implements FindingEvaluator {
     }
 
     private record StateBypassFacts(Fact requirement, Fact evaluation) {
+    }
+
+    private record GraphReferences(List<String> nodeIds, List<String> edgeIds) {
+        private static GraphReferences empty() {
+            return new GraphReferences(List.of(), List.of());
+        }
     }
 }
