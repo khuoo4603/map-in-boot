@@ -8,8 +8,9 @@ import com.mapinboot.core.finding.Finding;
 import com.mapinboot.core.finding.FindingEvaluation;
 import com.mapinboot.core.finding.FindingEvaluator;
 import java.util.ArrayList;
-import java.util.Comparator;
 import java.util.List;
+import java.util.Map;
+import java.util.TreeMap;
 import java.util.function.Function;
 import org.jeasy.rules.api.Facts;
 import org.jeasy.rules.api.Rule;
@@ -73,7 +74,13 @@ public class SecurityRuleEngine implements FindingEvaluator {
         facts.put(FINDINGS_FACT, findings);
         facts.put(DIAGNOSTICS_FACT, diagnostics);
         rulesEngine.fire(rules, facts);
-        return new FindingEvaluation(sortedFindings(findings), List.copyOf(diagnostics));
+        try {
+            return new FindingEvaluation(sortedFindings(findings), List.copyOf(diagnostics));
+        } catch (RuntimeException exception) {
+            diagnostics.add(new AdapterDiagnostic("finding-engine", ErrorCode.INVALID_STATE,
+                    "Finding 식별 충돌"));
+            return new FindingEvaluation(List.of(), List.copyOf(diagnostics));
+        }
     }
 
     private static Rules rules(List<Rule> registeredRules) {
@@ -90,12 +97,17 @@ public class SecurityRuleEngine implements FindingEvaluator {
     }
 
     private List<Finding> sortedFindings(List<Finding> findings) {
-        if (findings.stream().anyMatch(finding -> finding == null || finding.id() == null || finding.id().isBlank())) {
-            throw new IllegalStateException("Finding 식별자가 누락되었습니다.");
+        Map<String, Finding> findingsById = new TreeMap<>();
+        for (Finding finding : findings) {
+            if (finding == null || finding.id() == null || finding.id().isBlank()) {
+                throw new IllegalStateException("Finding 식별자가 누락되었습니다.");
+            }
+            Finding existing = findingsById.putIfAbsent(finding.id(), finding);
+            if (existing != null && !existing.equals(finding)) {
+                throw new IllegalStateException("Finding 식별 충돌");
+            }
         }
-        return findings.stream()
-                .sorted(Comparator.comparing(Finding::id))
-                .toList();
+        return List.copyOf(findingsById.values());
     }
 
     private record FindingRule(
