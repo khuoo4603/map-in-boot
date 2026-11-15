@@ -130,6 +130,26 @@ function reportWithSharedEvidence() {
   };
 }
 
+function reportWithDiagnostics() {
+  const report = reportWithSharedEvidence();
+  report.collectionStatuses = { collector: "READY" };
+  report.analysisStatuses = { analyzer: "PARTIAL" };
+  report.diagnostics = [
+    { adapterId: "security-object-authorization", errorCode: "MIB-004", summary: "원인 A" },
+    { adapterId: "security-object-authorization", errorCode: "MIB-004", summary: "원인 A" },
+    { adapterId: "security-object-authorization", errorCode: "MIB-004", summary: "원인 B" },
+    { adapterId: "security-filter-registration-analysis", errorCode: "MIB-004", summary: "원인 A" }
+  ];
+  return report;
+}
+
+function reportWithoutBusinessState() {
+  const report = reportWithSharedEvidence();
+  report.collectionStatuses = { "security-business-state": "READY" };
+  report.analysisStatuses = { "security-business-state-analysis": "READY" };
+  return report;
+}
+
 function createHarness(report) {
   const elements = new Map();
   ["view-content", "refresh-button", "snapshot-download-button", "request-state", "service-name", "service-meta"]
@@ -184,4 +204,37 @@ test("공유 Evidence를 가진 다른 Handler Finding을 객체 상세 행에 �
 
   body.children[1].click();
   assert.equal(inspector.innerText.includes("finding-b"), true);
+});
+
+test("Diagnostic을 Adapter·오류 코드·Summary별로 묶고 원본 건수를 보존함", async () => {
+  const harness = createHarness(reportWithDiagnostics());
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  harness.nav.find((item) => item.dataset.view === "diagnostics").click();
+
+  assert.equal(harness.content.innerText.includes("전체 Diagnostic 4건"), true);
+  assert.equal(harness.content.innerText.includes("그룹 3개"), true);
+  assert.equal(harness.content.innerText.includes("원인 A"), true);
+  assert.equal(harness.content.innerText.includes("원인 B"), true);
+  assert.equal(harness.content.innerText.includes("2건"), true);
+});
+
+test("객체 인가 화면에 경로 판정·Coverage·관련 Finding 요약을 표시함", async () => {
+  const harness = createHarness(reportWithSharedEvidence());
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  harness.nav.find((item) => item.dataset.view === "object-authorization").click();
+
+  assert.equal(harness.content.innerText.includes("객체 인가 요구 수"), true);
+  assert.equal(harness.content.innerText.includes("접근 경로 분석 수"), true);
+  assert.equal(harness.content.innerText.includes("UNGUARDED"), true);
+  assert.equal(harness.content.innerText.includes("COMPLETE_SUPPORTED_PATH"), true);
+  assert.equal(harness.content.innerText.includes("관련 Finding 수"), true);
+});
+
+test("업무 보안 상태 대상 없음과 안전 판정 아님을 구분해 표시함", async () => {
+  const harness = createHarness(reportWithoutBusinessState());
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  harness.nav.find((item) => item.dataset.view === "business-state").click();
+
+  assert.equal(harness.content.innerText.includes("현재 서비스에서 업무 보안 상태 분석 대상이 발견되지 않았습니다."), true);
+  assert.equal(harness.content.innerText.includes("분석 대상 0건은 서비스가 안전하다는 의미가 아닙니다."), true);
 });

@@ -597,6 +597,40 @@
 
   function renderObjectAuthorization(parent) {
     const rows = objectAuthorizationRows();
+    const paths = factsOf("OBJECT_ACCESS_PATH");
+    const findings = new Set(rows.flatMap((row) => row.findings.map((finding) => finding.id)));
+    const pathCounts = ["GUARDED", "UNGUARDED", "SOURCE_MISMATCH", "UNRESOLVED"]
+      .map((outcome) => [analysisOutcomeLabel(outcome), paths.filter((path) => attributesOf(path).pathOutcome === outcome).length]);
+    const coverageCounts = ["COMPLETE_SUPPORTED_PATH", "INCOMPLETE"]
+      .map((coverage) => [coverageLabel(coverage), paths.filter((path) => attributesOf(path).coverage === coverage).length]);
+    const collectionStatus = state.report.collectionStatuses && state.report.collectionStatuses["security-object-authorization"];
+    const analysisStatus = state.report.analysisStatuses && state.report.analysisStatuses["security-authorization-analysis"];
+    let notice;
+    if (["COLLECTING", "ANALYZING", "RUNNING", "NOT_STARTED"].includes(collectionStatus)) {
+      notice = "객체 인가 Collector가 아직 실행 중입니다.";
+    } else if (["FAILED", "UNKNOWN"].includes(collectionStatus)) {
+      notice = `객체 인가 Collector 상태 ${statusLabel(collectionStatus)}. 수집되지 않은 영역은 안전 판정이 아님`;
+    } else if (["FAILED", "UNKNOWN"].includes(analysisStatus)) {
+      notice = `객체 인가 Analyzer 상태 ${statusLabel(analysisStatus)}. 분석되지 않은 영역은 안전 판정이 아님`;
+    } else if (collectionStatus === "PARTIAL" || analysisStatus === "PARTIAL") {
+      notice = "객체 인가 분석이 부분 완료되어 미확정 경로가 포함될 수 있음. 안전 판정이 아님";
+    } else if (!factsOf("OBJECT_AUTHORIZATION_REQUIREMENT").length) {
+      notice = "현재 서비스에서 객체 인가 분석 대상이 발견되지 않았습니다. 분석 대상 0건은 서비스가 안전하다는 의미가 아닙니다.";
+    } else if (paths.some((path) => attributesOf(path).pathOutcome === "UNRESOLVED"
+        || attributesOf(path).coverage === "INCOMPLETE")) {
+      notice = "객체 인가 분석 대상 중 미확정 또는 불완전 경로가 있어 안전 판정이 아님";
+    } else if (!findings.size) {
+      notice = "객체 인가 분석 대상은 있으나 현재 일치하는 Finding이 없음. 안전 판정이 아님";
+    } else {
+      notice = `객체 인가 관련 Finding ${findings.size}건 확인`;
+    }
+    renderAnalysisSummary(parent, "객체 인가 분석 요약", [
+      ["객체 인가 요구 수", factsOf("OBJECT_AUTHORIZATION_REQUIREMENT").length],
+      ["접근 경로 분석 수", paths.length],
+      ...pathCounts,
+      ...coverageCounts,
+      ["관련 Finding 수", findings.size]
+    ], notice);
     renderList(parent, rows, [
       { label: "Handler", value: (item) => item.handler, code: true, truncate: true, width: "27%" },
       { label: "Resource", value: (item) => item.resourceType, truncate: true, width: "18%" },
@@ -605,6 +639,24 @@
       { label: "경로 판정", value: (item) => item.pathOutcome || "미수집", display: (item) => item === "미수집" ? item : analysisOutcomeLabel(item), badge: true, badgeTone: (item) => item.pathOutcome || "unknown", width: "18%" },
       { label: "Coverage", value: (item) => item.coverage || "미수집", display: (item) => item === "미수집" ? item : coverageLabel(item), badge: true, badgeTone: (item) => item.coverage || "unknown", width: "18%" }
     ], objectAuthorizationDetails, null, "analysis-table");
+  }
+
+  function renderAnalysisSummary(parent, title, entries, notice) {
+    const section = create("section", undefined, "analysis-summary");
+    section.append(create("h2", title, "analysis-summary-title"));
+    const counts = create("div", undefined, "analysis-summary-counts");
+    entries.forEach(([label, count]) => {
+      const item = document.createElement("div");
+      item.append(create("span", label), create("span", count, "count-value"));
+      counts.append(item);
+    });
+    section.append(counts);
+    if (notice) {
+      const message = create("p", undefined, "analysis-notice");
+      message.append(create("strong", "분석 상태"), create("span", ` ${notice}`));
+      section.append(message);
+    }
+    parent.append(section);
   }
 
   function businessStateRows() {
@@ -679,6 +731,33 @@
 
   function renderBusinessState(parent) {
     const rows = businessStateRows();
+    const stateFacts = factsOf("BUSINESS_SECURITY_STATE");
+    const findings = new Set(rows.flatMap((row) => row.findings.map((finding) => finding.id)));
+    const collectionStatus = state.report.collectionStatuses && state.report.collectionStatuses["security-business-state"];
+    const analysisStatus = state.report.analysisStatuses && state.report.analysisStatuses["security-business-state-analysis"];
+    let notice;
+    if (["COLLECTING", "ANALYZING", "RUNNING", "NOT_STARTED"].includes(collectionStatus)) {
+      notice = "업무 보안 상태 수집·분석이 진행 중입니다.";
+    } else if (["FAILED", "UNKNOWN"].includes(collectionStatus)) {
+      notice = `업무 보안 상태 Collector 상태 ${statusLabel(collectionStatus)}. 수집되지 않은 영역은 안전 판정이 아님`;
+    } else if (analysisStatus === "PARTIAL") {
+      notice = "업무 보안 상태 Analyzer가 PARTIAL입니다. 미확정 경로는 안전 판정이 아님";
+    } else if (["FAILED", "UNKNOWN"].includes(analysisStatus)) {
+      notice = `업무 보안 상태 Analyzer 상태 ${statusLabel(analysisStatus)}. 분석되지 않은 영역은 안전 판정이 아님`;
+    } else if (!stateFacts.length && collectionStatus === "READY" && analysisStatus === "READY") {
+      notice = "현재 서비스에서 업무 보안 상태 분석 대상이 발견되지 않았습니다. 분석 대상 0건은 서비스가 안전하다는 의미가 아닙니다.";
+    } else if (stateFacts.length && !findings.size) {
+      notice = "업무 보안 상태 분석 대상은 있으나 현재 일치하는 Finding이 없음. 안전 판정이 아님";
+    } else if (findings.size) {
+      notice = `업무 보안 상태 관련 Finding ${findings.size}건 확인`;
+    } else {
+      notice = "업무 보안 상태 수집·분석 상태를 확인할 수 없음. 안전 판정이 아님";
+    }
+    renderAnalysisSummary(parent, "업무 보안 상태 분석 요약", [
+      ["업무 보안 상태 선언 수", stateFacts.length],
+      ["업무 보안 상태 평가 수", factsOf("BUSINESS_STATE_EVALUATION").length],
+      ["관련 Finding 수", findings.size]
+    ], notice);
     renderList(parent, rows, [
       { label: "Handler", value: (item) => item.handler, code: true, truncate: true, width: "28%" },
       { label: "상태", value: (item) => item.stateName, code: true, width: "15%" },
@@ -907,11 +986,53 @@
       { label: "Adapter", value: (item) => item.adapter, code: true, truncate: true },
       { label: "상태", value: (item) => item.status, display: statusLabel, badge: true }
     ], (item) => [["영역", item.area], ["Adapter", item.adapter], ["상태", statusLabel(item.status)]]);
-    renderList(parent, state.report.diagnostics || [], [
-      { label: "Adapter", value: (item) => item.adapterId, code: true, truncate: true },
-      { label: "오류 코드", value: (item) => item.errorCode, badge: true },
-      { label: "내용", value: (item) => item.summary, truncate: true }
-    ], (item) => [["Adapter", item.adapterId], ["오류 코드", item.errorCode], ["내용", item.summary]]);
+    renderDiagnosticGroups(parent, state.report.diagnostics || []);
+  }
+
+  function renderDiagnosticGroups(parent, diagnostics) {
+    const groups = [];
+    const groupByKey = new Map();
+    diagnostics.forEach((item) => {
+      const key = [item.adapterId, item.errorCode, item.summary].map((part) => value(part, "미확인")).join("\u0000");
+      let group = groupByKey.get(key);
+      if (!group) {
+        group = { adapterId: item.adapterId, errorCode: item.errorCode, summary: item.summary, items: [] };
+        groupByKey.set(key, group);
+        groups.push(group);
+      }
+      group.items.push(item);
+    });
+
+    const area = create("section", undefined, "list-area");
+    area.append(create("span", `전체 Diagnostic ${diagnostics.length}건 · 그룹 ${groups.length}개`, "count"));
+    if (!groups.length) {
+      area.append(create("p", "Diagnostic 없음", "empty"));
+      parent.append(area);
+      return;
+    }
+    const groupList = create("div", undefined, "diagnostic-groups");
+    groups.forEach((group) => {
+      const groupDetails = document.createElement("details");
+      groupDetails.className = "diagnostic-group";
+      const groupSummary = document.createElement("summary");
+      groupSummary.append(
+        create("span", `${value(group.adapterId)} | ${value(group.errorCode)} | ${value(group.summary)}`, "diagnostic-group-title"),
+        badge("diagnostic", `${group.items.length}건`));
+      const groupBody = create("div", undefined, "diagnostic-group-body");
+      group.items.forEach((item, index) => {
+        const detail = document.createElement("details");
+        detail.className = "diagnostic-detail";
+        detail.append(
+          create("summary", `진단 ${index + 1} · ${value(item.summary)}`),
+          keyValues([["Adapter", item.adapterId], ["오류 코드", item.errorCode], ["상세 Summary", item.summary]])
+        );
+        groupBody.append(detail);
+      });
+      groupDetails.append(groupSummary, groupBody);
+      groupList.append(groupDetails);
+    });
+    area.append(groupList);
+    parent.append(area);
   }
 
   const renderers = {
