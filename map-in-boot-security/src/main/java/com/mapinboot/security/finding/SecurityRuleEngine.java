@@ -5,18 +5,20 @@ import com.mapinboot.core.common.error.AdapterDiagnostic;
 import com.mapinboot.core.common.error.ErrorCode;
 import com.mapinboot.core.common.error.FindingEvaluationException;
 import com.mapinboot.core.common.type.NodeType;
+import com.mapinboot.core.evidence.Evidence;
+import com.mapinboot.core.evidence.Fact;
 import com.mapinboot.core.finding.Finding;
 import com.mapinboot.core.finding.FindingEvaluation;
 import com.mapinboot.core.finding.FindingEvaluator;
 import com.mapinboot.core.graph.model.GraphNode;
 import com.mapinboot.core.graph.model.SecurityGraph;
 import java.util.ArrayList;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeMap;
 import java.util.function.Function;
+import java.util.stream.Collectors;
 import org.jeasy.rules.api.Facts;
 import org.jeasy.rules.api.Rule;
 import org.jeasy.rules.api.RuleListener;
@@ -81,7 +83,7 @@ public class SecurityRuleEngine implements FindingEvaluator {
         if (graph == null || !evaluation.diagnostics().isEmpty() || evaluation.findings().isEmpty()) {
             return evaluation;
         }
-        return new FindingEvaluation(linkGraphNodes(evaluation.findings(), graph), evaluation.diagnostics());
+        return new FindingEvaluation(linkGraphNodes(evaluation.findings(), report, graph), evaluation.diagnostics());
     }
 
     private FindingEvaluation evaluateWithoutGraph(AnalysisReport report) {
@@ -102,56 +104,155 @@ public class SecurityRuleEngine implements FindingEvaluator {
     }
 
     // 실제 Graph Node가 유일하게 대응되는 신규 Finding에만 참조 ID 연결
-    private List<Finding> linkGraphNodes(List<Finding> findings, SecurityGraph graph) {
+    private List<Finding> linkGraphNodes(List<Finding> findings, AnalysisReport report, SecurityGraph graph) {
         return findings.stream()
                 .map(finding -> {
                     if ("OBJECT_BINDING".equals(finding.ruleId())) {
-                        return withNodeIds(finding, matchingNodeIds(finding, graph,
-                                Set.of("OBJECT_AUTHORIZATION_REQUIREMENT", "OBJECT_ACCESS_PATH"), Set.of()));
+                        return withNodeIds(finding, matchingObjectNodeIds(finding, report, graph));
                     }
                     if ("STATE_BYPASS".equals(finding.ruleId())) {
-                        return withNodeIds(finding, matchingStateNodeIds(finding, graph));
+                        return withNodeIds(finding, matchingStateNodeIds(finding, report, graph));
                     }
                     return finding;
                 })
                 .toList();
     }
 
-    private List<String> matchingNodeIds(
-            Finding finding, SecurityGraph graph, Set<String> requiredFactTypes, Set<String> excludedFactTypes) {
-        List<GraphNode> candidates = graph.nodes().stream()
-                .filter(node -> node.attributes().get("factType") != null
-                        && requiredFactTypes.contains(node.attributes().get("factType")))
-                .filter(node -> !excludedFactTypes.contains(node.attributes().get("factType")))
-                .filter(node -> finding.evidenceIds().containsAll(node.evidenceIds()))
+    private List<String> matchingObjectNodeIds(Finding finding, AnalysisReport report, SecurityGraph graph) {
+        Set<String> availableEvidence = evidenceIds(report);
+        List<ObjectBindingFacts> candidates = objectBindingFacts(report, availableEvidence).stream()
+                .filter(candidate -> finding.id().equals(new FindingIdGenerator().generate(
+                        "OBJECT_BINDING", List.of(
+                                candidate.requirement().subjectKey(), candidate.path().subjectKey()))))
                 .toList();
-        if (candidates.size() != requiredFactTypes.size()) {
+        if (candidates.size() != 1) {
             return List.of();
         }
-        Set<String> factTypes = new HashSet<>();
-        for (GraphNode candidate : candidates) {
-            factTypes.add(candidate.attributes().get("factType"));
-        }
-        if (!factTypes.equals(requiredFactTypes)) {
-            return List.of();
-        }
-        return candidates.stream().map(GraphNode::id).sorted().toList();
+        ObjectBindingFacts candidate = candidates.get(0);
+        return nodeIdsForFacts(graph, List.of(candidate.requirement(), candidate.path()));
     }
 
-    private List<String> matchingStateNodeIds(Finding finding, SecurityGraph graph) {
-        List<GraphNode> candidates = graph.nodes().stream()
-                .filter(node -> node.type() == NodeType.BUSINESS_SECURITY_STATE)
-                .filter(node -> finding.evidenceIds().containsAll(node.evidenceIds()))
-                .filter(node -> !"BUSINESS_STATE_EVALUATION".equals(node.attributes().get("factType")))
+    private List<String> matchingStateNodeIds(Finding finding, AnalysisReport report, SecurityGraph graph) {
+        Set<String> availableEvidence = evidenceIds(report);
+        List<StateBypassFacts> candidates = stateBypassFacts(report, availableEvidence).stream()
+                .filter(candidate -> finding.id().equals(new FindingIdGenerator().generate(
+                        "STATE_BYPASS", List.of(
+                                candidate.requirement().subjectKey(), candidate.evaluation().subjectKey()))))
                 .toList();
-        List<GraphNode> evaluations = graph.nodes().stream()
-                .filter(node -> "BUSINESS_STATE_EVALUATION".equals(node.attributes().get("factType")))
-                .filter(node -> finding.evidenceIds().containsAll(node.evidenceIds()))
-                .toList();
-        if (candidates.size() != 1 || evaluations.size() != 1) {
+        if (candidates.size() != 1) {
             return List.of();
         }
-        return List.of(candidates.get(0).id(), evaluations.get(0).id()).stream().sorted().toList();
+        StateBypassFacts candidate = candidates.get(0);
+        return nodeIdsForFacts(graph, List.of(candidate.requirement(), candidate.evaluation()));
+    }
+
+    private List<ObjectBindingFacts> objectBindingFacts(AnalysisReport report, Set<String> availableEvidence) {
+        List<Fact> requirements = facts(report, "OBJECT_AUTHORIZATION_REQUIREMENT");
+        List<Fact> paths = facts(report, "OBJECT_ACCESS_PATH");
+        return requirements.stream()
+                .filter(requirement -> hasEvidence(requirement, availableEvidence))
+                .flatMap(requirement -> paths.stream()
+                        .filter(path -> matches(requirement, path)
+                                && Set.of("UNGUARDED", "SOURCE_MISMATCH").contains(path.attributes().get("pathOutcome"))
+                                && "COMPLETE_SUPPORTED_PATH".equals(path.attributes().get("coverage"))
+                                && hasEvidence(path, availableEvidence))
+                        .map(path -> new ObjectBindingFacts(requirement, path)))
+                .distinct()
+                .toList();
+    }
+
+    private List<StateBypassFacts> stateBypassFacts(AnalysisReport report, Set<String> availableEvidence) {
+        List<Fact> requirements = facts(report, "BUSINESS_SECURITY_STATE").stream()
+                .filter(fact -> "REQUIRES".equals(fact.attributes().get("stateAction")))
+                .toList();
+        List<Fact> evaluations = facts(report, "BUSINESS_STATE_EVALUATION");
+        return requirements.stream()
+                .filter(requirement -> hasEvidence(requirement, availableEvidence))
+                .flatMap(requirement -> evaluations.stream()
+                        .filter(evaluation -> matches(requirement, evaluation)
+                                && "BYPASS_PATH".equals(evaluation.attributes().get("pathOutcome"))
+                                && "COMPLETE_SUPPORTED_PATH".equals(evaluation.attributes().get("coverage"))
+                                && hasEvidence(evaluation, availableEvidence))
+                        .map(evaluation -> new StateBypassFacts(requirement, evaluation)))
+                .distinct()
+                .toList();
+    }
+
+    private List<Fact> facts(AnalysisReport report, String type) {
+        return report.collectionReport().facts().stream()
+                .filter(fact -> fact != null && type.equals(fact.type()))
+                .sorted(java.util.Comparator.comparing(Fact::subjectKey).thenComparing(Fact::id))
+                .toList();
+    }
+
+    private boolean matches(Fact requirement, Fact path) {
+        if ("OBJECT_ACCESS_PATH".equals(path.type())) {
+            return same(requirement.attributes().get("handler"), path.attributes().get("handler"))
+                    && same(requirement.attributes().get("resourceType"), path.attributes().get("resourceType"))
+                    && same(requirement.subjectKey(), path.attributes().get("requirementKey"));
+        }
+        return same(requirement.subjectKey(), path.attributes().get("requirementKey"))
+                && same(requirement.attributes().get("handler"), path.attributes().get("handler"))
+                && same(requirement.attributes().get("stateName"), path.attributes().get("stateName"))
+                && requirement.attributes().getOrDefault("claim", "")
+                .equals(path.attributes().getOrDefault("claimName", ""));
+    }
+
+    private boolean hasEvidence(Fact fact, Set<String> availableEvidence) {
+        return fact != null && !fact.evidenceIds().isEmpty()
+                && fact.evidenceIds().stream().allMatch(id -> !isBlank(id))
+                && availableEvidence.containsAll(fact.evidenceIds());
+    }
+
+    private Set<String> evidenceIds(AnalysisReport report) {
+        return report.evidence().stream()
+                .filter(evidence -> evidence != null && !isBlank(evidence.id()))
+                .map(Evidence::id)
+                .collect(Collectors.toSet());
+    }
+
+    private List<String> nodeIdsForFacts(SecurityGraph graph, List<Fact> facts) {
+        List<String> nodeIds = new ArrayList<>();
+        for (Fact fact : facts) {
+            List<GraphNode> candidates = graph.nodes().stream()
+                    .filter(node -> matchesFactNode(node, fact))
+                    .toList();
+            if (candidates.size() != 1) {
+                return List.of();
+            }
+            nodeIds.add(candidates.get(0).id());
+        }
+        return nodeIds.stream().distinct().sorted().toList();
+    }
+
+    private boolean matchesFactNode(GraphNode node, Fact fact) {
+        if (node.type() != expectedNodeType(fact.type()) || !fact.subjectKey().equals(node.label())
+                || !node.evidenceIds().containsAll(fact.evidenceIds())) {
+            return false;
+        }
+        if ("BUSINESS_SECURITY_STATE".equals(fact.type())) {
+            if (node.attributes().containsKey("factType")) {
+                return false;
+            }
+        } else if (!fact.type().equals(node.attributes().get("factType"))) {
+            return false;
+        }
+        return fact.attributes().entrySet().stream()
+                .allMatch(entry -> entry.getValue().equals(node.attributes().get(entry.getKey())));
+    }
+
+    private NodeType expectedNodeType(String factType) {
+        return "BUSINESS_SECURITY_STATE".equals(factType)
+                || "BUSINESS_STATE_EVALUATION".equals(factType)
+                ? NodeType.BUSINESS_SECURITY_STATE : NodeType.AUTHORIZATION;
+    }
+
+    private boolean same(String first, String second) {
+        return !isBlank(first) && first.equals(second);
+    }
+
+    private boolean isBlank(String value) {
+        return value == null || value.isBlank();
     }
 
     private Finding withNodeIds(Finding finding, List<String> nodeIds) {
@@ -245,5 +346,11 @@ public class SecurityRuleEngine implements FindingEvaluator {
                         "Finding Rule 실행 실패"));
             }
         }
+    }
+
+    private record ObjectBindingFacts(Fact requirement, Fact path) {
+    }
+
+    private record StateBypassFacts(Fact requirement, Fact evaluation) {
     }
 }
