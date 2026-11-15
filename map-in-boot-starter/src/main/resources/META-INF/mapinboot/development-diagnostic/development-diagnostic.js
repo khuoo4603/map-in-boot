@@ -417,6 +417,34 @@
       && [...expected].every((id) => actual.has(id));
   }
 
+  // Finding의 실제 Graph Node가 행 Fact의 구조와 일치하는지 확인
+  function graphNodesForFact(fact) {
+    const nodes = state.report.currentSnapshot && state.report.currentSnapshot.nodes || [];
+    return nodes.filter((node) => {
+      const nodeAttributes = attributesOf(node);
+      if (!fact || node.label !== fact.subjectKey
+        || !(fact.evidenceIds || []).every((id) => (node.evidenceIds || []).includes(id))) return false;
+      if (fact.type === "BUSINESS_SECURITY_STATE") {
+        if (node.type !== "BUSINESS_SECURITY_STATE" || Object.prototype.hasOwnProperty.call(nodeAttributes, "factType")) return false;
+      } else if (node.type !== (fact.type === "BUSINESS_STATE_EVALUATION" ? "BUSINESS_SECURITY_STATE" : "AUTHORIZATION")
+        || nodeAttributes.factType !== fact.type) return false;
+      return Object.entries(attributesOf(fact)).every(([key, item]) => nodeAttributes[key] === item);
+    });
+  }
+
+  // Finding Node 참조와 상세 행 Fact의 일대일 대응 확인
+  function findingReferencesFacts(finding, facts) {
+    const expectedNodeIds = [];
+    for (const fact of facts) {
+      const candidates = graphNodesForFact(fact);
+      if (candidates.length !== 1) return false;
+      expectedNodeIds.push(candidates[0].id);
+    }
+    const actualNodeIds = new Set(finding.nodeIds || []);
+    return actualNodeIds.size === expectedNodeIds.length
+      && expectedNodeIds.every((id) => actualNodeIds.has(id));
+  }
+
   function objectFindingMatches(finding, row) {
     const requirement = row.requirement;
     const path = row.path;
@@ -431,11 +459,10 @@
       && requirementAttributes.handler === pathAttributes.handler
       && requirementAttributes.resourceType
       && requirementAttributes.resourceType === pathAttributes.resourceType
-      && requirementAttributes.principalSource
-      && requirementAttributes.principalSource === pathAttributes.principalSource
       && requirement.subjectKey
       && requirement.subjectKey === pathAttributes.requirementKey
-      && exactFindingEvidence(finding, [requirement, path]);
+      && exactFindingEvidence(finding, [requirement, path])
+      && findingReferencesFacts(finding, [requirement, path]);
   }
 
   function stateFindingMatches(finding, row) {
@@ -457,7 +484,8 @@
       && claim === (evaluationAttributes.claimName || evaluationAttributes.claim)
       && state.subjectKey
       && state.subjectKey === evaluationAttributes.requirementKey
-      && exactFindingEvidence(finding, [state, evaluation]);
+      && exactFindingEvidence(finding, [state, evaluation])
+      && findingReferencesFacts(finding, [state, evaluation]);
   }
 
   function findingsForObjectRow(row) {
@@ -516,8 +544,7 @@
         const attributes = attributesOf(path);
         return attributes.requirementKey === requirement.subjectKey
           && attributes.handler === requirementAttributes.handler
-          && attributes.resourceType === requirementAttributes.resourceType
-          && attributes.principalSource === requirementAttributes.principalSource;
+          && attributes.resourceType === requirementAttributes.resourceType;
       });
       const pathItems = requirementPaths.length ? requirementPaths : [null];
       pathItems.forEach((path) => {
