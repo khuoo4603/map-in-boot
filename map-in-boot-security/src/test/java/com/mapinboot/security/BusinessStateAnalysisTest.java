@@ -21,6 +21,7 @@ import com.mapinboot.security.analyzer.BusinessStateAnalysisAdapter;
 import com.mapinboot.security.autoconfigure.MapInBootSecurityAutoConfiguration;
 import com.mapinboot.security.collector.BusinessStateCollectorAdapter;
 import com.mapinboot.security.finding.StateBypassFindingRule;
+import com.mapinboot.security.finding.SecurityRuleEngine;
 import com.mapinboot.starter.collector.EndpointMappingCollectorAdapter;
 import com.mapinboot.starter.snapshot.SnapshotAssembler;
 import java.util.List;
@@ -125,6 +126,20 @@ class BusinessStateAnalysisTest {
             assertEquals("STATE_BYPASS", findings.get(0).ruleId());
             assertTrue(findings.get(0).evidenceIds().stream()
                     .allMatch(id -> analysis.evidence().stream().anyMatch(item -> item.id().equals(id))));
+
+            var integratedFindings = new SecurityRuleEngine().evaluate(analysis);
+            assertEquals(1, integratedFindings.stream()
+                    .filter(finding -> "STATE_BYPASS".equals(finding.ruleId()))
+                    .count());
+
+            Snapshot snapshot = new SnapshotAssembler(List.of(new SecurityRuleEngine()), "1")
+                    .assemble(analysis, "fixture", "instance", "test");
+            assertEquals(1, snapshot.findings().stream()
+                    .filter(finding -> "STATE_BYPASS".equals(finding.ruleId()))
+                    .count());
+            assertTrue(snapshot.findings().stream()
+                    .flatMap(finding -> finding.evidenceIds().stream())
+                    .allMatch(id -> snapshot.evidence().stream().anyMatch(item -> item.id().equals(id))));
         }
     }
 

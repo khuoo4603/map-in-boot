@@ -9,6 +9,8 @@ import com.mapinboot.core.collection.CollectorAdapter;
 import com.mapinboot.core.collection.model.CollectionContext;
 import com.mapinboot.core.collection.model.CollectionReport;
 import com.mapinboot.core.common.error.ErrorCode;
+import com.mapinboot.core.common.error.AdapterDiagnostic;
+import com.mapinboot.core.common.error.FindingEvaluationException;
 import com.mapinboot.core.common.error.MapInBootException;
 import com.mapinboot.core.common.status.AnalysisStatus;
 import com.mapinboot.core.finding.FindingEvaluator;
@@ -50,6 +52,7 @@ public class MapInBootBootstrap implements ApplicationListener<ApplicationReadyE
     private final AtomicReference<Snapshot> snapshot = new AtomicReference<>();
     private final AtomicReference<Snapshot> persistedSnapshot = new AtomicReference<>();
     private final AtomicReference<Throwable> failure = new AtomicReference<>();
+    private final AtomicReference<List<AdapterDiagnostic>> findingDiagnostics = new AtomicReference<>(List.of());
     private final AtomicBoolean currentExecutionComplete = new AtomicBoolean();
     private final AtomicBoolean persistenceComplete = new AtomicBoolean();
     private final AtomicBoolean persistenceSkipped = new AtomicBoolean();
@@ -131,6 +134,7 @@ public class MapInBootBootstrap implements ApplicationListener<ApplicationReadyE
     // 수집 및 분석 결과 보존
     private void analyze(String serviceId) {
         try {
+            findingDiagnostics.set(List.of());
             restorePersistedSnapshot(serviceId);
             CollectionReport collected = collectionProvider.execute(
                     new CollectionContext(applicationContext, serviceId, instanceId), collectorAdapters);
@@ -161,6 +165,9 @@ public class MapInBootBootstrap implements ApplicationListener<ApplicationReadyE
             }
             log.info("Map in Boot 분석이 완료되었습니다.");
         } catch (RuntimeException exception) {
+            if (exception instanceof FindingEvaluationException findingEvaluationException) {
+                findingDiagnostics.set(findingEvaluationException.diagnostics());
+            }
             failure.set(exception);
             log.error(failureSummary(exception));
         }
@@ -360,6 +367,10 @@ public class MapInBootBootstrap implements ApplicationListener<ApplicationReadyE
             return exception.getErrorCode().getCode();
         }
         return ErrorCode.ADAPTER_FAILED.getCode();
+    }
+
+    public List<AdapterDiagnostic> findingDiagnostics() {
+        return findingDiagnostics.get();
     }
 
     Throwable failure() {

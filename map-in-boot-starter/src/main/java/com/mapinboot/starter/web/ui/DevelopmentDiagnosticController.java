@@ -109,7 +109,7 @@ public final class DevelopmentDiagnosticController {
                     analysis == null ? List.of() : analysis.relations(),
                     evidence,
                     evidenceDisplayCodeResolver.resolve(collection, analysis),
-                    diagnostics(collection, analysis),
+                    diagnostics(collection, analysis, bootstrap.findingDiagnostics()),
                     current != null,
                     current == null ? null : CurrentSnapshotResponse.from(current),
                     persisted != null,
@@ -137,7 +137,8 @@ public final class DevelopmentDiagnosticController {
 
         private static List<StatusController.DiagnosticResponse> diagnostics(
                 CollectionReport collection,
-                AnalysisReport analysis
+                AnalysisReport analysis,
+                List<AdapterDiagnostic> findingDiagnostics
         ) {
             List<AdapterDiagnostic> diagnostics = new ArrayList<>();
             if (collection != null) {
@@ -146,6 +147,7 @@ public final class DevelopmentDiagnosticController {
             if (analysis != null) {
                 diagnostics.addAll(analysis.diagnostics());
             }
+            diagnostics.addAll(findingDiagnostics);
             return StatusController.StatusResponse.toDiagnostics(diagnostics);
         }
     }

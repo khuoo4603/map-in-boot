@@ -69,6 +69,7 @@ public class StatusController {
             if (analysis != null) {
                 diagnostics.addAll(toDiagnostics(analysis.diagnostics()));
             }
+            diagnostics.addAll(toDiagnostics(bootstrap.findingDiagnostics()));
             return new StatusResponse(
                     bootstrap.executionPhase(),
                     collection == null ? Map.of() : collection.statusByAdapter(),

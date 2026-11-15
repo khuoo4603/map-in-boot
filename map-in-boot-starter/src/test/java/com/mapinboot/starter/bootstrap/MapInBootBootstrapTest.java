@@ -19,6 +19,8 @@ import com.mapinboot.core.evidence.Evidence;
 import com.mapinboot.core.evidence.Fact;
 import com.mapinboot.core.evidence.Relation;
 import com.mapinboot.core.finding.FindingEvaluator;
+import com.mapinboot.core.finding.FindingEvaluation;
+import com.mapinboot.core.finding.Finding;
 import com.mapinboot.starter.autoconfigure.MapInBootAutoConfiguration;
 import com.mapinboot.starter.autoconfigure.MapInBootProperties;
 import com.mapinboot.starter.snapshot.LocalSnapshotStore;
@@ -232,6 +234,23 @@ class MapInBootBootstrapTest {
             assertNotNull(bootstrap.collectionReport());
             assertNotNull(bootstrap.analysisReport());
             assertNull(bootstrap.snapshot());
+        }
+    }
+
+    @Test
+    void bootstrapExposesFindingRuleDiagnosticsWhenEvaluationFails() {
+        try (AnnotationConfigApplicationContext context = context(
+                Map.of("spring.application.name", "test-service"), DiagnosticFindingConfiguration.class)) {
+            MapInBootBootstrap bootstrap = context.getBean(MapInBootBootstrap.class);
+
+            context.publishEvent(readyEvent(context));
+            await(() -> bootstrap.failure() != null);
+
+            assertNotNull(bootstrap.collectionReport());
+            assertNotNull(bootstrap.analysisReport());
+            assertNull(bootstrap.snapshot());
+            assertEquals(1, bootstrap.findingDiagnostics().size());
+            assertEquals("finding-rule:TEST_RULE", bootstrap.findingDiagnostics().get(0).adapterId());
         }
     }
 
@@ -600,6 +619,27 @@ class MapInBootBootstrapTest {
         FindingEvaluator findingEvaluator() {
             return ignored -> {
                 throw new IllegalStateException("Finding evaluation failure");
+            };
+        }
+    }
+
+    @Configuration(proxyBeanMethods = false)
+    static class DiagnosticFindingConfiguration {
+        @Bean
+        FindingEvaluator findingEvaluator() {
+            return new FindingEvaluator() {
+                @Override
+                public List<Finding> evaluate(com.mapinboot.core.analysis.model.AnalysisReport report) {
+                    return List.of();
+                }
+
+                @Override
+                public FindingEvaluation evaluateWithDiagnostics(
+                        com.mapinboot.core.analysis.model.AnalysisReport report) {
+                    return new FindingEvaluation(List.of(), List.of(
+                            new AdapterDiagnostic("finding-rule:TEST_RULE", ErrorCode.ADAPTER_FAILED,
+                                    "규칙 진단")));
+                }
             };
         }
     }
