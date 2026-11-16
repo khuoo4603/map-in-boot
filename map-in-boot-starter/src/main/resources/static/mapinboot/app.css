@@ -112,6 +112,9 @@ button:focus-visible { outline: 2px solid var(--accent-strong); outline-offset: 
 .canvas-empty p { margin: 0; }
 .graph-svg { display: block; flex: 1; width: 100%; min-height: 280px; background: var(--page); cursor: default; }
 .graph-background { pointer-events: none; }
+.graph-areas { pointer-events: none; }
+.graph-area-box { fill: #17251b; fill-opacity: .26; stroke: #386844; stroke-width: 1; stroke-dasharray: 5 4; }
+.graph-area-label { fill: #6f9479; font-size: 10px; font-weight: 600; }
 .graph-edge { fill: none; stroke-width: 1.6; opacity: .86; }
 .graph-edge-label { font-size: 9px; font-weight: 600; pointer-events: none; paint-order: stroke; stroke: var(--page); stroke-width: 3px; stroke-linejoin: round; }
 .graph-node { cursor: pointer; outline: none; }

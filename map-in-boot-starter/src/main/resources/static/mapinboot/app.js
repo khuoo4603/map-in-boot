@@ -25,10 +25,12 @@
   const graphStateMessage = document.querySelector("#graph-state-message");
   const graphSvg = document.querySelector("#graph-svg");
   const graphViewport = document.querySelector("#graph-viewport");
+  const graphAreas = document.querySelector("#graph-areas");
   const graphEdges = document.querySelector("#graph-edges");
   const graphNodes = document.querySelector("#graph-nodes");
   const notice = document.querySelector("#shell-notice");
   const graphRenderer = window.MapInBootGraph;
+  const layoutClient = window.MapInBootLayout;
   const state = {
     pinned: false,
     hovered: false,
@@ -39,7 +41,11 @@
     error: null,
     snapshotError: null,
     graph: null,
-    graphRender: null
+    graphRender: null,
+    layout: null,
+    layoutState: "not-requested",
+    layoutRequestId: 0,
+    layoutError: null
   };
 
   function executionPhaseLabel(phase) {
@@ -152,8 +158,10 @@
     const result = graphRenderer.render(graph, {
       svg: graphSvg,
       viewport: graphViewport,
+      areaLayer: graphAreas,
       edgeLayer: graphEdges,
-      nodeLayer: graphNodes
+      nodeLayer: graphNodes,
+      layoutMode: "initial"
     });
     state.graphRender = result;
     graphEmpty.hidden = true;
@@ -162,6 +170,55 @@
       ? `유효하지 않은 Graph 요소 ${graph.invalidNodes + graph.invalidEdges}개를 표시에서 제외했습니다.`
       : "보존 Snapshot Graph 표시 완료";
     return result;
+  }
+
+  function layoutGraph() {
+    if (!state.graph || state.graph.nodes.length === 0) return Promise.resolve(null);
+    const requestId = ++state.layoutRequestId;
+    state.layoutState = "loading";
+    state.layoutError = null;
+    graphCanvas.dataset.layoutState = "loading";
+    showNotice("Graph 자동 배치 중", "loading");
+    if (!layoutClient) {
+      state.layoutState = "unavailable";
+      graphCanvas.dataset.layoutState = "unavailable";
+      showNotice("ELK.js 자동 배치 자원을 불러오지 못했습니다.", "error");
+      return Promise.resolve(null);
+    }
+    return layoutClient.layout(state.graph).then((layout) => {
+      if (requestId !== state.layoutRequestId || layout.stale) return layout;
+      const renderResult = graphRenderer.render(state.graph, {
+        svg: graphSvg,
+        viewport: graphViewport,
+        areaLayer: graphAreas,
+        edgeLayer: graphEdges,
+        nodeLayer: graphNodes,
+        positions: layout.positions,
+        edgeRoutes: layout.edgeRoutes,
+        bounds: { width: layout.width, height: layout.height },
+        layoutMode: "elk"
+      });
+      graphSvg.setAttribute("data-layout-mode", "elk");
+      graphViewport.setAttribute("data-layout-mode", "elk");
+      state.layout = layout;
+      state.graphRender = renderResult;
+      state.layoutState = "loaded";
+      state.layoutError = null;
+      graphCanvas.dataset.layoutState = "loaded";
+      graphEmpty.hidden = true;
+      graphSvg.hidden = false;
+      graphStateMessage.textContent = "ELK.js 좌→우 자동 배치 완료";
+      showNotice(`Graph 자동 배치 완료 · ${state.graph.nodes.length}개 Node`, "success");
+      return layout;
+    }).catch((error) => {
+      if (requestId !== state.layoutRequestId) return null;
+      state.layoutState = "failed";
+      state.layoutError = error.message || "원인 확인 불가";
+      graphCanvas.dataset.layoutState = "failed";
+      graphStateMessage.textContent = "Graph 자동 배치에 실패하여 초기 배치를 유지합니다.";
+      showNotice(`Graph 자동 배치 실패: ${error.message || "원인 확인 불가"}`, "error");
+      return null;
+    });
   }
 
   function updateHeader() {
@@ -195,6 +252,10 @@
     state.status = null;
     state.snapshot = null;
     state.snapshotState = "loading";
+    state.layout = null;
+    state.layoutState = "not-requested";
+    state.layoutError = null;
+    state.layoutRequestId += 1;
     resetGraph("Snapshot 조회 중");
     renderStatus();
     showNotice("상태 조회 중", "loading");
@@ -213,7 +274,10 @@
       }
       updateHeader();
       renderStatus();
-      if (state.snapshotState === "loaded") renderGraph(state.snapshot);
+      if (state.snapshotState === "loaded") {
+        renderGraph(state.snapshot);
+        layoutGraph();
+      }
       showNotice(
         state.snapshotError ? requestMessage(state.snapshotError.status, "snapshot")
           : state.snapshotState === "missing" ? "상태 조회 완료 · 보존 Snapshot 없음"
@@ -274,7 +338,8 @@
     requestMessage,
     loadStatus,
     normalizeGraph: graphRenderer && graphRenderer.normalize,
-    renderGraph
+    renderGraph,
+    layoutGraph
   };
   loadStatus();
 })();

@@ -175,7 +175,7 @@
     return positions;
   }
 
-  function graphSize(positions) {
+  function graphSize(positions, bounds) {
     const values = Object.values(positions);
     const width = values.length === 0
       ? 640
@@ -183,7 +183,10 @@
     const height = values.length === 0
       ? 360
       : Math.max(360, ...values.map((position) => position.y + NODE_HEIGHT + NODE_PADDING));
-    return { width, height };
+    return {
+      width: bounds && Number.isFinite(bounds.width) ? Math.max(width, bounds.width) : width,
+      height: bounds && Number.isFinite(bounds.height) ? Math.max(height, bounds.height) : height
+    };
   }
 
   function port(position, right, yOffset) {
@@ -204,17 +207,94 @@
     return `M ${start.x} ${start.y} C ${controlStart.x} ${controlStart.y}, ${controlEnd.x} ${controlEnd.y}, ${end.x} ${end.y}`;
   }
 
+  function routedPath(route, fallback) {
+    const points = [];
+    const sections = route && Array.isArray(route.sections) ? route.sections : [];
+    sections.forEach((section, index) => {
+      const start = section.startPoint;
+      const end = section.endPoint;
+      if (index === 0 && start && Number.isFinite(start.x) && Number.isFinite(start.y)) points.push(start);
+      (section.bendPoints || []).forEach((point) => {
+        if (point && Number.isFinite(point.x) && Number.isFinite(point.y)) points.push(point);
+      });
+      if (end && Number.isFinite(end.x) && Number.isFinite(end.y)) points.push(end);
+    });
+    return points.length > 1
+      ? points.map((point, index) => `${index === 0 ? "M" : "L"} ${point.x} ${point.y}`).join(" ")
+      : fallback;
+  }
+
+  const areaDefinitions = [
+    {
+      id: "servlet-entry",
+      label: "서블릿 컨테이너·진입",
+      matches: (node) => ["APPLICATION", "SERVLET", "ENDPOINT"].includes(node.type)
+    },
+    {
+      id: "servlet-filter",
+      label: "서블릿 필터",
+      matches: (node) => node.type === "FILTER" && node.attributes.registrationKind === "SERVLET"
+    },
+    {
+      id: "spring-security",
+      label: "스프링 시큐리티",
+      matches: (node) => node.type === "SECURITY_CHAIN"
+        || (node.type === "FILTER" && node.attributes.registrationKind === "SECURITY")
+    },
+    {
+      id: "servlet-handler",
+      label: "서블릿·핸들러",
+      matches: (node) => ["SERVLET", "ENDPOINT", "HANDLER"].includes(node.type)
+    },
+    {
+      id: "authentication-authorization",
+      label: "인증·인가·보안정보",
+      matches: (node) => ["AUTHENTICATION", "AUTHORIZATION", "SECURITY_DATA", "BUSINESS_SECURITY_STATE"].includes(node.type)
+    }
+  ];
+
+  function renderAreas(graph, positions, layer) {
+    if (!layer) return [];
+    layer.replaceChildren();
+    const areas = [];
+    areaDefinitions.forEach((definition) => {
+      const members = graph.nodes.filter(definition.matches).map((node) => ({ node, position: positions[node.id] }))
+        .filter((item) => item.position);
+      if (members.length === 0) return;
+      const left = Math.min(...members.map((item) => item.position.x)) - 22;
+      const top = Math.min(...members.map((item) => item.position.y)) - 30;
+      const right = Math.max(...members.map((item) => item.position.x + NODE_WIDTH)) + 22;
+      const bottom = Math.max(...members.map((item) => item.position.y + NODE_HEIGHT)) + 22;
+      const group = createElement("g");
+      group.setAttribute("class", "graph-area");
+      group.setAttribute("data-area-id", definition.id);
+      const box = createElement("rect");
+      box.setAttribute("class", "graph-area-box");
+      box.setAttribute("x", String(left));
+      box.setAttribute("y", String(top));
+      box.setAttribute("width", String(right - left));
+      box.setAttribute("height", String(bottom - top));
+      group.appendChild(box);
+      addText(group, "graph-area-label", left + 12, top + 18, definition.label);
+      layer.appendChild(group);
+      areas.push({ id: definition.id, label: definition.label, nodeIds: members.map((item) => item.node.id) });
+    });
+    return areas;
+  }
+
   function render(graph, layers, options = {}) {
     const positions = positionsFor(graph.nodes, options.positions);
-    const size = graphSize(positions);
+    const size = graphSize(positions, options.bounds);
     const nodeById = new Map(graph.nodes.map((node) => [node.id, node]));
     const edgePairCounts = new Map();
     const edgeElements = [];
     const nodeElements = [];
+    const areas = renderAreas(graph, positions, layers.areaLayer);
     layers.edgeLayer.replaceChildren();
     layers.nodeLayer.replaceChildren();
     layers.svg.setAttribute("viewBox", `0 0 ${size.width} ${size.height}`);
     layers.svg.setAttribute("data-layout-mode", options.layoutMode || "initial");
+    if (layers.viewport) layers.viewport.setAttribute("data-layout-mode", options.layoutMode || "initial");
 
     graph.edges.forEach((edge) => {
       const source = positions[edge.sourceId];
@@ -226,7 +306,7 @@
       const style = edgeStyles[edge.type];
       const path = createElement("path");
       path.setAttribute("class", "graph-edge");
-      path.setAttribute("d", edgePath(source, target, parallelIndex));
+      path.setAttribute("d", routedPath(options.edgeRoutes && options.edgeRoutes[edge.id], edgePath(source, target, parallelIndex)));
       path.setAttribute("data-edge-id", edge.id);
       path.setAttribute("data-edge-type", edge.type);
       path.setAttribute("data-source-id", edge.sourceId);
@@ -304,7 +384,7 @@
     });
 
     layers.svg.hidden = graph.nodes.length === 0;
-    return { positions, width: size.width, height: size.height, nodes: graph.nodes, edges: graph.edges, invalidNodes: graph.invalidNodes, invalidEdges: graph.invalidEdges, nodeElements, edgeElements, nodeById };
+    return { positions, width: size.width, height: size.height, nodes: graph.nodes, edges: graph.edges, invalidNodes: graph.invalidNodes, invalidEdges: graph.invalidEdges, nodeElements, edgeElements, nodeById, areas };
   }
 
   window.MapInBootGraph = {

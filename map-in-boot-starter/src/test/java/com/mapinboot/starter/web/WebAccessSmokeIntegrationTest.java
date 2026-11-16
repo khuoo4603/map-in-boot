@@ -103,6 +103,21 @@ class WebAccessSmokeIntegrationTest {
             mvc.perform(get("/mapinboot/app.js").with(principal(true)))
                     .andExpect(status().isOk())
                     .andExpect(content().contentTypeCompatibleWith(MediaType.valueOf("text/javascript")));
+            mvc.perform(get("/mapinboot/vendor/elk-api.js"))
+                    .andExpect(status().isUnauthorized());
+            mvc.perform(get("/mapinboot/vendor/elk-api.js").with(principal(false)))
+                    .andExpect(status().isForbidden());
+            mvc.perform(get("/mapinboot/vendor/elk-api.js").with(principal(true)))
+                    .andExpect(status().isOk())
+                    .andExpect(content().contentTypeCompatibleWith(MediaType.valueOf("text/javascript")))
+                    .andExpect(content().string(org.hamcrest.Matchers.containsString("ELK")));
+            mvc.perform(get("/mapinboot/vendor/elk-worker.min.js"))
+                    .andExpect(status().isUnauthorized());
+            mvc.perform(get("/mapinboot/vendor/elk-worker.min.js").with(principal(false)))
+                    .andExpect(status().isForbidden());
+            mvc.perform(get("/mapinboot/vendor/elk-worker.min.js").with(principal(true)))
+                    .andExpect(status().isOk())
+                    .andExpect(content().contentTypeCompatibleWith(MediaType.valueOf("text/javascript")));
             mvc.perform(get("/mapinboot/assets/mapinboot_logo_transparent.png").with(principal(true)))
                     .andExpect(status().isOk())
                     .andExpect(content().contentTypeCompatibleWith(MediaType.IMAGE_PNG));

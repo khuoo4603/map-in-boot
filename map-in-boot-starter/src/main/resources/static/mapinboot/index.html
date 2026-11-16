@@ -67,6 +67,7 @@
               </defs>
               <rect class="graph-background" width="100%" height="100%" fill="url(#graph-dot-pattern)"></rect>
               <g id="graph-viewport">
+                <g id="graph-areas" class="graph-areas" aria-hidden="true"></g>
                 <g id="graph-edges" aria-hidden="true"></g>
                 <g id="graph-nodes"></g>
               </g>
@@ -79,7 +80,9 @@
     </div>
   </div>
   <div class="shell-notice" id="shell-notice" role="status" aria-live="polite" hidden></div>
+  <script src="/mapinboot/vendor/elk-api.js" defer></script>
   <script src="/mapinboot/graph-renderer.js" defer></script>
+  <script src="/mapinboot/layout-client.js" defer></script>
   <script src="/mapinboot/app.js" defer></script>
 </body>
 </html>
