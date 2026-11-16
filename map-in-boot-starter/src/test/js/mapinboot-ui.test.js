@@ -14,6 +14,10 @@ function createElement(tagName = "div") {
     dataset: {},
     hidden: false,
     textContent: "",
+    value: "",
+    clientWidth: 960,
+    clientHeight: 540,
+    style: {},
     addEventListener() {},
     append(...items) { children.push(...items); },
     appendChild(item) { children.push(item); return item; },
@@ -21,6 +25,10 @@ function createElement(tagName = "div") {
     getAttribute(name) { return attributes[name] || null; },
     setAttribute(name, value) { attributes[name] = value; },
     removeAttribute(name) { delete attributes[name]; },
+    getBoundingClientRect() { return { left: 0, top: 0, width: this.clientWidth, height: this.clientHeight }; },
+    closest() { return null; },
+    setPointerCapture() {},
+    releasePointerCapture() {},
     querySelector() { return createElement(); }
   };
 }
@@ -30,7 +38,10 @@ function loadUi() {
     "sidebar", "sidebar-toggle", "view-title", "view-state", "shell-notice",
     "help-button", "settings-button", "refresh-button", "graph-canvas",
     "graph-empty", "graph-state-message", "graph-svg", "graph-viewport", "graph-areas",
-    "graph-edges", "graph-nodes", "service-name", "snapshot-time"
+    "graph-edges", "graph-nodes", "service-name", "snapshot-time", "endpoint-search",
+    "endpoint-results", "node-filter", "edge-filter", "search-reset", "zoom-in", "zoom-out", "fit-graph",
+    "reset-view", "graph-filter-status", "graph-minimap", "graph-minimap-svg",
+    "graph-minimap-nodes", "graph-minimap-viewport"
   ];
   const elements = new Map(ids.map((id) => [id, createElement()]));
   const navigation = Array.from({ length: 4 }, () => ({
@@ -47,11 +58,14 @@ function loadUi() {
     querySelectorAll(selector) {
       return selector === ".nav-item" ? navigation : [];
     },
+    createElement(tagName) {
+      return createElement(tagName);
+    },
     createElementNS(_namespace, tagName) {
       return createElement(tagName);
     }
   };
-  const window = {};
+  const window = { addEventListener() {} };
   const layoutCalls = [];
   class FakeElk {
     constructor(options) {
@@ -87,10 +101,20 @@ function loadUi() {
     { console, document, window }
   );
   vm.runInNewContext(
+    readFileSync("map-in-boot-starter/src/main/resources/static/mapinboot/graph-navigation.js", "utf8"),
+    { console, document, window }
+  );
+  vm.runInNewContext(
     readFileSync("map-in-boot-starter/src/main/resources/static/mapinboot/app.js", "utf8"),
     { console, document, window, fetch: () => new Promise(() => {}) }
   );
-  return { ui: window.MapInBootUi, elements, layoutApi: window.MapInBootLayout, layoutCalls };
+  return {
+    ui: window.MapInBootUi,
+    elements,
+    layoutApi: window.MapInBootLayout,
+    navigationApi: window.MapInBootNavigation,
+    layoutCalls
+  };
 }
 
 test("실행 단계와 HTTP 상태를 사용자 문구로 구분함", () => {
@@ -231,4 +255,60 @@ test("새 요청 이후 이전 ELK 결과를 stale로 판정함", async () => {
   const [firstResult, secondResult] = await Promise.all([first, second]);
   assert.equal(firstResult.stale, true);
   assert.equal(secondResult.stale, false);
+});
+
+test("Endpoint 검색과 NodeType·EdgeType 필터는 원본 Graph를 변경하지 않음", async () => {
+  const { ui, elements } = loadUi();
+  const snapshot = graphFixture();
+  ui.renderGraph(snapshot);
+  await ui.layoutGraph();
+  const sourceNodeIds = ui.state.graph.nodes.map((node) => node.id);
+  const sourceEdgeIds = ui.state.graph.edges.map((edge) => edge.id);
+
+  elements.get("endpoint-search").value = " get /orders ";
+  elements.get("node-filter").value = "";
+  elements.get("edge-filter").value = "";
+  let filtered = ui.applyGraphFilter();
+  assert.deepEqual(Array.from(filtered.nodes, (node) => node.id), ["node-2"]);
+  assert.equal(filtered.edges.length, 0);
+  assert.equal(elements.get("endpoint-results").children.length, 2);
+  ui.focusEndpoint("node-2");
+  assert.notEqual(ui.navigation.state.panX, 0);
+  assert.match(elements.get("graph-filter-status").textContent, /숨김 Node 9개/);
+
+  elements.get("endpoint-search").value = "";
+  elements.get("node-filter").value = "";
+  elements.get("edge-filter").value = "SECURED_BY";
+  filtered = ui.applyGraphFilter();
+  assert.equal(filtered.nodes.length, 10);
+  assert.deepEqual(Array.from(filtered.edges, (edge) => edge.id), ["edge-3"]);
+
+  elements.get("edge-filter").value = "";
+  ui.applyGraphFilter();
+  assert.deepEqual(ui.state.graph.nodes.map((node) => node.id), sourceNodeIds);
+  assert.deepEqual(ui.state.graph.edges.map((edge) => edge.id), sourceEdgeIds);
+  assert.equal(elements.get("graph-minimap").hidden, false);
+});
+
+test("Fit·Zoom·Pan·Reset과 Mini Map Viewport가 같은 좌표를 사용함", async () => {
+  const { ui, elements } = loadUi();
+  ui.renderGraph(graphFixture());
+  await ui.layoutGraph();
+  const navigation = ui.navigation;
+
+  navigation.fit();
+  assert.equal(navigation.state.zoom !== 1, true);
+  assert.equal(elements.get("graph-minimap").hidden, false);
+  assert.equal(elements.get("graph-minimap-nodes").children.length, 10);
+  const fittedViewportX = Number(elements.get("graph-minimap-viewport").attributes.x);
+  navigation.zoomAt(2, 480, 270);
+  navigation.panBy(24, -12);
+  assert.equal(navigation.state.zoom, 2);
+  assert.notEqual(Number(elements.get("graph-minimap-viewport").attributes.x), fittedViewportX);
+
+  navigation.reset();
+  assert.equal(navigation.state.zoom, 1);
+  assert.equal(navigation.state.panX, 0);
+  assert.equal(navigation.state.panY, 0);
+  assert.equal(elements.get("graph-svg").attributes.viewBox, "0 0 960 540");
 });

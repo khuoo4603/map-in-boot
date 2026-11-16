@@ -121,6 +121,36 @@
     return { nodes, edges, invalidNodes, invalidEdges };
   }
 
+  function filterGraph(graph, filters = {}) {
+    const query = stringValue(filters.query, "").trim().toLowerCase();
+    const nodeType = stringValue(filters.nodeType, "");
+    const edgeType = stringValue(filters.edgeType, "");
+    const nodes = graph.nodes.filter((node) => {
+      if (nodeType && node.type !== nodeType) return false;
+      if (!query) return true;
+      if (node.type !== "ENDPOINT") return false;
+      const attributes = node.attributes || {};
+      return [node.label, attributes.httpMethod, attributes.path, attributes.handler]
+        .filter(Boolean)
+        .join(" ")
+        .toLowerCase()
+        .includes(query);
+    });
+    const nodeIds = new Set(nodes.map((node) => node.id));
+    const edges = graph.edges.filter((edge) => {
+      if (edgeType && edge.type !== edgeType) return false;
+      return nodeIds.has(edge.sourceId) && nodeIds.has(edge.targetId);
+    });
+    return {
+      ...graph,
+      nodes,
+      edges,
+      filters: { query, nodeType, edgeType },
+      hiddenNodes: graph.nodes.length - nodes.length,
+      hiddenEdges: graph.edges.length - edges.length
+    };
+  }
+
   function shorten(value, limit) {
     const text = stringValue(value, "");
     if (text.length <= limit) return text;
@@ -391,6 +421,7 @@
     nodeTypes: NODE_TYPES,
     edgeTypes: EDGE_TYPES,
     normalize,
+    filter: filterGraph,
     render,
     nodeDisplay
   };

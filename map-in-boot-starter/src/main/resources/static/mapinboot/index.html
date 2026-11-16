@@ -52,6 +52,53 @@
             <h1 id="view-title">전체 Flow Map</h1>
             <span class="view-state" id="view-state">Snapshot 조회 전</span>
           </div>
+          <div class="graph-tools" aria-label="Graph 탐색 도구">
+            <label class="graph-search">Endpoint 검색
+              <input id="endpoint-search" type="search" autocomplete="off" placeholder="Method·Path·Handler">
+            </label>
+            <label>검색 결과
+              <select id="endpoint-results" aria-label="Endpoint 검색 결과" disabled>
+                <option value="">검색어를 입력하세요</option>
+              </select>
+            </label>
+            <label>NodeType
+              <select id="node-filter">
+                <option value="">모든 NodeType</option>
+                <option value="APPLICATION">APPLICATION</option>
+                <option value="SERVLET">SERVLET</option>
+                <option value="ENDPOINT">ENDPOINT</option>
+                <option value="HANDLER">HANDLER</option>
+                <option value="SECURITY_CHAIN">SECURITY_CHAIN</option>
+                <option value="FILTER">FILTER</option>
+                <option value="AUTHENTICATION">AUTHENTICATION</option>
+                <option value="AUTHORIZATION">AUTHORIZATION</option>
+                <option value="SECURITY_DATA">SECURITY_DATA</option>
+                <option value="BUSINESS_SECURITY_STATE">BUSINESS_SECURITY_STATE</option>
+              </select>
+            </label>
+            <label>EdgeType
+              <select id="edge-filter">
+                <option value="">모든 EdgeType</option>
+                <option value="FLOWS_TO">FLOWS_TO</option>
+                <option value="MATCHED_BY">MATCHED_BY</option>
+                <option value="FILTERED_BY">FILTERED_BY</option>
+                <option value="SECURED_BY">SECURED_BY</option>
+                <option value="READS_SECURITY_DATA">READS_SECURITY_DATA</option>
+                <option value="WRITES_SECURITY_DATA">WRITES_SECURITY_DATA</option>
+                <option value="CONVERTS_TO_AUTHORITY">CONVERTS_TO_AUTHORITY</option>
+                <option value="USES_FOR_AUTHORIZATION">USES_FOR_AUTHORIZATION</option>
+                <option value="SECURITY_STATE">SECURITY_STATE</option>
+              </select>
+            </label>
+            <button class="graph-tool-button" id="search-reset" type="button">검색 초기화</button>
+            <span class="graph-filter-status" id="graph-filter-status" role="status" aria-live="polite">Graph 없음</span>
+            <div class="graph-navigation-tools" aria-label="화면 이동 도구">
+              <button class="graph-tool-button" id="zoom-out" type="button" aria-label="Graph 축소">−</button>
+              <button class="graph-tool-button" id="zoom-in" type="button" aria-label="Graph 확대">+</button>
+              <button class="graph-tool-button" id="fit-graph" type="button">화면 맞춤</button>
+              <button class="graph-tool-button" id="reset-view" type="button">보기 초기화</button>
+            </div>
+          </div>
           <div class="graph-surface" id="graph-canvas" data-graph-state="empty">
             <div class="canvas-empty" id="graph-empty">
             <p id="graph-state-message">Snapshot 조회 후 Graph를 표시합니다.</p>
@@ -72,6 +119,13 @@
                 <g id="graph-nodes"></g>
               </g>
             </svg>
+            <div class="graph-minimap" id="graph-minimap" hidden>
+              <svg id="graph-minimap-svg" viewBox="0 0 640 360" role="img" aria-label="Graph 미니맵">
+                <rect class="graph-minimap-background" x="0" y="0" width="640" height="360"></rect>
+                <g id="graph-minimap-nodes"></g>
+                <rect id="graph-minimap-viewport" class="graph-minimap-viewport" x="0" y="0" width="640" height="360"></rect>
+              </svg>
+            </div>
           </div>
         </section>
       </main>
@@ -83,6 +137,7 @@
   <script src="/mapinboot/vendor/elk-api.js" defer></script>
   <script src="/mapinboot/graph-renderer.js" defer></script>
   <script src="/mapinboot/layout-client.js" defer></script>
+  <script src="/mapinboot/graph-navigation.js" defer></script>
   <script src="/mapinboot/app.js" defer></script>
 </body>
 </html>

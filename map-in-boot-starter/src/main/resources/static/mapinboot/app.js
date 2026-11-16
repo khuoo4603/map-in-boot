@@ -28,9 +28,15 @@
   const graphAreas = document.querySelector("#graph-areas");
   const graphEdges = document.querySelector("#graph-edges");
   const graphNodes = document.querySelector("#graph-nodes");
+  const endpointSearch = document.querySelector("#endpoint-search");
+  const endpointResults = document.querySelector("#endpoint-results");
+  const nodeFilter = document.querySelector("#node-filter");
+  const edgeFilter = document.querySelector("#edge-filter");
+  const filterStatus = document.querySelector("#graph-filter-status");
   const notice = document.querySelector("#shell-notice");
   const graphRenderer = window.MapInBootGraph;
   const layoutClient = window.MapInBootLayout;
+  const navigationClient = window.MapInBootNavigation;
   const state = {
     pinned: false,
     hovered: false,
@@ -45,8 +51,28 @@
     layout: null,
     layoutState: "not-requested",
     layoutRequestId: 0,
-    layoutError: null
+    layoutError: null,
+    visibleGraph: null,
+    filters: { query: "", nodeType: "", edgeType: "" },
+    navigation: null
   };
+
+  const navigation = navigationClient && graphSvg && graphViewport
+    ? navigationClient.create({
+      svg: graphSvg,
+      viewport: graphViewport,
+      surface: graphCanvas,
+      minimap: document.querySelector("#graph-minimap"),
+      minimapSvg: document.querySelector("#graph-minimap-svg"),
+      minimapNodes: document.querySelector("#graph-minimap-nodes"),
+      minimapViewport: document.querySelector("#graph-minimap-viewport"),
+      zoomIn: document.querySelector("#zoom-in"),
+      zoomOut: document.querySelector("#zoom-out"),
+      fit: document.querySelector("#fit-graph"),
+      reset: document.querySelector("#reset-view")
+    })
+    : null;
+  state.navigation = navigation;
 
   function executionPhaseLabel(phase) {
     return phaseNames[phase] || "확인 불가";
@@ -92,6 +118,7 @@
       else item.removeAttribute("aria-current");
     });
     showNotice(`${viewNames[view]} 화면 선택`);
+    if (navigation) navigation.apply();
   }
 
   function capturedTime(value) {
@@ -138,9 +165,93 @@
   function resetGraph(message) {
     state.graph = null;
     state.graphRender = null;
+    state.visibleGraph = null;
+    if (navigation) navigation.setGraph(null);
     if (graphSvg) graphSvg.hidden = true;
     if (graphEmpty) graphEmpty.hidden = false;
+    if (filterStatus) filterStatus.textContent = "Graph 없음";
     if (message) graphStateMessage.textContent = message;
+  }
+
+  function filterValues() {
+    return {
+      query: endpointSearch ? endpointSearch.value : "",
+      nodeType: nodeFilter ? nodeFilter.value : "",
+      edgeType: edgeFilter ? edgeFilter.value : ""
+    };
+  }
+
+  function renderSearchResults(graph) {
+    if (!endpointResults) return;
+    endpointResults.replaceChildren();
+    const placeholder = document.createElement("option");
+    placeholder.value = "";
+    placeholder.textContent = state.filters.query ? "검색 결과 선택" : "검색어를 입력하세요";
+    endpointResults.appendChild(placeholder);
+    const matches = state.filters.query
+      ? graph.nodes.filter((node) => node.type === "ENDPOINT")
+      : [];
+    matches.forEach((node) => {
+      const option = document.createElement("option");
+      const attributes = node.attributes || {};
+      option.value = node.id;
+      option.textContent = [attributes.httpMethod, attributes.path].filter(Boolean).join(" ") || node.label;
+      endpointResults.appendChild(option);
+    });
+    endpointResults.value = "";
+    endpointResults.disabled = matches.length === 0;
+  }
+
+  function renderGraphView(layoutMode) {
+    const positions = state.layout
+      ? state.layout.positions
+      : state.graphRender && state.graphRender.positions;
+    const visibleGraph = graphRenderer.filter(state.graph, filterValues());
+    const result = graphRenderer.render(visibleGraph, {
+      svg: graphSvg,
+      viewport: graphViewport,
+      areaLayer: graphAreas,
+      edgeLayer: graphEdges,
+      nodeLayer: graphNodes,
+      positions,
+      edgeRoutes: state.layout && state.layout.edgeRoutes,
+      bounds: state.layout && { width: state.layout.width, height: state.layout.height },
+      layoutMode
+    });
+    state.visibleGraph = visibleGraph;
+    state.filters = visibleGraph.filters;
+    state.graphRender = result;
+    renderSearchResults(visibleGraph);
+    if (navigation) {
+      navigation.setGraph(visibleGraph, positions || result.positions, state.layout && {
+        width: state.layout.width,
+        height: state.layout.height
+      });
+    }
+    const active = Boolean(state.filters.query || state.filters.nodeType || state.filters.edgeType);
+    if (filterStatus) {
+      filterStatus.textContent = !active
+        ? `전체 Graph · ${visibleGraph.nodes.length}개 Node · ${visibleGraph.edges.length}개 Edge`
+        : visibleGraph.nodes.length === 0 && state.filters.query
+          ? "검색 결과 없음 · Snapshot 원본은 유지됩니다."
+          : `필터 적용 · ${visibleGraph.nodes.length}개 Node · ${visibleGraph.edges.length}개 Edge · 숨김 Node ${visibleGraph.hiddenNodes}개 · Edge ${visibleGraph.hiddenEdges}개`;
+    }
+    graphEmpty.hidden = visibleGraph.nodes.length > 0;
+    graphSvg.hidden = visibleGraph.nodes.length === 0;
+    if (visibleGraph.nodes.length === 0) {
+      graphStateMessage.textContent = active
+        ? state.filters.query ? "검색 결과 없음 · Snapshot 원본은 유지됩니다." : "필터 결과가 없습니다."
+        : "보존 Snapshot에 Graph Node가 없습니다.";
+    } else if (active) {
+      graphStateMessage.textContent = `필터 적용 · 숨김 Node ${visibleGraph.hiddenNodes}개 · Edge ${visibleGraph.hiddenEdges}개`;
+    } else if (visibleGraph.invalidNodes || visibleGraph.invalidEdges) {
+      graphStateMessage.textContent = `유효하지 않은 Graph 요소 ${visibleGraph.invalidNodes + visibleGraph.invalidEdges}개를 표시에서 제외했습니다.`;
+    } else {
+      graphStateMessage.textContent = layoutMode === "elk"
+        ? "ELK.js 좌→우 자동 배치 완료"
+        : "보존 Snapshot Graph 표시 완료";
+    }
+    return result;
   }
 
   function renderGraph(snapshot) {
@@ -150,26 +261,22 @@
     }
     const graph = graphRenderer.normalize(snapshot);
     state.graph = graph;
+    state.layout = null;
+    state.layoutState = "not-requested";
+    state.layoutError = null;
     if (graph.nodes.length === 0) {
       resetGraph(graph.invalidNodes > 0 ? "유효한 Graph Node가 없어 표시할 수 없습니다." : "보존 Snapshot에 Graph Node가 없습니다.");
       state.graph = graph;
       return graph;
     }
-    const result = graphRenderer.render(graph, {
-      svg: graphSvg,
-      viewport: graphViewport,
-      areaLayer: graphAreas,
-      edgeLayer: graphEdges,
-      nodeLayer: graphNodes,
-      layoutMode: "initial"
-    });
-    state.graphRender = result;
-    graphEmpty.hidden = true;
-    graphSvg.hidden = false;
-    graphStateMessage.textContent = graph.invalidNodes || graph.invalidEdges
-      ? `유효하지 않은 Graph 요소 ${graph.invalidNodes + graph.invalidEdges}개를 표시에서 제외했습니다.`
-      : "보존 Snapshot Graph 표시 완료";
-    return result;
+    return renderGraphView("initial");
+  }
+
+  function applyGraphFilter() {
+    if (!state.graph || state.graph.nodes.length === 0) return null;
+    renderGraphView(state.layout ? "elk" : "initial");
+    if (state.filters.query && state.visibleGraph.nodes.length === 0) showNotice("검색 결과 없음");
+    return state.visibleGraph;
   }
 
   function layoutGraph() {
@@ -187,27 +294,21 @@
     }
     return layoutClient.layout(state.graph).then((layout) => {
       if (requestId !== state.layoutRequestId || layout.stale) return layout;
-      const renderResult = graphRenderer.render(state.graph, {
-        svg: graphSvg,
-        viewport: graphViewport,
-        areaLayer: graphAreas,
-        edgeLayer: graphEdges,
-        nodeLayer: graphNodes,
-        positions: layout.positions,
-        edgeRoutes: layout.edgeRoutes,
-        bounds: { width: layout.width, height: layout.height },
-        layoutMode: "elk"
-      });
+      state.layout = layout;
+      renderGraphView("elk");
       graphSvg.setAttribute("data-layout-mode", "elk");
       graphViewport.setAttribute("data-layout-mode", "elk");
-      state.layout = layout;
-      state.graphRender = renderResult;
       state.layoutState = "loaded";
       state.layoutError = null;
       graphCanvas.dataset.layoutState = "loaded";
       graphEmpty.hidden = true;
       graphSvg.hidden = false;
-      graphStateMessage.textContent = "ELK.js 좌→우 자동 배치 완료";
+      if (navigation) navigation.fit();
+      if (state.filters.query || state.filters.nodeType || state.filters.edgeType) {
+        graphStateMessage.textContent = state.visibleGraph.nodes.length === 0
+          ? "필터 결과가 없습니다."
+          : `필터 적용 · 숨김 Node ${state.visibleGraph.hiddenNodes}개 · Edge ${state.visibleGraph.hiddenEdges}개`;
+      }
       showNotice(`Graph 자동 배치 완료 · ${state.graph.nodes.length}개 Node`, "success");
       return layout;
     }).catch((error) => {
@@ -256,6 +357,14 @@
     state.layoutState = "not-requested";
     state.layoutError = null;
     state.layoutRequestId += 1;
+    if (endpointSearch) endpointSearch.value = "";
+    if (endpointResults) {
+      endpointResults.value = "";
+      endpointResults.disabled = true;
+    }
+    if (nodeFilter) nodeFilter.value = "";
+    if (edgeFilter) edgeFilter.value = "";
+    if (navigation) navigation.reset();
     resetGraph("Snapshot 조회 중");
     renderStatus();
     showNotice("상태 조회 중", "loading");
@@ -327,6 +436,23 @@
     showNotice("현재 설정에서는 사이드바 고정 상태만 사용할 수 있습니다.");
   });
   document.querySelector("#refresh-button").addEventListener("click", loadStatus);
+  if (endpointSearch) endpointSearch.addEventListener("input", applyGraphFilter);
+  if (endpointResults) endpointResults.addEventListener("change", () => {
+    if (endpointResults.value && navigation) navigation.focusNode(endpointResults.value);
+  });
+  if (nodeFilter) nodeFilter.addEventListener("change", applyGraphFilter);
+  if (edgeFilter) edgeFilter.addEventListener("change", applyGraphFilter);
+  const searchReset = document.querySelector("#search-reset");
+  if (searchReset) searchReset.addEventListener("click", () => {
+    if (endpointSearch) endpointSearch.value = "";
+    if (endpointResults) {
+      endpointResults.value = "";
+      endpointResults.disabled = true;
+    }
+    if (nodeFilter) nodeFilter.value = "";
+    if (edgeFilter) edgeFilter.value = "";
+    applyGraphFilter();
+  });
 
   renderSidebarState();
   renderStatus();
@@ -338,8 +464,12 @@
     requestMessage,
     loadStatus,
     normalizeGraph: graphRenderer && graphRenderer.normalize,
+    filterGraph: graphRenderer && graphRenderer.filter,
     renderGraph,
-    layoutGraph
+    layoutGraph,
+    applyGraphFilter,
+    focusEndpoint: (nodeId) => navigation && navigation.focusNode(nodeId),
+    navigation
   };
   loadStatus();
 })();
