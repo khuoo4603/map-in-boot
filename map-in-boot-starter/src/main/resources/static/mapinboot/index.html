@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Map in Boot</title>
+  <link rel="stylesheet" href="/mapinboot/app.css">
+</head>
+<body data-ui-shell>
+  <div class="app-shell">
+    <header class="app-header">
+      <div class="header-group header-left" aria-label="서비스 정보">
+        <span class="product-name">Map in Boot</span>
+        <span class="service-name" id="service-name">main-service</span>
+        <span class="snapshot-time" id="snapshot-time">조회 전</span>
+      </div>
+      <div class="header-group header-right" aria-label="화면 도구">
+        <button class="header-action" id="refresh-button" type="button">결과 다시 불러오기</button>
+        <button class="header-action icon-action" id="help-button" type="button" aria-label="도움말" aria-expanded="false"><span aria-hidden="true">?</span></button>
+        <button class="header-action" id="settings-button" type="button" aria-expanded="false">설정</button>
+      </div>
+    </header>
+
+    <div class="app-body">
+      <aside class="sidebar" id="sidebar" data-sidebar-state="collapsed">
+        <div class="sidebar-logo">
+          <img src="/mapinboot/assets/mapinboot_logo_transparent.png" alt="Map in Boot 로고">
+        </div>
+        <button class="sidebar-toggle" id="sidebar-toggle" type="button" aria-label="메뉴 펼치기" aria-expanded="false">
+          <span class="toggle-mark" aria-hidden="true">›</span>
+          <span class="sidebar-label">메뉴 펼치기</span>
+        </button>
+        <nav class="sidebar-nav" aria-label="주요 화면">
+          <button class="nav-item is-active" type="button" data-view="all-flow" aria-current="page" title="전체 MAP">
+            <span class="nav-mark nav-mark-map" aria-hidden="true"></span><span class="sidebar-label">전체 MAP</span>
+          </button>
+          <button class="nav-item" type="button" data-view="feature-flow" title="기능별 상세">
+            <span class="nav-mark nav-mark-detail" aria-hidden="true"></span><span class="sidebar-label">기능별 상세</span>
+          </button>
+          <button class="nav-item" type="button" data-view="security-flow" title="보안 MAP">
+            <span class="nav-mark nav-mark-security" aria-hidden="true"></span><span class="sidebar-label">보안 MAP</span>
+          </button>
+          <button class="nav-item" type="button" data-view="security-detail" title="상세 취약점">
+            <span class="nav-mark nav-mark-finding" aria-hidden="true"></span><span class="sidebar-label">상세 취약점</span>
+          </button>
+        </nav>
+      </aside>
+
+      <main class="main-content">
+        <section class="graph-canvas" aria-labelledby="view-title">
+          <div class="view-heading">
+            <h1 id="view-title">전체 Flow Map</h1>
+            <span class="view-state" id="view-state">Snapshot 조회 전</span>
+          </div>
+          <div class="canvas-empty" id="graph-canvas" data-graph-state="empty">
+            <p>Snapshot 조회 후 Graph를 표시합니다.</p>
+          </div>
+        </section>
+      </main>
+
+      <aside class="inspector" id="inspector" aria-hidden="true" hidden></aside>
+    </div>
+  </div>
+  <div class="shell-notice" id="shell-notice" role="status" aria-live="polite" hidden></div>
+  <script src="/mapinboot/app.js" defer></script>
+</body>
+</html>

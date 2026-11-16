@@ -16,6 +16,7 @@ import com.mapinboot.starter.web.api.SnapshotController;
 import com.mapinboot.starter.web.api.StatusController;
 import com.mapinboot.starter.web.access.WebAccessInterceptor;
 import com.mapinboot.starter.web.ui.DevelopmentDiagnosticController;
+import com.mapinboot.starter.web.ui.MapInBootUiController;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.concurrent.ExecutorService;
@@ -154,6 +155,14 @@ public class MapInBootAutoConfiguration {
         @ConditionalOnProperty(prefix = "mapinboot.web", name = "enabled", havingValue = "true")
         StatusController statusController(MapInBootBootstrap bootstrap, MapInBootProperties properties) {
             return new StatusController(bootstrap, properties);
+        }
+
+        @Bean
+        @ConditionalOnMissingBean
+        @ConditionalOnProperty(prefix = "mapinboot", name = "enabled", havingValue = "true", matchIfMissing = true)
+        @ConditionalOnProperty(prefix = "mapinboot.web", name = "enabled", havingValue = "true")
+        MapInBootUiController mapInBootUiController() {
+            return new MapInBootUiController();
         }
 
         @Bean

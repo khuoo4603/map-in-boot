@@ -90,7 +90,22 @@ class WebAccessSmokeIntegrationTest {
             mvc.perform(get("/mapinboot/").with(principal(false)))
                     .andExpect(status().isForbidden());
             mvc.perform(get("/mapinboot/").with(principal(true)))
-                    .andExpect(status().isNotFound());
+                    .andExpect(status().isOk())
+                    .andExpect(content().contentTypeCompatibleWith(MediaType.TEXT_HTML))
+                    .andExpect(content().string(org.hamcrest.Matchers.containsString("data-ui-shell")));
+            mvc.perform(get("/mapinboot/app.css"))
+                    .andExpect(status().isUnauthorized());
+            mvc.perform(get("/mapinboot/app.css").with(principal(false)))
+                    .andExpect(status().isForbidden());
+            mvc.perform(get("/mapinboot/app.css").with(principal(true)))
+                    .andExpect(status().isOk())
+                    .andExpect(content().contentTypeCompatibleWith(MediaType.valueOf("text/css")));
+            mvc.perform(get("/mapinboot/app.js").with(principal(true)))
+                    .andExpect(status().isOk())
+                    .andExpect(content().contentTypeCompatibleWith(MediaType.valueOf("text/javascript")));
+            mvc.perform(get("/mapinboot/assets/mapinboot_logo_transparent.png").with(principal(true)))
+                    .andExpect(status().isOk())
+                    .andExpect(content().contentTypeCompatibleWith(MediaType.IMAGE_PNG));
             mvc.perform(get("/mapinboot/smoke.txt"))
                     .andExpect(status().isUnauthorized());
             mvc.perform(get("/mapinboot/smoke.txt").with(principal(false)))
