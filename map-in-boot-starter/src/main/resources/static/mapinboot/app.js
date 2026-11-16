@@ -21,8 +21,14 @@
   const title = document.querySelector("#view-title");
   const viewState = document.querySelector("#view-state");
   const graphCanvas = document.querySelector("#graph-canvas");
+  const graphEmpty = document.querySelector("#graph-empty");
   const graphStateMessage = document.querySelector("#graph-state-message");
+  const graphSvg = document.querySelector("#graph-svg");
+  const graphViewport = document.querySelector("#graph-viewport");
+  const graphEdges = document.querySelector("#graph-edges");
+  const graphNodes = document.querySelector("#graph-nodes");
   const notice = document.querySelector("#shell-notice");
+  const graphRenderer = window.MapInBootGraph;
   const state = {
     pinned: false,
     hovered: false,
@@ -31,7 +37,9 @@
     snapshot: null,
     snapshotState: "not-requested",
     error: null,
-    snapshotError: null
+    snapshotError: null,
+    graph: null,
+    graphRender: null
   };
 
   function executionPhaseLabel(phase) {
@@ -121,6 +129,41 @@
     graphStateMessage.textContent = state.status ? "보존 Snapshot이 없습니다." : "Snapshot 조회 후 Graph를 표시합니다.";
   }
 
+  function resetGraph(message) {
+    state.graph = null;
+    state.graphRender = null;
+    if (graphSvg) graphSvg.hidden = true;
+    if (graphEmpty) graphEmpty.hidden = false;
+    if (message) graphStateMessage.textContent = message;
+  }
+
+  function renderGraph(snapshot) {
+    if (!graphRenderer || !graphSvg || !graphViewport || !graphEdges || !graphNodes) {
+      resetGraph("Graph 렌더러를 불러올 수 없습니다.");
+      return null;
+    }
+    const graph = graphRenderer.normalize(snapshot);
+    state.graph = graph;
+    if (graph.nodes.length === 0) {
+      resetGraph(graph.invalidNodes > 0 ? "유효한 Graph Node가 없어 표시할 수 없습니다." : "보존 Snapshot에 Graph Node가 없습니다.");
+      state.graph = graph;
+      return graph;
+    }
+    const result = graphRenderer.render(graph, {
+      svg: graphSvg,
+      viewport: graphViewport,
+      edgeLayer: graphEdges,
+      nodeLayer: graphNodes
+    });
+    state.graphRender = result;
+    graphEmpty.hidden = true;
+    graphSvg.hidden = false;
+    graphStateMessage.textContent = graph.invalidNodes || graph.invalidEdges
+      ? `유효하지 않은 Graph 요소 ${graph.invalidNodes + graph.invalidEdges}개를 표시에서 제외했습니다.`
+      : "보존 Snapshot Graph 표시 완료";
+    return result;
+  }
+
   function updateHeader() {
     const persistedTime = state.status && state.status.persistedCapturedAt;
     const snapshot = state.snapshot;
@@ -152,6 +195,7 @@
     state.status = null;
     state.snapshot = null;
     state.snapshotState = "loading";
+    resetGraph("Snapshot 조회 중");
     renderStatus();
     showNotice("상태 조회 중", "loading");
     try {
@@ -169,6 +213,7 @@
       }
       updateHeader();
       renderStatus();
+      if (state.snapshotState === "loaded") renderGraph(state.snapshot);
       showNotice(
         state.snapshotError ? requestMessage(state.snapshotError.status, "snapshot")
           : state.snapshotState === "missing" ? "상태 조회 완료 · 보존 Snapshot 없음"
@@ -178,6 +223,7 @@
     } catch (error) {
       state.error = error;
       state.snapshotState = "unavailable";
+      resetGraph();
       updateHeader();
       renderStatus();
       showNotice(requestMessage(error.status, "status"), "error");
@@ -226,7 +272,9 @@
     renderSidebarState,
     executionPhaseLabel,
     requestMessage,
-    loadStatus
+    loadStatus,
+    normalizeGraph: graphRenderer && graphRenderer.normalize,
+    renderGraph
   };
   loadStatus();
 })();

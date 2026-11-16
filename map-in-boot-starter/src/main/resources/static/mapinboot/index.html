@@ -52,8 +52,25 @@
             <h1 id="view-title">전체 Flow Map</h1>
             <span class="view-state" id="view-state">Snapshot 조회 전</span>
           </div>
-          <div class="canvas-empty" id="graph-canvas" data-graph-state="empty">
+          <div class="graph-surface" id="graph-canvas" data-graph-state="empty">
+            <div class="canvas-empty" id="graph-empty">
             <p id="graph-state-message">Snapshot 조회 후 Graph를 표시합니다.</p>
+            </div>
+            <svg id="graph-svg" class="graph-svg" viewBox="0 0 640 360" role="img" aria-label="Snapshot Graph" hidden>
+              <defs>
+                <pattern id="graph-dot-pattern" width="24" height="24" patternUnits="userSpaceOnUse">
+                  <circle cx="2" cy="2" r="1" fill="#26382b"></circle>
+                </pattern>
+                <marker id="graph-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+                  <path d="M 0 0 L 10 5 L 0 10 z" fill="#86efac"></path>
+                </marker>
+              </defs>
+              <rect class="graph-background" width="100%" height="100%" fill="url(#graph-dot-pattern)"></rect>
+              <g id="graph-viewport">
+                <g id="graph-edges" aria-hidden="true"></g>
+                <g id="graph-nodes"></g>
+              </g>
+            </svg>
           </div>
         </section>
       </main>
@@ -62,6 +79,7 @@
     </div>
   </div>
   <div class="shell-notice" id="shell-notice" role="status" aria-live="polite" hidden></div>
+  <script src="/mapinboot/graph-renderer.js" defer></script>
   <script src="/mapinboot/app.js" defer></script>
 </body>
 </html>
