@@ -7,12 +7,44 @@
     "security-flow": "전체 취약점 진단 Flow Map",
     "security-detail": "기능별 상세 취약점 확인"
   };
+  const phaseNames = {
+    NOT_STARTED: "대기",
+    RUNNING: "실행 중",
+    COLLECTING: "수집 중",
+    ANALYZING: "분석 중",
+    PARTIAL: "부분 완료",
+    COMPLETED: "완료",
+    FAILED: "실패"
+  };
   const sidebar = document.querySelector("#sidebar");
   const toggle = document.querySelector("#sidebar-toggle");
   const title = document.querySelector("#view-title");
   const viewState = document.querySelector("#view-state");
+  const graphCanvas = document.querySelector("#graph-canvas");
+  const graphStateMessage = document.querySelector("#graph-state-message");
   const notice = document.querySelector("#shell-notice");
-  const state = { pinned: false, hovered: false, view: "all-flow" };
+  const state = {
+    pinned: false,
+    hovered: false,
+    view: "all-flow",
+    status: null,
+    snapshot: null,
+    snapshotState: "not-requested",
+    error: null,
+    snapshotError: null
+  };
+
+  function executionPhaseLabel(phase) {
+    return phaseNames[phase] || "확인 불가";
+  }
+
+  function requestMessage(status, resource) {
+    const code = Number(status);
+    if (code === 401) return resource === "snapshot" ? "Snapshot 인증 필요" : "인증 필요";
+    if (code === 403) return resource === "snapshot" ? "Snapshot 관리자 권한 필요" : "관리자 권한 필요";
+    if (code === 404) return resource === "snapshot" ? "보존 Snapshot 없음" : "상태 조회 경로 없음";
+    return resource === "snapshot" ? "Snapshot 조회 실패" : "상태 조회 실패";
+  }
 
   function sidebarState() {
     if (state.pinned) return "pinned-expanded";
@@ -28,8 +60,9 @@
     toggle.querySelector(".sidebar-label").textContent = state.pinned ? "메뉴 접기" : "메뉴 펼치기";
   }
 
-  function showNotice(message) {
+  function showNotice(message, kind) {
     notice.textContent = message;
+    notice.dataset.kind = kind || "";
     notice.hidden = false;
   }
 
@@ -37,7 +70,7 @@
     if (!viewNames[view]) return;
     state.view = view;
     title.textContent = viewNames[view];
-    viewState.textContent = "Snapshot 조회 전";
+    renderStatus();
     document.querySelectorAll(".nav-item").forEach((item) => {
       const active = item.dataset.view === view;
       item.classList.toggle("is-active", active);
@@ -45,6 +78,112 @@
       else item.removeAttribute("aria-current");
     });
     showNotice(`${viewNames[view]} 화면 선택`);
+  }
+
+  function capturedTime(value) {
+    if (!value) return "조회 전";
+    const date = new Date(value);
+    return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString("ko-KR");
+  }
+
+  function snapshotLabel() {
+    if (state.snapshotState === "loaded") return "보존 Snapshot 있음";
+    if (state.snapshotState === "missing") return "보존 Snapshot 없음";
+    if (state.snapshotState === "loading") return "Snapshot 조회 중";
+    if (state.snapshotState === "unavailable") return "Snapshot 확인 불가";
+    if (state.snapshotState === "denied") return "Snapshot 접근 제한";
+    return "Snapshot 조회 전";
+  }
+
+  function renderStatus() {
+    const phase = state.status ? executionPhaseLabel(state.status.phase) : "조회 전";
+    const phaseCode = state.status ? String(state.status.phase || "").toLowerCase() : "unavailable";
+    const errorCode = state.status && state.status.errorCode ? ` · 오류 코드 ${state.status.errorCode}` : "";
+    viewState.textContent = `${phase} · ${snapshotLabel()}${errorCode}`;
+    viewState.dataset.state = phaseCode;
+    graphCanvas.dataset.graphState = state.snapshotState;
+    if (state.snapshotState === "loaded") {
+      graphStateMessage.textContent = "보존 Snapshot 조회 완료 · Graph는 다음 단계에서 표시됩니다.";
+      return;
+    }
+    if (state.snapshotError) {
+      graphStateMessage.textContent = requestMessage(state.snapshotError.status, "snapshot");
+      return;
+    }
+    if (state.error) {
+      graphStateMessage.textContent = requestMessage(state.error.status, "status");
+      return;
+    }
+    if (state.status && state.status.phase === "PARTIAL") {
+      graphStateMessage.textContent = "분석이 부분 완료되어 확인 가능한 보존 결과만 표시합니다.";
+      return;
+    }
+    graphStateMessage.textContent = state.status ? "보존 Snapshot이 없습니다." : "Snapshot 조회 후 Graph를 표시합니다.";
+  }
+
+  function updateHeader() {
+    const persistedTime = state.status && state.status.persistedCapturedAt;
+    const snapshot = state.snapshot;
+    document.querySelector("#service-name").textContent = snapshot && snapshot.serviceId
+      ? snapshot.serviceId
+      : "main-service";
+    document.querySelector("#snapshot-time").textContent = capturedTime(persistedTime || (snapshot && snapshot.capturedAt));
+  }
+
+  async function fetchJson(url, resource) {
+    const response = await fetch(url, {
+      credentials: "same-origin",
+      headers: { Accept: "application/json" }
+    });
+    if (!response.ok) {
+      const error = new Error(requestMessage(response.status, resource));
+      error.status = response.status;
+      error.resource = resource;
+      throw error;
+    }
+    return response.json();
+  }
+
+  async function loadStatus() {
+    const button = document.querySelector("#refresh-button");
+    button.disabled = true;
+    state.error = null;
+    state.snapshotError = null;
+    state.status = null;
+    state.snapshot = null;
+    state.snapshotState = "loading";
+    renderStatus();
+    showNotice("상태 조회 중", "loading");
+    try {
+      state.status = await fetchJson("/mapinboot/api/status", "status");
+      if (state.status.persistedSnapshotPresent) {
+        try {
+          state.snapshot = await fetchJson("/mapinboot/api/snapshot", "snapshot");
+          state.snapshotState = "loaded";
+        } catch (error) {
+          state.snapshotError = error;
+          state.snapshotState = error.status === 404 ? "missing" : "denied";
+        }
+      } else {
+        state.snapshotState = "missing";
+      }
+      updateHeader();
+      renderStatus();
+      showNotice(
+        state.snapshotError ? requestMessage(state.snapshotError.status, "snapshot")
+          : state.snapshotState === "missing" ? "상태 조회 완료 · 보존 Snapshot 없음"
+            : "상태 및 Snapshot 조회 완료",
+        state.snapshotError ? "error" : "success"
+      );
+    } catch (error) {
+      state.error = error;
+      state.snapshotState = "unavailable";
+      updateHeader();
+      renderStatus();
+      showNotice(requestMessage(error.status, "status"), "error");
+    } finally {
+      button.disabled = false;
+    }
   }
 
   toggle.addEventListener("click", () => {
@@ -77,10 +216,17 @@
     event.currentTarget.setAttribute("aria-expanded", String(!expanded));
     showNotice("현재 설정에서는 사이드바 고정 상태만 사용할 수 있습니다.");
   });
-  document.querySelector("#refresh-button").addEventListener("click", () => {
-    showNotice("Snapshot 조회 기능은 다음 단계에서 연결됩니다.");
-  });
+  document.querySelector("#refresh-button").addEventListener("click", loadStatus);
 
   renderSidebarState();
-  window.MapInBootUi = { state, selectView, renderSidebarState };
+  renderStatus();
+  window.MapInBootUi = {
+    state,
+    selectView,
+    renderSidebarState,
+    executionPhaseLabel,
+    requestMessage,
+    loadStatus
+  };
+  loadStatus();
 })();

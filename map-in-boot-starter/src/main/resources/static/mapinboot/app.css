@@ -105,10 +105,14 @@ button:focus-visible { outline: 2px solid var(--accent-strong); outline-offset: 
 .view-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; padding: 16px 18px; border-bottom: 1px solid var(--line); }
 .view-heading h1 { margin: 0; color: var(--text); font-size: 16px; font-weight: 600; }
 .view-state { color: var(--muted); font-size: 12px; }
+.view-state[data-state="partial"], .view-state[data-state="failed"] { color: #f5c58a; }
+.view-state[data-state="unavailable"] { color: #f0a3a3; }
 .canvas-empty { display: grid; flex: 1; place-items: center; min-height: 280px; padding: 24px; color: var(--muted); text-align: center; }
 .canvas-empty p { margin: 0; }
 .inspector { width: 300px; flex: 0 0 300px; border-left: 1px solid var(--line); background: var(--surface); }
 .shell-notice { position: fixed; right: 18px; bottom: 18px; z-index: 4; max-width: 360px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 4px; color: var(--text); background: var(--surface-raised); font-size: 12px; }
+.shell-notice[data-kind="error"] { border-color: #7d4646; color: #f0b5b5; }
+.shell-notice[data-kind="success"] { border-color: #386844; color: var(--accent-strong); }
 
 @media (max-width: 760px) {
   body { overflow: auto; }
