@@ -115,7 +115,7 @@
               <rect class="graph-background" width="100%" height="100%" fill="url(#graph-dot-pattern)"></rect>
               <g id="graph-viewport">
                 <g id="graph-areas" class="graph-areas" aria-hidden="true"></g>
-                <g id="graph-edges" aria-hidden="true"></g>
+                <g id="graph-edges"></g>
                 <g id="graph-nodes"></g>
               </g>
             </svg>
@@ -126,6 +126,7 @@
                 <rect id="graph-minimap-viewport" class="graph-minimap-viewport" x="0" y="0" width="640" height="360"></rect>
               </svg>
             </div>
+            <div class="graph-popover" id="graph-popover" role="status" aria-live="polite" hidden></div>
           </div>
         </section>
       </main>
@@ -138,6 +139,7 @@
   <script src="/mapinboot/graph-renderer.js" defer></script>
   <script src="/mapinboot/layout-client.js" defer></script>
   <script src="/mapinboot/graph-navigation.js" defer></script>
+  <script src="/mapinboot/graph-inspector.js" defer></script>
   <script src="/mapinboot/app.js" defer></script>
 </body>
 </html>

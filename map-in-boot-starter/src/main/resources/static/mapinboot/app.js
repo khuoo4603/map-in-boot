@@ -28,6 +28,8 @@
   const graphAreas = document.querySelector("#graph-areas");
   const graphEdges = document.querySelector("#graph-edges");
   const graphNodes = document.querySelector("#graph-nodes");
+  const inspector = document.querySelector("#inspector");
+  const graphPopover = document.querySelector("#graph-popover");
   const endpointSearch = document.querySelector("#endpoint-search");
   const endpointResults = document.querySelector("#endpoint-results");
   const nodeFilter = document.querySelector("#node-filter");
@@ -37,6 +39,7 @@
   const graphRenderer = window.MapInBootGraph;
   const layoutClient = window.MapInBootLayout;
   const navigationClient = window.MapInBootNavigation;
+  const inspectorClientType = window.MapInBootInspector;
   const state = {
     pinned: false,
     hovered: false,
@@ -54,6 +57,7 @@
     layoutError: null,
     visibleGraph: null,
     filters: { query: "", nodeType: "", edgeType: "" },
+    selection: null,
     navigation: null
   };
 
@@ -73,6 +77,16 @@
     })
     : null;
   state.navigation = navigation;
+
+  const inspectorClient = inspectorClientType && inspector
+    ? inspectorClientType.create({
+      inspector,
+      popover: graphPopover,
+      surface: graphCanvas,
+      onClear: clearSelection,
+      onSelect: selectGraphElement
+    })
+    : null;
 
   function executionPhaseLabel(phase) {
     return phaseNames[phase] || "확인 불가";
@@ -166,7 +180,12 @@
     state.graph = null;
     state.graphRender = null;
     state.visibleGraph = null;
+    state.selection = null;
     if (navigation) navigation.setGraph(null);
+    if (inspectorClient) {
+      inspectorClient.hideHover();
+      inspectorClient.render({ graph: null, visibleGraph: null, snapshot: state.snapshot, selection: null });
+    }
     if (graphSvg) graphSvg.hidden = true;
     if (graphEmpty) graphEmpty.hidden = false;
     if (filterStatus) filterStatus.textContent = "Graph 없음";
@@ -202,11 +221,60 @@
     endpointResults.disabled = matches.length === 0;
   }
 
+  function graphElement(kind, id) {
+    if (!state.graph || !id) return null;
+    const collection = kind === "node" ? state.graph.nodes : kind === "edge" ? state.graph.edges : [];
+    return collection.find((item) => item.id === id) || null;
+  }
+
+  function clearSelection() {
+    state.selection = null;
+    if (inspectorClient) inspectorClient.hideHover();
+    if (state.graph && state.graph.nodes.length > 0) {
+      renderGraphView(state.layout ? "elk" : "initial");
+    } else if (inspectorClient) {
+      inspectorClient.render({ graph: state.graph, visibleGraph: state.visibleGraph, snapshot: state.snapshot, selection: null });
+    }
+  }
+
+  function selectGraphElement(kind, id) {
+    if (!graphElement(kind, id)) return null;
+    state.selection = { kind, id };
+    if (inspectorClient) inspectorClient.hideHover();
+    renderGraphView(state.layout ? "elk" : "initial");
+    return state.selection;
+  }
+
+  function showGraphHover(kind, id, anchor) {
+    if (!inspectorClient || !state.graph) return;
+    inspectorClient.showHover({ graph: state.graph, snapshot: state.snapshot, kind, id, anchor });
+  }
+
+  function hideGraphHover() {
+    if (inspectorClient) inspectorClient.hideHover();
+  }
+
+  function setInspectorTab(tab) {
+    if (inspectorClient) inspectorClient.setTab(tab);
+  }
+
   function renderGraphView(layoutMode) {
     const positions = state.layout
       ? state.layout.positions
       : state.graphRender && state.graphRender.positions;
     const visibleGraph = graphRenderer.filter(state.graph, filterValues());
+    if (state.selection) {
+      const visibleItem = state.selection.kind === "node"
+        ? visibleGraph.nodes.find((node) => node.id === state.selection.id)
+        : visibleGraph.edges.find((edge) => edge.id === state.selection.id);
+      if (!visibleItem) {
+        state.selection = null;
+        if (inspectorClient) inspectorClient.hideHover();
+      }
+    }
+    const related = inspectorClient
+      ? inspectorClient.related(state.graph, state.selection)
+      : { nodeIds: new Set(), edgeIds: new Set() };
     const result = graphRenderer.render(visibleGraph, {
       svg: graphSvg,
       viewport: graphViewport,
@@ -216,11 +284,31 @@
       positions,
       edgeRoutes: state.layout && state.layout.edgeRoutes,
       bounds: state.layout && { width: state.layout.width, height: state.layout.height },
-      layoutMode
+      layoutMode,
+      selection: state.selection,
+      related,
+      onNodeClick: (id) => selectGraphElement("node", id),
+      onNodeFocus: (id, anchor) => showGraphHover("node", id, anchor),
+      onNodeBlur: hideGraphHover,
+      onNodeHover: (id, anchor) => showGraphHover("node", id, anchor),
+      onNodeLeave: hideGraphHover,
+      onEdgeClick: (id) => selectGraphElement("edge", id),
+      onEdgeFocus: (id, anchor) => showGraphHover("edge", id, anchor),
+      onEdgeBlur: hideGraphHover,
+      onEdgeHover: (id, anchor) => showGraphHover("edge", id, anchor),
+      onEdgeLeave: hideGraphHover
     });
     state.visibleGraph = visibleGraph;
     state.filters = visibleGraph.filters;
     state.graphRender = result;
+    if (inspectorClient) {
+      inspectorClient.render({
+        graph: state.graph,
+        visibleGraph,
+        snapshot: state.snapshot,
+        selection: state.selection
+      });
+    }
     renderSearchResults(visibleGraph);
     if (navigation) {
       navigation.setGraph(visibleGraph, positions || result.positions, state.layout && {
@@ -260,6 +348,7 @@
       return null;
     }
     const graph = graphRenderer.normalize(snapshot);
+    state.snapshot = snapshot;
     state.graph = graph;
     state.layout = null;
     state.layoutState = "not-requested";
@@ -453,6 +542,17 @@
     if (edgeFilter) edgeFilter.value = "";
     applyGraphFilter();
   });
+  if (graphCanvas) graphCanvas.addEventListener("click", (event) => {
+    const target = event && event.target;
+    if (target && target.closest && (target.closest(".graph-node") || target.closest(".graph-edge"))) return;
+    clearSelection();
+  });
+  if (document.addEventListener) document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      hideGraphHover();
+      clearSelection();
+    }
+  });
 
   renderSidebarState();
   renderStatus();
@@ -468,8 +568,14 @@
     renderGraph,
     layoutGraph,
     applyGraphFilter,
+    selectGraphElement,
+    clearSelection,
+    showGraphHover,
+    hideGraphHover,
+    setInspectorTab,
     focusEndpoint: (nodeId) => navigation && navigation.focusNode(nodeId),
-    navigation
+    navigation,
+    inspector: inspectorClient
   };
   loadStatus();
 })();

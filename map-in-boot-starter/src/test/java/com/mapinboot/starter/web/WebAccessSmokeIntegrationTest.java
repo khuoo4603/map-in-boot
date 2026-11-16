@@ -111,6 +111,14 @@ class WebAccessSmokeIntegrationTest {
                     .andExpect(status().isOk())
                     .andExpect(content().contentTypeCompatibleWith(MediaType.valueOf("text/javascript")))
                     .andExpect(content().string(org.hamcrest.Matchers.containsString("MapInBootNavigation")));
+            mvc.perform(get("/mapinboot/graph-inspector.js"))
+                    .andExpect(status().isUnauthorized());
+            mvc.perform(get("/mapinboot/graph-inspector.js").with(principal(false)))
+                    .andExpect(status().isForbidden());
+            mvc.perform(get("/mapinboot/graph-inspector.js").with(principal(true)))
+                    .andExpect(status().isOk())
+                    .andExpect(content().contentTypeCompatibleWith(MediaType.valueOf("text/javascript")))
+                    .andExpect(content().string(org.hamcrest.Matchers.containsString("MapInBootInspector")));
             mvc.perform(get("/mapinboot/vendor/elk-api.js"))
                     .andExpect(status().isUnauthorized());
             mvc.perform(get("/mapinboot/vendor/elk-api.js").with(principal(false)))

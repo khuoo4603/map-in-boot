@@ -316,6 +316,13 @@
     const positions = positionsFor(graph.nodes, options.positions);
     const size = graphSize(positions, options.bounds);
     const nodeById = new Map(graph.nodes.map((node) => [node.id, node]));
+    const selection = options.selection || null;
+    const relatedNodeIds = options.related && options.related.nodeIds instanceof Set
+      ? options.related.nodeIds
+      : new Set();
+    const relatedEdgeIds = options.related && options.related.edgeIds instanceof Set
+      ? options.related.edgeIds
+      : new Set();
     const edgePairCounts = new Map();
     const edgeElements = [];
     const nodeElements = [];
@@ -343,15 +350,35 @@
       path.setAttribute("data-target-id", edge.targetId);
       path.setAttribute("data-confidence", edge.confidence);
       path.setAttribute("data-evidence-ids", edge.evidenceIds.join(","));
+      path.setAttribute("tabindex", "0");
+      path.setAttribute("role", "button");
+      path.setAttribute("aria-label", `${edge.type} ${edge.sourceId} → ${edge.targetId}`);
+      path.setAttribute("data-selected", String(Boolean(selection && selection.kind === "edge" && selection.id === edge.id)));
+      path.setAttribute("data-related", String(!selection || relatedEdgeIds.has(edge.id)));
       path.setAttribute("stroke", style.color);
       path.setAttribute("stroke-dasharray", style.dash);
       path.setAttribute("marker-end", "url(#graph-arrow)");
+      if (options.onEdgeClick) path.addEventListener("click", (event) => {
+        if (event && event.stopPropagation) event.stopPropagation();
+        options.onEdgeClick(edge.id, path);
+      });
+      if (options.onEdgeFocus) path.addEventListener("focus", () => options.onEdgeFocus(edge.id, path));
+      if (options.onEdgeBlur) path.addEventListener("blur", () => options.onEdgeBlur(edge.id, path));
+      if (options.onEdgeHover) path.addEventListener("mouseenter", () => options.onEdgeHover(edge.id, path));
+      if (options.onEdgeLeave) path.addEventListener("mouseleave", () => options.onEdgeLeave(edge.id, path));
+      path.addEventListener("keydown", (event) => {
+        if (!event || (event.key !== "Enter" && event.key !== " ")) return;
+        if (event.preventDefault) event.preventDefault();
+        if (options.onEdgeClick) options.onEdgeClick(edge.id, path);
+      });
       layers.edgeLayer.appendChild(path);
       edgeElements.push(path);
 
       const label = createElement("text");
       label.setAttribute("class", "graph-edge-label");
       label.setAttribute("data-edge-id", edge.id);
+      label.setAttribute("data-selected", String(Boolean(selection && selection.kind === "edge" && selection.id === edge.id)));
+      label.setAttribute("data-related", String(!selection || relatedEdgeIds.has(edge.id)));
       label.setAttribute("x", String((source.x + target.x + NODE_WIDTH) / 2));
       label.setAttribute("y", String((source.y + target.y + NODE_HEIGHT) / 2 - 6 - parallelIndex * 8));
       label.setAttribute("fill", style.color);
@@ -369,11 +396,24 @@
       group.setAttribute("data-node-id", node.id);
       group.setAttribute("data-node-type", node.type);
       group.setAttribute("data-evidence-ids", node.evidenceIds.join(","));
+      group.setAttribute("data-selected", String(Boolean(selection && selection.kind === "node" && selection.id === node.id)));
+      group.setAttribute("data-related", String(!selection || relatedNodeIds.has(node.id)));
       group.setAttribute("tabindex", "0");
       group.setAttribute("role", "button");
       group.setAttribute("aria-label", `${nodeTypeNames[node.type]} ${node.type} ${node.label}`);
-      if (options.onNodeClick) group.addEventListener("click", () => options.onNodeClick(node.id));
-      if (options.onNodeFocus) group.addEventListener("focus", () => options.onNodeFocus(node.id));
+      if (options.onNodeClick) group.addEventListener("click", (event) => {
+        if (event && event.stopPropagation) event.stopPropagation();
+        options.onNodeClick(node.id, group);
+      });
+      if (options.onNodeFocus) group.addEventListener("focus", () => options.onNodeFocus(node.id, group));
+      if (options.onNodeBlur) group.addEventListener("blur", () => options.onNodeBlur(node.id, group));
+      if (options.onNodeHover) group.addEventListener("mouseenter", () => options.onNodeHover(node.id, group));
+      if (options.onNodeLeave) group.addEventListener("mouseleave", () => options.onNodeLeave(node.id, group));
+      group.addEventListener("keydown", (event) => {
+        if (!event || (event.key !== "Enter" && event.key !== " ")) return;
+        if (event.preventDefault) event.preventDefault();
+        if (options.onNodeClick) options.onNodeClick(node.id, group);
+      });
 
       const card = createElement("rect");
       card.setAttribute("class", "graph-node-card");

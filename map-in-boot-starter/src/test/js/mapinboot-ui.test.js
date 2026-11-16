@@ -41,7 +41,7 @@ function loadUi() {
     "graph-edges", "graph-nodes", "service-name", "snapshot-time", "endpoint-search",
     "endpoint-results", "node-filter", "edge-filter", "search-reset", "zoom-in", "zoom-out", "fit-graph",
     "reset-view", "graph-filter-status", "graph-minimap", "graph-minimap-svg",
-    "graph-minimap-nodes", "graph-minimap-viewport"
+    "graph-minimap-nodes", "graph-minimap-viewport", "inspector", "graph-popover"
   ];
   const elements = new Map(ids.map((id) => [id, createElement()]));
   const navigation = Array.from({ length: 4 }, () => ({
@@ -63,7 +63,8 @@ function loadUi() {
     },
     createElementNS(_namespace, tagName) {
       return createElement(tagName);
-    }
+    },
+    addEventListener() {}
   };
   const window = { addEventListener() {} };
   const layoutCalls = [];
@@ -97,6 +98,10 @@ function loadUi() {
     { console, document, window }
   );
   vm.runInNewContext(
+    readFileSync("map-in-boot-starter/src/main/resources/static/mapinboot/graph-inspector.js", "utf8"),
+    { console, document, window }
+  );
+  vm.runInNewContext(
     readFileSync("map-in-boot-starter/src/main/resources/static/mapinboot/layout-client.js", "utf8"),
     { console, document, window }
   );
@@ -115,6 +120,10 @@ function loadUi() {
     navigationApi: window.MapInBootNavigation,
     layoutCalls
   };
+}
+
+function textOf(element) {
+  return [element.textContent || "", ...element.children.map(textOf)].join(" ");
 }
 
 test("실행 단계와 HTTP 상태를 사용자 문구로 구분함", () => {
@@ -161,7 +170,27 @@ function graphFixture() {
     confidence: "CONFIRMED",
     evidenceIds: [`evidence-${index}`]
   }));
-  return { nodes, edges };
+  return {
+    nodes,
+    edges,
+    evidence: nodeTypes.map((_type, index) => ({
+      id: `evidence-${index}`,
+      source: "RUNTIME",
+      location: `orders://node/${index}`,
+      summary: `runtime evidence ${index}`
+    })),
+    findings: [{
+      id: "finding-1",
+      ruleId: "RULE-1",
+      title: "실제 참조 Finding",
+      description: "UI-06에서는 존재 여부만 표시",
+      confidence: "UNKNOWN",
+      nodeIds: ["node-2"],
+      edgeIds: ["edge-3"],
+      evidenceIds: ["evidence-2"],
+      guide: "후속 단계"
+    }]
+  };
 }
 
 test("실제 10 NodeType·9 EdgeType와 방향·근거를 SVG에 보존함", () => {
@@ -311,4 +340,42 @@ test("Fit·Zoom·Pan·Reset과 Mini Map Viewport가 같은 좌표를 사용함",
   assert.equal(navigation.state.panX, 0);
   assert.equal(navigation.state.panY, 0);
   assert.equal(elements.get("graph-svg").attributes.viewBox, "0 0 960 540");
+});
+
+test("Hover 요약과 Node·Edge Inspector가 실제 ID·연결·Evidence를 사용함", async () => {
+  const { ui, elements } = loadUi();
+  ui.renderGraph(graphFixture());
+  await ui.layoutGraph();
+
+  ui.showGraphHover("node", "node-2", elements.get("graph-nodes").children[2]);
+  assert.equal(elements.get("graph-popover").hidden, false);
+  assert.match(textOf(elements.get("graph-popover")), /GET \/orders/);
+  assert.match(textOf(elements.get("graph-popover")), /관련 Finding 있음/);
+  ui.hideGraphHover();
+  assert.equal(elements.get("graph-popover").hidden, true);
+
+  ui.selectGraphElement("node", "node-2");
+  const inspector = elements.get("inspector");
+  assert.equal(inspector.hidden, false);
+  assert.equal(inspector.attributes["data-selection-kind"], "node");
+  assert.equal(inspector.attributes["data-selection-id"], "node-2");
+  assert.match(textOf(inspector), /GET \/orders/);
+  assert.match(textOf(inspector), /orders:\/\/node\/2/);
+  assert.match(textOf(inspector), /관련 Finding 있음/);
+
+  ui.setInspectorTab("connections");
+  assert.match(textOf(inspector), /edge-1|edge-2|edge-3/);
+  ui.setInspectorTab("relations");
+  assert.match(textOf(inspector), /SECURED_BY/);
+
+  ui.selectGraphElement("edge", "edge-3");
+  assert.equal(inspector.attributes["data-selection-kind"], "edge");
+  assert.equal(inspector.attributes["data-selection-id"], "edge-3");
+  ui.setInspectorTab("properties");
+  assert.match(textOf(inspector), /node-3/);
+  assert.match(textOf(inspector), /node-4/);
+
+  ui.clearSelection();
+  assert.equal(inspector.hidden, true);
+  assert.equal(ui.state.selection, null);
 });
