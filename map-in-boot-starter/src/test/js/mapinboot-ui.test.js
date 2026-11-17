@@ -1141,6 +1141,118 @@ test("Flow 인덱스가 실제 관계·등록 종류·순서 불확실성을 분
   assert.equal(JSON.stringify(graph), before);
 });
 
+test("[T04] filterOrder 0·중복과 chainOrder 문자열은 임의 실행 순서로 승격되지 않음", () => {
+  const { window } = loadUi();
+  const graph = flowGraphFixture();
+  graph.edges.find((edge) => edge.id === "security-filtered-1").attributes.filterOrder = "0";
+  graph.edges.find((edge) => edge.id === "security-filtered-2").attributes.filterOrder = "1";
+  const index = window.MapInBootFlow.createIndex(window.MapInBootGraph.normalize(graph));
+
+  assert.equal(window.MapInBootFlow.positiveInteger("2"), 2);
+  assert.equal(window.MapInBootFlow.positiveInteger("0"), null);
+  assert.equal(index.securityFiltersForChain("chain-a").orderStatus, "UNKNOWN");
+
+  graph.edges.find((edge) => edge.id === "security-filtered-1").attributes.filterOrder = "1";
+  const duplicateIndex = window.MapInBootFlow.createIndex(window.MapInBootGraph.normalize(graph));
+  assert.equal(duplicateIndex.securityFiltersForChain("chain-a").orderStatus, "AMBIGUOUS");
+  const normalized = window.MapInBootGraph.normalize(graph);
+  const steps = window.MapInBootRequestFlow.buildSteps({
+    graph: normalized,
+    index: window.MapInBootFlow.createIndex(normalized),
+    endpointId: "endpoint-a",
+    positions: {}
+  });
+  assert.equal(Array.from(steps, (step) => step.anchorId).includes("security-filter-1"), false);
+});
+
+test("[T06] 보존 Snapshot PARTIAL·UNKNOWN은 현재 상태 READY나 표준 부재로 오염되지 않음", () => {
+  const { window } = loadUi();
+  const graph = standardFilterGraphFixture();
+  const partial = window.MapInBootStandardFilters.classify(graph, {
+    "security-chain": "PARTIAL",
+    "security-filter-registration-analysis": "UNKNOWN"
+  });
+  const statuses = new Map(partial.map((item) => [item.fqcn, item.status]));
+  assert.equal(statuses.get("org.springframework.security.web.access.intercept.AuthorizationFilter"), "UNKNOWN");
+  assert.equal(statuses.get("org.springframework.security.web.csrf.CsrfFilter"), "REGISTERED");
+  assert.equal(window.MapInBootStandardFilters.classify(graph, {}).find((item) =>
+    item.fqcn === "org.springframework.security.web.access.intercept.AuthorizationFilter").status, "UNKNOWN");
+});
+
+test("[T13] Filter 없는 부분 완료 Snapshot은 구조 Node를 유지하고 가짜 Filter 관계를 만들지 않음", () => {
+  const { ui, elements, window } = loadUi();
+  const graph = flowGraphFixture();
+  graph.analysisStatus = { "security-chain": "PARTIAL", "security-filter-registration-analysis": "PARTIAL" };
+  graph.edges = graph.edges.filter((edge) => edge.type !== "FILTERED_BY");
+  ui.renderGraph(graph);
+
+  assert.equal(ui.state.graph.nodes.filter((node) => node.type === "FILTER").length, 3);
+  assert.equal(ui.state.graph.edges.some((edge) => edge.type === "FILTERED_BY"), false);
+  assert.equal(window.MapInBootFlow.createIndex(ui.state.graph).securityFiltersForChain("chain-a").filters.length, 0);
+  assert.match(elements.get("flow-summary").textContent, /Security Filter 2개/);
+});
+
+test("[T14] Identity형 103 Node·83 Edge·61 FILTERED_BY Graph를 ELK·MiniMap에 한 번만 전달함", async () => {
+  const { ui, elements, layoutCalls } = loadUi();
+  const graph = detailGraphFixture();
+  for (let index = 0; index < 58; index += 1) {
+    graph.nodes.push({
+      id: `identity-filter-${index}`,
+      type: "FILTER",
+      serviceId: "identity",
+      label: `Identity Filter ${index}`,
+      attributes: { registrationKind: "SECURITY", filterClass: "com.example.IdentityFilter", chainKey: "chain-b", filterOrder: String(index + 1) },
+      evidenceIds: []
+    });
+    graph.edges.push({
+      id: `identity-filtered-${index}`,
+      sourceId: "chain-b",
+      targetId: `identity-filter-${index}`,
+      type: "FILTERED_BY",
+      attributes: { registrationKind: "SECURITY", filterOrder: String(index + 1) },
+      confidence: "CONFIRMED",
+      evidenceIds: []
+    });
+  }
+  while (graph.nodes.length < 103) {
+    const index = graph.nodes.length;
+    graph.nodes.push({
+      id: `identity-data-${index}`,
+      type: "SECURITY_DATA",
+      serviceId: "identity",
+      label: `Identity Data ${index}`,
+      attributes: { dataType: "SESSION" },
+      evidenceIds: []
+    });
+  }
+  const identityDataIds = graph.nodes
+    .filter((node) => node.type === "SECURITY_DATA")
+    .map((node) => node.id);
+  while (graph.edges.length < 83) {
+    const index = graph.edges.length;
+    graph.edges.push({
+      id: `identity-state-${index}`,
+      sourceId: identityDataIds[index % identityDataIds.length],
+      targetId: identityDataIds[(index + 1) % identityDataIds.length],
+      type: "SECURITY_STATE",
+      attributes: { stateKind: "SESSION" },
+      confidence: "CONFIRMED",
+      evidenceIds: []
+    });
+  }
+  assert.equal(graph.nodes.length, 103);
+  assert.equal(graph.edges.length, 83);
+  assert.equal(graph.edges.filter((edge) => edge.type === "FILTERED_BY").length, 61);
+
+  ui.renderGraph(graph);
+  await ui.layoutGraph();
+  assert.equal(ui.state.visibleGraph.nodes.length, 103);
+  assert.equal(elements.get("graph-minimap-nodes").children.length, 103);
+  assert.equal(layoutCalls.length, 1);
+  assert.equal(layoutCalls[0].children.length, 103);
+  assert.equal(layoutCalls[0].edges.length, 83);
+});
+
 test("전체 MAP이 Flow 인덱스 요약을 표시하고 구조 Edge를 합성하지 않음", () => {
   const { ui, elements } = loadUi();
   const graph = flowGraphFixture();
@@ -1409,6 +1521,37 @@ test("Hover 요약과 Node·Edge Inspector가 실제 ID·연결·Evidence를 사
   document.dispatchEvent({ type: "keydown", key: "Escape" });
   assert.equal(inspector.hidden, true);
   assert.equal(ui.state.selection, null);
+});
+
+test("[T18] Status·Snapshot의 401·403·404·5xx 오류를 분리한 상태 문구로 표시함", async () => {
+  const statusCases = [
+    { status: 401, state: "denied", message: "인증 필요" },
+    { status: 403, state: "denied", message: "관리자 권한 필요" },
+    { status: 404, state: "status-unavailable", message: "상태 조회 불가" },
+    { status: 500, state: "server-error", message: "서버 오류" }
+  ];
+  for (const expected of statusCases) {
+    const instance = loadUi({ fetchImpl: () => Promise.resolve({ ok: false, status: expected.status }) });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(instance.ui.state.snapshotState, expected.state);
+    assert.equal(instance.elements.get("graph-state-message").textContent, expected.message);
+  }
+
+  const snapshotCases = [
+    { status: 401, message: "Snapshot 인증 필요" },
+    { status: 403, message: "Snapshot 관리자 권한 필요" },
+    { status: 404, message: "보존 Snapshot 없음" },
+    { status: 500, message: "서버 오류" }
+  ];
+  for (const expected of snapshotCases) {
+    const responses = [
+      { ok: true, json: async () => ({ phase: "COMPLETED", persistedSnapshotPresent: true }) },
+      { ok: false, status: expected.status }
+    ];
+    const instance = loadUi({ fetchImpl: () => Promise.resolve(responses.shift()) });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(instance.elements.get("graph-state-message").textContent, expected.message);
+  }
 });
 
 test("Snapshot 오류를 인증·권한·보존 없음·서버·연결 상태로 구분함", async () => {
