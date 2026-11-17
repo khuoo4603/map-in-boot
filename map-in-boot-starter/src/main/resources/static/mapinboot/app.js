@@ -26,6 +26,7 @@
   const graphAreas = document.querySelector("#graph-areas");
   const graphEdges = document.querySelector("#graph-edges");
   const graphNodes = document.querySelector("#graph-nodes");
+  const flowSummary = document.querySelector("#flow-summary");
   const inspector = document.querySelector("#inspector");
   const graphPopover = document.querySelector("#graph-popover");
   const endpointSearch = document.querySelector("#endpoint-search");
@@ -43,6 +44,7 @@
   const showAreasSetting = document.querySelector("#setting-show-areas");
   const showEdgeLabelsSetting = document.querySelector("#setting-show-edge-labels");
   const showMinimapSetting = document.querySelector("#setting-show-minimap");
+  const flowClient = window.MapInBootFlow;
   const graphRenderer = window.MapInBootGraph;
   const layoutClient = window.MapInBootLayout;
   const navigationClient = window.MapInBootNavigation;
@@ -57,6 +59,7 @@
     statusError: null,
     snapshotError: null,
     graph: null,
+    flowIndex: null,
     graphRender: null,
     layout: null,
     layoutState: "not-requested",
@@ -99,6 +102,26 @@
 
   function executionPhaseLabel(phase) {
     return phaseNames[phase] || "확인 불가";
+  }
+
+  // 전체 Flow의 실제 관계 확인 범위 요약
+  function renderFlowSummary() {
+    if (!flowSummary) return;
+    if (!state.flowIndex) {
+      flowSummary.textContent = "";
+      flowSummary.hidden = true;
+      return;
+    }
+    const summary = state.flowIndex.summary();
+    flowSummary.textContent = [
+      `Endpoint ${summary.endpointCount}개`,
+      `첫 적용 Chain 확인 ${summary.matchedEndpointCount}개`,
+      `Security Filter ${summary.securityFilterCount}개`,
+      `Servlet Filter ${summary.servletFilterCount}개`,
+      `Handler 대응 ${summary.handlerMatchCount}개`,
+      `확인 불가 ${summary.uncertainCount}개`
+    ].join(" · ");
+    flowSummary.hidden = false;
   }
 
   function requestMessage(status, resource) {
@@ -243,6 +266,7 @@
 
   function resetGraph(message) {
     state.graph = null;
+    state.flowIndex = null;
     state.graphRender = null;
     state.visibleGraph = null;
     state.selection = null;
@@ -254,6 +278,7 @@
     if (graphSvg) graphSvg.hidden = true;
     if (graphEmpty) graphEmpty.hidden = false;
     if (filterStatus) filterStatus.textContent = "Graph 없음";
+    renderFlowSummary();
     if (message) graphStateMessage.textContent = message;
   }
 
@@ -346,6 +371,7 @@
     state.visibleGraph = visibleGraph;
     state.filters = visibleGraph.filters;
     state.graphRender = result;
+    renderFlowSummary();
     if (inspectorClient) {
       inspectorClient.render({
         graph: state.graph,
@@ -394,6 +420,7 @@
     const graph = graphRenderer.normalize(snapshot);
     state.snapshot = snapshot;
     state.graph = graph;
+    state.flowIndex = flowClient ? flowClient.createIndex(graph) : null;
     state.layout = null;
     state.layoutState = "not-requested";
     state.layoutError = null;

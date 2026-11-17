@@ -97,7 +97,7 @@ function loadUi({ fetchImpl, timers } = {}) {
     "graph-empty", "graph-state-message", "graph-svg", "graph-viewport", "graph-areas",
     "graph-edges", "graph-nodes", "service-name", "snapshot-time", "endpoint-search",
     "node-filter", "edge-filter", "search-reset", "filter-toggle", "map-filter-panel", "zoom-in", "zoom-out", "fit-graph",
-    "reset-view", "graph-filter-status", "graph-minimap", "graph-minimap-svg",
+    "reset-view", "graph-filter-status", "flow-summary", "graph-minimap", "graph-minimap-svg",
     "graph-minimap-nodes", "graph-minimap-viewport", "inspector", "graph-popover"
   ];
   const elements = new Map(ids.map((id) => [id, createElement()]));
@@ -168,7 +168,7 @@ function loadUi({ fetchImpl, timers } = {}) {
     setTimeout: timers ? timers.setTimeout : setTimeout,
     clearTimeout: timers ? timers.clearTimeout : clearTimeout
   });
-  ["graph-renderer.js", "graph-inspector.js", "layout-client.js", "graph-navigation.js", "app.js"].forEach((file) => {
+  ["graph-flow.js", "graph-renderer.js", "graph-inspector.js", "layout-client.js", "graph-navigation.js", "app.js"].forEach((file) => {
     vm.runInContext(
       readFileSync(`map-in-boot-starter/src/main/resources/static/mapinboot/${file}`, "utf8"),
       context
@@ -495,6 +495,138 @@ function graphFixture() {
     }]
   };
 }
+
+function flowGraphFixture() {
+  const node = (id, type, label, attributes = {}) => ({
+    id,
+    type,
+    serviceId: "orders",
+    label,
+    attributes,
+    evidenceIds: [`evidence-${id}`]
+  });
+  const edge = (id, sourceId, targetId, type, attributes = {}, confidence = "CONFIRMED") => ({
+    id,
+    sourceId,
+    targetId,
+    type,
+    attributes,
+    confidence,
+    evidenceIds: [`evidence-${id}`]
+  });
+  return {
+    nodes: [
+      node("endpoint-a", "ENDPOINT", "GET /orders", { httpMethod: "GET", path: "/orders", handler: "OrderController#list" }),
+      node("endpoint-b", "ENDPOINT", "GET /accounts", { httpMethod: "GET", path: "/accounts", handler: "AccountController#list" }),
+      node("handler-a", "HANDLER", "OrderController#list", { handler: "OrderController#list" }),
+      node("handler-b", "HANDLER", "AccountController#list", { handler: "AccountController#list" }),
+      node("chain-a", "SECURITY_CHAIN", "chain-a", { chainKey: "chain-a", chainOrder: "1", proxyBeanName: "springSecurityFilterChain" }),
+      node("chain-b", "SECURITY_CHAIN", "chain-b", { chainKey: "chain-b", chainOrder: "2", proxyBeanName: "springSecurityFilterChain" }),
+      node("security-filter-1", "FILTER", "SecurityFilterOne", { registrationKind: "SECURITY", filterClass: "com.example.SecurityFilterOne", chainKey: "chain-a", chainOrder: "1", filterOrder: "1" }),
+      node("security-filter-2", "FILTER", "SecurityFilterTwo", { registrationKind: "SECURITY", filterClass: "com.example.SecurityFilterTwo", chainKey: "chain-a", chainOrder: "1", filterOrder: "2" }),
+      node("servlet-1", "SERVLET", "DispatcherServlet", { servletClass: "org.springframework.web.servlet.DispatcherServlet" }),
+      node("servlet-filter-1", "FILTER", "AuditFilter", { registrationKind: "SERVLET", filterClass: "com.example.AuditFilter", filterOrder: "1" })
+    ],
+    edges: [
+      edge("match-a", "endpoint-a", "chain-a", "MATCHED_BY", { chainKey: "chain-a", chainOrder: "1" }),
+      edge("match-b", "endpoint-b", "chain-b", "MATCHED_BY", { chainKey: "chain-b", chainOrder: "2" }),
+      edge("security-filtered-1", "chain-a", "security-filter-1", "FILTERED_BY", { registrationKind: "SECURITY", filterOrder: "1" }),
+      edge("security-filtered-2", "chain-a", "security-filter-2", "FILTERED_BY", { registrationKind: "SECURITY", filterOrder: "2" }),
+      edge("servlet-filtered-1", "servlet-1", "servlet-filter-1", "FILTERED_BY", { registrationKind: "SERVLET", filterOrder: "1" })
+    ],
+    analysisStatus: { "security-chain": "READY", "security-filter-registration-analysis": "READY" }
+  };
+}
+
+test("Flow 인덱스가 실제 관계·등록 종류·순서 불확실성을 분리하고 원본을 보존함", () => {
+  const { window } = loadUi();
+  const graph = flowGraphFixture();
+  graph.nodes.push({
+    id: "unknown-filter",
+    type: "FILTER",
+    serviceId: "orders",
+    label: "UnknownFilter",
+    attributes: { registrationKind: "UNKNOWN", filterClass: "com.example.UnknownFilter", filterOrder: "0" },
+    evidenceIds: []
+  });
+  graph.edges.push({
+    id: "ambiguous-match",
+    sourceId: "endpoint-a",
+    targetId: "chain-b",
+    type: "MATCHED_BY",
+    attributes: { chainKey: "chain-b", chainOrder: "2" },
+    confidence: "UNKNOWN",
+    evidenceIds: []
+  });
+  const before = JSON.stringify(graph);
+  const index = window.MapInBootFlow.createIndex(graph);
+
+  assert.equal(index.endpoints.length, 2);
+  assert.equal(index.securityFilters.length, 2);
+  assert.equal(index.servletFilters.length, 1);
+  assert.equal(index.firstMatchedChain("endpoint-b").status, "CONFIRMED");
+  assert.equal(index.firstMatchedChain("endpoint-a").status, "UNCERTAIN");
+  assert.equal(index.firstMatchedChain("endpoint-a").chain, null);
+  assert.equal(index.securityFiltersForChain("chain-a").orderStatus, "CONFIRMED");
+  assert.deepEqual(index.securityFiltersForChain("chain-a").filters.map((item) => item.id), [
+    "security-filter-1", "security-filter-2"
+  ]);
+  assert.equal(index.servletFiltersForServlet("servlet-1").filters[0].id, "servlet-filter-1");
+  assert.equal(index.handlerFor("endpoint-a").status, "CONFIRMED");
+  assert.equal(index.handlerFor("endpoint-a").node.id, "handler-a");
+  const summary = index.summary();
+  assert.equal(summary.endpointCount, 2);
+  assert.equal(summary.matchedEndpointCount, 1);
+  assert.equal(summary.securityFilterCount, 2);
+  assert.equal(summary.servletFilterCount, 1);
+  assert.equal(summary.handlerMatchCount, 2);
+  assert.equal(summary.uncertainCount, 1);
+  assert.equal(JSON.stringify(graph), before);
+});
+
+test("전체 MAP이 Flow 인덱스 요약을 표시하고 구조 Edge를 합성하지 않음", () => {
+  const { ui, elements } = loadUi();
+  const graph = flowGraphFixture();
+  const originalEdgeIds = graph.edges.map((edge) => edge.id);
+  ui.renderGraph(graph);
+
+  assert.equal(ui.state.graph.edges.map((edge) => edge.id).join(","), originalEdgeIds.join(","));
+  assert.match(elements.get("flow-summary").textContent, /Endpoint 2개/);
+  assert.match(elements.get("flow-summary").textContent, /첫 적용 Chain 확인 2개/);
+  assert.match(elements.get("flow-summary").textContent, /Security Filter 2개/);
+  assert.match(elements.get("flow-summary").textContent, /Servlet Filter 1개/);
+  assert.match(elements.get("flow-summary").textContent, /Handler 대응 2개/);
+  assert.match(elements.get("flow-summary").textContent, /확인 불가 0개/);
+  assert.equal(ui.state.graph.edges.some((edge) => edge.type === "FLOWS_TO"), false);
+});
+
+test("Filter 관계가 없는 Snapshot에서도 구조 Node를 유지하고 가짜 Edge를 만들지 않음", () => {
+  const { window } = loadUi();
+  const graph = flowGraphFixture();
+  graph.edges = graph.edges.filter((edge) => edge.type !== "FILTERED_BY");
+  const index = window.MapInBootFlow.createIndex(graph);
+
+  assert.equal(index.securityFiltersForChain("chain-a").filters.length, 0);
+  assert.equal(graph.nodes.filter((node) => node.type === "FILTER").length, 3);
+  assert.equal(graph.edges.some((edge) => edge.type === "FILTERED_BY"), false);
+});
+
+test("Flow 필터 적용 후에도 원본 Node·Edge ID와 Evidence를 변경하지 않음", () => {
+  const { ui, elements } = loadUi();
+  const graph = flowGraphFixture();
+  ui.renderGraph(graph);
+  const nodeIds = Array.from(ui.state.graph.nodes, (node) => node.id);
+  const edgeIds = Array.from(ui.state.graph.edges, (edge) => edge.id);
+  const evidenceIds = Array.from(ui.state.graph.nodes.flatMap((node) => node.evidenceIds));
+
+  elements.get("endpoint-search").value = "get /orders";
+  const filtered = ui.applyGraphFilter();
+
+  assert.deepEqual(Array.from(filtered.nodes, (node) => node.id), ["endpoint-a"]);
+  assert.deepEqual(Array.from(ui.state.graph.nodes, (node) => node.id), nodeIds);
+  assert.deepEqual(Array.from(ui.state.graph.edges, (edge) => edge.id), edgeIds);
+  assert.deepEqual(Array.from(ui.state.graph.nodes.flatMap((node) => node.evidenceIds)), evidenceIds);
+});
 
 test("실제 10 NodeType·9 EdgeType와 방향·근거를 SVG에 보존함", () => {
   const { ui, elements } = loadUi();
