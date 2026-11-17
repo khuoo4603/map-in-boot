@@ -98,13 +98,18 @@ function loadUi({ fetchImpl, timers } = {}) {
     "graph-edges", "graph-nodes", "service-name", "snapshot-time", "endpoint-search",
     "node-filter", "edge-filter", "search-reset", "filter-toggle", "map-filter-panel", "zoom-in", "zoom-out", "fit-graph",
     "reset-view", "graph-filter-status", "flow-summary", "standard-filter-reference", "graph-minimap", "graph-minimap-svg",
-    "graph-minimap-nodes", "graph-minimap-viewport", "inspector", "graph-popover", "detail-return-all"
+    "graph-minimap-nodes", "graph-minimap-viewport", "inspector", "graph-popover", "detail-return-all",
+    "request-flow-controls", "request-flow-start", "request-flow-pause", "request-flow-reset",
+    "request-flow-status", "request-flow-education", "request-flow-dot"
   ];
   const elements = new Map(ids.map((id) => [id, createElement()]));
   elements.get("help-panel").hidden = true;
   elements.get("settings-panel").hidden = true;
   elements.get("map-filter-panel").hidden = true;
   elements.get("detail-return-all").hidden = true;
+  elements.get("request-flow-controls").hidden = true;
+  elements.get("request-flow-education").hidden = true;
+  elements.get("request-flow-dot").hidden = true;
   const navigationViews = ["all-flow", "feature-flow", "security-flow", "security-detail"];
   const navigation = navigationViews.map((view) => ({
     dataset: { view },
@@ -169,7 +174,7 @@ function loadUi({ fetchImpl, timers } = {}) {
     setTimeout: timers ? timers.setTimeout : setTimeout,
     clearTimeout: timers ? timers.clearTimeout : clearTimeout
   });
-  ["graph-flow.js", "graph-standard-filters.js", "graph-renderer.js", "graph-inspector.js", "layout-client.js", "graph-navigation.js", "app.js"].forEach((file) => {
+  ["graph-flow.js", "request-flow-animation.js", "graph-standard-filters.js", "graph-renderer.js", "graph-inspector.js", "layout-client.js", "graph-navigation.js", "app.js"].forEach((file) => {
     vm.runInContext(
       readFileSync(`map-in-boot-starter/src/main/resources/static/mapinboot/${file}`, "utf8"),
       context
@@ -197,6 +202,32 @@ function findAllByClass(element, className) {
   if (element.getAttribute && (element.getAttribute("class") || "").split(/\s+/).includes(className)) matches.push(element);
   element.children.forEach((child) => matches.push(...findAllByClass(child, className)));
   return matches;
+}
+
+function createFakeClock() {
+  let currentTime = 0;
+  let nextId = 1;
+  const frames = new Map();
+  return {
+    now: () => currentTime,
+    requestFrame(callback) {
+      const id = nextId++;
+      frames.set(id, callback);
+      return id;
+    },
+    cancelFrame(id) {
+      frames.delete(id);
+    },
+    tick(milliseconds) {
+      currentTime += milliseconds;
+      const callbacks = [...frames.values()];
+      frames.clear();
+      callbacks.forEach((callback) => callback(currentTime));
+    },
+    activeCount() {
+      return frames.size;
+    }
+  };
 }
 
 test("Header에 로고·네비게이션·구분선·원형 액션이 정해진 순서로 존재하고 Sidebar가 없음", () => {
@@ -839,6 +870,197 @@ test("Edge가 적은 Graph와 다른 Chain의 대량 Filter에서도 상세 ELK 
   assert.equal(ui.state.visibleGraph.nodes.length, 7);
   assert.equal(ui.state.visibleGraph.nodes.some((node) => node.id === "identity-filter-60"), false);
   assert.equal(layoutCalls.at(-1).children.length, 7);
+});
+
+test("Request 교육 단계가 확정 Chain·Filter 순서·Handler만 실제 Anchor로 사용함", () => {
+  const { window } = loadUi();
+  const animationFixture = detailGraphFixture();
+  animationFixture.nodes.push(
+    {
+      id: "security-filter-3",
+      type: "FILTER",
+      serviceId: "orders",
+      label: "SecurityFilterThree",
+      attributes: { registrationKind: "SECURITY", chainKey: "chain-a", filterOrder: "3" },
+      evidenceIds: []
+    },
+    {
+      id: "other-chain-filter",
+      type: "FILTER",
+      serviceId: "orders",
+      label: "OtherChainFilter",
+      attributes: { registrationKind: "SECURITY", chainKey: "chain-b", filterOrder: "1" },
+      evidenceIds: []
+    }
+  );
+  animationFixture.edges.push(
+    {
+      id: "security-filtered-3",
+      sourceId: "chain-a",
+      targetId: "security-filter-3",
+      type: "FILTERED_BY",
+      attributes: { registrationKind: "SECURITY", filterOrder: "3" },
+      confidence: "CONFIRMED",
+      evidenceIds: []
+    },
+    {
+      id: "other-chain-filtered",
+      sourceId: "chain-b",
+      targetId: "other-chain-filter",
+      type: "FILTERED_BY",
+      attributes: { registrationKind: "SECURITY", filterOrder: "1" },
+      confidence: "CONFIRMED",
+      evidenceIds: []
+    }
+  );
+  const normalized = window.MapInBootGraph.normalize(animationFixture);
+  const index = window.MapInBootFlow.createIndex(normalized);
+  const before = JSON.stringify(normalized);
+  const steps = window.MapInBootRequestFlow.buildSteps({
+    graph: normalized,
+    index,
+    positions: {
+      "chain-a": { x: 100, y: 100 },
+      "security-filter-1": { x: 200, y: 100 },
+      "security-filter-2": { x: 300, y: 100 },
+      "handler-a": { x: 400, y: 100 }
+    }
+  });
+  const actualAnchors = Array.from(steps
+    .filter((step) => step.kind === "actual"), (step) => step.anchorId);
+
+  assert.deepEqual(actualAnchors, ["chain-a", "security-filter-1", "security-filter-2", "security-filter-3", "handler-a"]);
+  assert.equal(steps.some((step) => step.label.includes("클라이언트 요청")), true);
+  assert.equal(steps.some((step) => step.label.includes("동기 요청 처리 스레드 개념")), true);
+  assert.equal(steps.some((step) => step.label.includes("응답 복귀")), true);
+  assert.equal(steps.some((step) => step.anchorId === "chain-b"), false);
+  assert.equal(steps.some((step) => step.anchorId === "other-chain-filter"), false);
+  assert.equal(steps.some((step) => step.label.includes("Thread ID")), false);
+  assert.equal(JSON.stringify(normalized), before);
+
+  const uncertain = detailGraphFixture();
+  uncertain.nodes.push({
+    id: "unknown-order-filter",
+    type: "FILTER",
+    serviceId: "orders",
+    label: "Unknown order filter",
+    attributes: { registrationKind: "SECURITY", chainKey: "chain-a", filterClass: "com.example.Unknown" },
+    evidenceIds: []
+  });
+  uncertain.edges.push({
+    id: "unknown-order-filtered",
+    sourceId: "chain-a",
+    targetId: "unknown-order-filter",
+    type: "FILTERED_BY",
+    attributes: { registrationKind: "SECURITY" },
+    confidence: "CONFIRMED",
+    evidenceIds: []
+  });
+  const uncertainGraph = window.MapInBootGraph.normalize(uncertain);
+  const uncertainSteps = window.MapInBootRequestFlow.buildSteps({
+    graph: uncertainGraph,
+    index: window.MapInBootFlow.createIndex(uncertainGraph),
+    positions: {}
+  });
+  assert.equal(Array.from(uncertainSteps, (step) => step.anchorId).includes("security-filter-1"), false);
+  assert.equal(uncertainSteps.some((step) => step.label.includes("순서 확인 불가")), true);
+});
+
+test("Request 교육 Controller가 Fake Clock에서 단일 RAF·일시정지·재시작·초기화·완료를 보장함", () => {
+  const { window } = loadUi();
+  const clock = createFakeClock();
+  const updates = [];
+  const controller = window.MapInBootRequestFlow.createController({
+    clock,
+    stepDuration: 100,
+    onUpdate: (state) => updates.push(state)
+  });
+  controller.setSteps([
+    { id: "step-a", label: "A", kind: "education" },
+    { id: "step-b", label: "B", kind: "actual", anchorId: "node-b" },
+    { id: "step-c", label: "C", kind: "education" }
+  ]);
+
+  assert.equal(controller.state().status, "idle");
+  assert.equal(controller.activeFrameCount(), 0);
+  controller.play();
+  assert.equal(controller.state().status, "running");
+  assert.equal(clock.activeCount(), 1);
+  controller.play();
+  assert.equal(clock.activeCount(), 1);
+  clock.tick(50);
+  controller.pause();
+  assert.equal(controller.state().status, "paused");
+  assert.equal(clock.activeCount(), 0);
+  const pausedProgress = controller.state().progress;
+  clock.tick(100);
+  assert.equal(controller.state().progress, pausedProgress);
+  controller.play();
+  assert.equal(clock.activeCount(), 1);
+  controller.reset();
+  assert.equal(controller.state().status, "idle");
+  assert.equal(controller.state().stepIndex, 0);
+  assert.equal(clock.activeCount(), 0);
+  controller.play();
+  clock.tick(400);
+  assert.equal(controller.state().status, "complete");
+  assert.equal(controller.activeFrameCount(), 0);
+  assert.equal(updates.some((state) => state.status === "complete"), true);
+});
+
+test("Request 교육 reduced-motion은 RAF 없이 마지막 단계와 키보드 가능한 상태를 제공함", () => {
+  const { window } = loadUi();
+  const clock = createFakeClock();
+  const controller = window.MapInBootRequestFlow.createController({
+    clock,
+    reducedMotion: true,
+    stepDuration: 100
+  });
+  controller.setSteps([
+    { id: "step-a", label: "A", kind: "education" },
+    { id: "step-b", label: "B", kind: "actual", anchorId: "node-b" }
+  ]);
+  controller.play();
+
+  assert.equal(controller.state().status, "complete");
+  assert.equal(controller.state().stepIndex, 1);
+  assert.equal(controller.activeFrameCount(), 0);
+  assert.equal(clock.activeCount(), 0);
+});
+
+test("Request 교육은 상세 MAP에서만 표시되고 View 복귀·문서 숨김·재조회 시 정리됨", async () => {
+  const { ui, elements, document, window } = loadUi();
+  const snapshot = detailGraphFixture();
+  ui.renderGraph(snapshot);
+  ui.openEndpointDetail("endpoint-a");
+  await ui.layoutGraph();
+
+  assert.equal(elements.get("request-flow-controls").hidden, false);
+  assert.equal(elements.get("request-flow-education").hidden, false);
+  assert.match(elements.get("request-flow-status").textContent, /교육용 예시/);
+  assert.equal(ui.requestFlow.state().status, "idle");
+
+  const sourceNodeIds = Array.from(ui.state.graph.nodes, (node) => node.id);
+  const sourceEdgeIds = Array.from(ui.state.graph.edges, (edge) => edge.id);
+  elements.get("request-flow-start").dispatchEvent({ type: "click" });
+  assert.equal(ui.requestFlow.state().status, "running");
+  ui.navigation.zoomAt(2, 480, 270);
+  assert.deepEqual(Array.from(ui.state.graph.nodes, (node) => node.id), sourceNodeIds);
+  assert.deepEqual(Array.from(ui.state.graph.edges, (edge) => edge.id), sourceEdgeIds);
+  assert.equal(elements.get("graph-minimap-nodes").children.length, ui.state.visibleGraph.nodes.length);
+  window.dispatchEvent({ type: "resize" });
+  assert.equal(ui.requestFlow.state().status, "paused");
+  document.visibilityState = "hidden";
+  document.dispatchEvent({ type: "visibilitychange" });
+  assert.equal(ui.requestFlow.state().status, "paused");
+  ui.returnToAllMap();
+  assert.equal(elements.get("request-flow-controls").hidden, true);
+  assert.equal(elements.get("request-flow-education").hidden, true);
+  assert.equal(ui.requestFlow.activeFrameCount(), 0);
+
+  ui.renderGraph(snapshot);
+  assert.equal(elements.get("request-flow-controls").hidden, true);
+  assert.equal(ui.requestFlow.activeFrameCount(), 0);
 });
 
 test("View·Endpoint 전환 중 늦게 도착한 ELK 결과가 최신 Graph·Inspector·MiniMap을 덮지 않음", async () => {

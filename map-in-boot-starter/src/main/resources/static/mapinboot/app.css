@@ -142,6 +142,14 @@ button:focus-visible { outline: 2px solid var(--accent-strong); outline-offset: 
 .standard-filter-registration { display: block; margin-top: 3px; padding-top: 3px; border-top: 1px solid rgba(152, 170, 157, .35); color: #a8b3ab; }
 .detail-return-all { position: absolute; top: clamp(82px, 7vw, 100px); left: clamp(16px, 1.6vw, 26px); z-index: 2; min-height: 32px; padding: 5px 9px; border: 1px solid var(--line); border-radius: 4px; color: var(--text); background: var(--surface); cursor: pointer; font: inherit; font-size: 12px; }
 .detail-return-all:hover { border-color: var(--accent); color: var(--accent-strong); }
+.request-flow-controls { position: absolute; left: 14px; bottom: 14px; z-index: 2; width: min(330px, calc(100% - 28px)); padding: 9px 11px; border: 1px solid var(--line); border-radius: 4px; color: var(--muted); background: rgba(20, 27, 23, .94); font-size: 12px; line-height: 1.4; }
+.request-flow-note, .request-flow-status { margin: 0; }
+.request-flow-note { color: var(--text); font-weight: 650; }
+.request-flow-status { margin-top: 3px; overflow-wrap: anywhere; }
+.request-flow-buttons { display: flex; gap: 5px; margin-top: 7px; }
+.request-flow-buttons button { min-height: 30px; padding: 4px 8px; border: 1px solid var(--line); border-radius: 3px; color: var(--text); background: transparent; cursor: pointer; font: inherit; font-size: 12px; }
+.request-flow-buttons button:hover:not(:disabled), .request-flow-buttons button:focus-visible { border-color: var(--accent); color: var(--accent-strong); }
+.request-flow-buttons button:disabled { cursor: default; opacity: .5; }
 .graph-surface { position: relative; display: flex; flex: 1; min-height: 280px; min-width: 0; overflow: hidden; cursor: grab; background-color: var(--page); background-image: radial-gradient(circle, rgba(117, 177, 130, .22) 1px, transparent 1.4px); background-size: 24px 24px; }
 .graph-surface:active { cursor: grabbing; }
 .canvas-empty { position: relative; z-index: 0; display: grid; flex: 1; place-items: center; min-height: 280px; padding: 24px; color: var(--muted); text-align: center; }
@@ -163,6 +171,7 @@ button:focus-visible { outline: 2px solid var(--accent-strong); outline-offset: 
 .graph-node-type { fill: var(--muted); font-size: 11px; font-weight: 650; letter-spacing: .04em; pointer-events: none; }
 .graph-node-label { fill: var(--text); font-size: 15px; font-weight: 650; pointer-events: none; }
 .graph-node-detail { fill: var(--muted); font-size: 12px; pointer-events: none; }
+.request-flow-dot { fill: var(--accent-strong); stroke: #0b120d; stroke-width: 2; pointer-events: none; }
 .graph-port { fill: var(--page); stroke: var(--accent-strong); stroke-width: 1.2; }
 .graph-minimap { position: absolute; right: 14px; bottom: 14px; z-index: 1; width: 220px; height: 140px; padding: 6px; border: 1px solid var(--line); border-radius: 4px; background: rgba(9, 13, 11, .94); pointer-events: none; }
 .graph-minimap svg { display: block; width: 100%; height: 100%; }
@@ -194,6 +203,7 @@ button:focus-visible { outline: 2px solid var(--accent-strong); outline-offset: 
 .inspector-empty, .inspector-help, .inspector-finding-state { margin: 7px 0; color: var(--muted); font-size: 13px; line-height: 1.5; }
 .inspector-finding-state { color: var(--accent-strong); }
 .inspector-evidence, .inspector-finding, .inspector-relation { margin-top: 8px; padding: 7px 8px; border: 1px solid var(--line); border-radius: 3px; background: var(--page); }
+@media (prefers-reduced-motion: reduce) { .request-flow-dot { transition: none; } }
 .inspector-link { display: block; width: 100%; margin: 5px 0; padding: 8px 9px; border: 1px solid var(--line); border-radius: 3px; color: var(--text); background: transparent; cursor: pointer; text-align: left; font-size: 13px; overflow-wrap: anywhere; }
 .inspector-link:hover { border-color: var(--accent); color: var(--accent-strong); }
 .shell-notice { position: absolute; top: clamp(12px, 1.2vw, 18px); right: clamp(16px, 1.6vw, 24px); z-index: 4; width: max-content; max-width: min(360px, calc(100vw - 24px)); padding: 10px 13px; border: 1px solid var(--line); border-radius: 4px; color: var(--text); background: var(--surface-raised); font-size: clamp(13px, .85vw, 14px); line-height: 1.4; pointer-events: none; }

@@ -47,11 +47,19 @@
   const showEdgeLabelsSetting = document.querySelector("#setting-show-edge-labels");
   const showMinimapSetting = document.querySelector("#setting-show-minimap");
   const flowClient = window.MapInBootFlow;
+  const requestFlowClient = window.MapInBootRequestFlow;
   const standardFiltersClient = window.MapInBootStandardFilters;
   const graphRenderer = window.MapInBootGraph;
   const layoutClient = window.MapInBootLayout;
   const navigationClient = window.MapInBootNavigation;
   const inspectorClientType = window.MapInBootInspector;
+  const requestFlowControls = document.querySelector("#request-flow-controls");
+  const requestFlowStart = document.querySelector("#request-flow-start");
+  const requestFlowPause = document.querySelector("#request-flow-pause");
+  const requestFlowReset = document.querySelector("#request-flow-reset");
+  const requestFlowStatus = document.querySelector("#request-flow-status");
+  const requestFlowEducation = document.querySelector("#request-flow-education");
+  const requestFlowDot = document.querySelector("#request-flow-dot");
   let noticeTimer = null;
   const state = {
     view: "all-flow",
@@ -76,8 +84,18 @@
     selection: null,
     selectedEndpointId: null,
     viewVersion: 0,
+    requestFlowSteps: [],
+    requestFlowPositions: {},
     navigation: null
   };
+
+  const requestFlowController = requestFlowClient && requestFlowControls
+    ? requestFlowClient.createController({
+      reducedMotion: Boolean(window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches),
+      onUpdate: renderRequestFlowUpdate,
+      onStateChange: renderRequestFlowUpdate
+    })
+    : null;
 
   const navigation = navigationClient && graphSvg && graphViewport
     ? navigationClient.create({
@@ -172,6 +190,88 @@
     standardFilterReference.hidden = false;
   }
 
+  function setRequestFlowVisibility(visible) {
+    const nextVisible = Boolean(visible);
+    if (requestFlowControls) requestFlowControls.hidden = !nextVisible;
+    if (requestFlowEducation) {
+      requestFlowEducation.hidden = !nextVisible;
+      requestFlowEducation.setAttribute("aria-hidden", String(!nextVisible));
+    }
+    if (!nextVisible && requestFlowDot) requestFlowDot.hidden = true;
+  }
+
+  // 교육용 빛 점과 단계 상태를 실제 Graph 좌표에 맞춰 갱신
+  function renderRequestFlowUpdate(flowState) {
+    const currentState = flowState || { status: "idle", stepIndex: 0, progress: 0, step: null };
+    const statusLabel = currentState.status === "running" && currentState.step
+      ? `진행 중 · ${currentState.step.label}`
+      : currentState.status === "paused"
+        ? "일시정지"
+        : currentState.status === "complete"
+          ? "완료"
+          : "시작 전";
+    const message = `교육용 예시 · 실제 요청 추적 아님 · ${statusLabel}`;
+    if (requestFlowStatus && requestFlowStatus.textContent !== message) requestFlowStatus.textContent = message;
+    if (requestFlowStart) requestFlowStart.disabled = currentState.status === "running";
+    if (requestFlowPause) requestFlowPause.disabled = currentState.status !== "running";
+    if (requestFlowReset) requestFlowReset.disabled = state.requestFlowSteps.length === 0;
+    if (!requestFlowDot || !isDetailView() || !state.selectedEndpointId || !currentState.step) {
+      if (requestFlowDot) requestFlowDot.hidden = true;
+      return;
+    }
+    const step = currentState.step;
+    if (step.kind !== "actual" || !step.anchorId) {
+      requestFlowDot.hidden = true;
+      return;
+    }
+    const target = state.requestFlowPositions[step.anchorId] || step.position;
+    if (!target) {
+      requestFlowDot.hidden = true;
+      return;
+    }
+    let origin = null;
+    for (let index = currentState.stepIndex - 1; index >= 0; index -= 1) {
+      const previous = state.requestFlowSteps[index];
+      if (!previous || previous.kind !== "actual" || !previous.anchorId) continue;
+      origin = state.requestFlowPositions[previous.anchorId] || previous.position;
+      if (origin) break;
+    }
+    const progress = Number.isFinite(currentState.progress) ? currentState.progress : 1;
+    const point = origin && progress < 1
+      ? { x: origin.x + (target.x - origin.x) * progress, y: origin.y + (target.y - origin.y) * progress }
+      : target;
+    requestFlowDot.setAttribute("cx", String(point.x));
+    requestFlowDot.setAttribute("cy", String(point.y));
+    requestFlowDot.hidden = false;
+  }
+
+  function resetRequestFlow() {
+    state.requestFlowSteps = [];
+    state.requestFlowPositions = {};
+    if (requestFlowController) requestFlowController.setSteps([]);
+    setRequestFlowVisibility(false);
+  }
+
+  function prepareRequestFlow() {
+    if (!requestFlowController || !isDetailView() || !state.selectedEndpointId
+      || !state.viewGraph || !state.layout || !requestFlowClient) {
+      resetRequestFlow();
+      return;
+    }
+    const positions = state.layout.positions || {};
+    const steps = requestFlowClient.buildSteps({
+      graph: state.viewGraph,
+      index: state.flowIndex,
+      endpointId: state.selectedEndpointId,
+      positions
+    });
+    state.requestFlowSteps = steps;
+    state.requestFlowPositions = positions;
+    requestFlowController.setSteps(steps);
+    setRequestFlowVisibility(true);
+    renderRequestFlowUpdate(requestFlowController.state());
+  }
+
   function requestMessage(status, resource) {
     const code = typeof status === "number"
       ? status
@@ -242,6 +342,7 @@
     state.layoutError = null;
     state.graphRender = null;
     if (graphCanvas) graphCanvas.dataset.layoutState = "not-requested";
+    resetRequestFlow();
   }
 
   function viewGraphForState() {
@@ -366,6 +467,7 @@
   }
 
   function resetGraph(message) {
+    resetRequestFlow();
     state.graph = null;
     state.flowIndex = null;
     state.viewGraph = null;
@@ -580,6 +682,7 @@
       return null;
     }
     const graph = graphRenderer.normalize(snapshot);
+    resetRequestFlow();
     state.snapshot = snapshot;
     state.graph = graph;
     state.flowIndex = flowClient ? flowClient.createIndex(graph) : null;
@@ -640,6 +743,7 @@
       graphEmpty.hidden = true;
       graphSvg.hidden = false;
       if (navigation) navigation.fit();
+      prepareRequestFlow();
       if (state.filters.query || state.filters.nodeType || state.filters.edgeType) {
         graphStateMessage.textContent = state.visibleGraph.nodes.length === 0
           ? "필터 결과가 없습니다."
@@ -786,6 +890,15 @@
     applyGraphFilter();
   });
   if (detailReturnAll) detailReturnAll.addEventListener("click", returnToAllMap);
+  if (requestFlowStart && requestFlowController) requestFlowStart.addEventListener("click", () => requestFlowController.play());
+  if (requestFlowPause && requestFlowController) requestFlowPause.addEventListener("click", () => requestFlowController.pause());
+  if (requestFlowReset && requestFlowController) requestFlowReset.addEventListener("click", () => requestFlowController.reset());
+  if (document.addEventListener && requestFlowController) document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "hidden") requestFlowController.pause();
+  });
+  if (window.addEventListener && requestFlowController) window.addEventListener("resize", () => {
+    if (isDetailView()) requestFlowController.pause();
+  });
   if (document.addEventListener) document.addEventListener("click", (event) => {
     if (!filterPanel || filterPanel.hidden) return;
     const target = event && event.target;
@@ -796,7 +909,8 @@
   if (graphCanvas) graphCanvas.addEventListener("click", (event) => {
     const target = event && event.target;
     if (target && target.closest
-      && (target.closest(".graph-node") || target.closest(".graph-edge") || target.closest(".map-toolbar"))) return;
+      && (target.closest(".graph-node") || target.closest(".graph-edge") || target.closest(".map-toolbar")
+        || target.closest(".request-flow-controls"))) return;
     clearSelection();
   });
   if (document.addEventListener) document.addEventListener("keydown", (event) => {
@@ -825,6 +939,7 @@
     selectGraphElement,
     openEndpointDetail,
     returnToAllMap,
+    requestFlow: requestFlowController,
     clearSelection,
     showGraphHover,
     hideGraphHover,
