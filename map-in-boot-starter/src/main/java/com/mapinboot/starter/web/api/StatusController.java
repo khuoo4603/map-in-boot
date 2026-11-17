@@ -19,6 +19,7 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.core.env.Environment;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
@@ -33,15 +34,18 @@ import org.springframework.web.bind.annotation.RestController;
 public class StatusController {
     private final MapInBootBootstrap bootstrap;
     private final MapInBootProperties properties;
+    private final Environment environment;
 
-    public StatusController(MapInBootBootstrap bootstrap, MapInBootProperties properties) {
+    public StatusController(
+            MapInBootBootstrap bootstrap, MapInBootProperties properties, Environment environment) {
         this.bootstrap = bootstrap;
         this.properties = properties;
+        this.environment = environment;
     }
 
     @GetMapping("/status")
     public ResponseEntity<?> status(HttpServletRequest request) {
-        HttpStatus denied = WebAccessGuard.deniedStatus(request, properties.getWeb().getRequiredRole());
+        HttpStatus denied = WebAccessGuard.deniedStatus(request, properties, environment);
         if (denied != null) {
             return ResponseEntity.status(denied).build();
         }

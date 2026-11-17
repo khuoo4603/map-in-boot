@@ -9,10 +9,13 @@ import java.util.ArrayList;
 import java.util.Base64;
 import java.util.Collection;
 import java.util.List;
+import com.mapinboot.starter.autoconfigure.MapInBootProperties;
+import com.mapinboot.starter.web.access.WebAccessGuard;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.core.annotation.Order;
+import org.springframework.core.env.Environment;
 import org.springframework.core.convert.converter.Converter;
 import org.springframework.security.config.Customizer;
 import org.springframework.http.HttpMethod;
@@ -119,76 +122,84 @@ public class AccountSecurityConfig {
      */
     @Bean
     @Order(100)
-    public SecurityFilterChain securityFilterChain(HttpSecurity http, JwtDecoder jwtDecoder) throws Exception {
+    public SecurityFilterChain securityFilterChain(
+            HttpSecurity http,
+            JwtDecoder jwtDecoder,
+            MapInBootProperties mapInBootProperties,
+            Environment environment) throws Exception {
         http
             .csrf(AbstractHttpConfigurer::disable)
             .cors(cors -> cors.configurationSource(corsConfigurationSource()))
             .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
-            .authorizeHttpRequests(auth -> auth
-                .requestMatchers("/error").permitAll()
-                .requestMatchers(
+            .authorizeHttpRequests(auth -> {
+                // SDK 정식 UI 정적 자원은 호스트 인증 없이 읽기 허용
+                auth.requestMatchers(HttpMethod.GET, WebAccessGuard.publicUiPaths()).permitAll();
+                if (WebAccessGuard.isAnonymousPreviewEnabled(mapInBootProperties, environment)) {
+                    auth.requestMatchers(HttpMethod.GET, WebAccessGuard.previewApiPaths()).permitAll();
+                }
+                auth.requestMatchers("/error").permitAll();
+                auth.requestMatchers(
                     HttpMethod.GET,
                     "/api/public/savings/products",
                     "/api/public/savings/products/*",
                     "/api/public/loans/products",
                     "/api/public/loans/products/*"
-                ).permitAll()
-                .requestMatchers(
+                ).permitAll();
+                auth.requestMatchers(
                     HttpMethod.POST,
                     "/api/secured/loans/applications",
                     "/api/loans/applications"
-                )
-                    .hasAuthority("ROLE_CUSTOMER")
-                .requestMatchers(
+                ).hasAuthority("ROLE_CUSTOMER");
+                auth.requestMatchers(
                     HttpMethod.GET,
                     "/api/loans/applications/my",
                     "/api/loans/applications/my/*"
-                ).hasAuthority("ROLE_CUSTOMER")
-                .requestMatchers(
+                ).hasAuthority("ROLE_CUSTOMER");
+                auth.requestMatchers(
                     HttpMethod.GET,
                     "/api/staff/assigned-customers",
                     "/api/staff/assigned-customers/*/savings",
                     "/api/staff/assigned-customers/*/loans"
-                ).hasAuthority("ROLE_STAFF")
+                ).hasAuthority("ROLE_STAFF");
                 // Scenario: N03 (counterpart: V03) - 직원 Role 기반 고객 검색
-                .requestMatchers(HttpMethod.GET, "/api/staff/secured/customers/search")
-                    .hasAuthority("ROLE_STAFF")
+                auth.requestMatchers(HttpMethod.GET, "/api/staff/secured/customers/search")
+                    .hasAuthority("ROLE_STAFF");
                 // Scenario: V03 (counterpart: N03) - 고객 검색 경로만 공개
-                .requestMatchers(HttpMethod.GET, "/api/staff/customers/search")
-                    .permitAll()
+                auth.requestMatchers(HttpMethod.GET, "/api/staff/customers/search")
+                    .permitAll();
                 // Scenario: N07 (counterpart: V07) - 담당 고객 연락처의 직원 Role 보호
-                .requestMatchers(HttpMethod.GET, "/api/staff/secured/customers/*/contact")
-                    .hasAuthority("ROLE_STAFF")
+                auth.requestMatchers(HttpMethod.GET, "/api/staff/secured/customers/*/contact")
+                    .hasAuthority("ROLE_STAFF");
                 // Scenario: V07 (counterpart: N07) - 인증은 유지하고 Header 오용을 재현
-                .requestMatchers(HttpMethod.GET, "/api/staff/customers/*/contact")
-                    .hasAuthority("ROLE_STAFF")
+                auth.requestMatchers(HttpMethod.GET, "/api/staff/customers/*/contact")
+                    .hasAuthority("ROLE_STAFF");
                 // Scenario: N05/V05 - JWT 고객 Role 기반 계좌 상세 보호
-                .requestMatchers(
+                auth.requestMatchers(
                     HttpMethod.GET,
                     "/api/secured/accounts/*",
                     "/api/accounts/*"
-                ).hasAuthority("ROLE_CUSTOMER")
+                ).hasAuthority("ROLE_CUSTOMER");
                 // Scenario: N04/V04 - URL은 인증만 요구하고 Method Security 차이를 관찰
-                .requestMatchers(
+                auth.requestMatchers(
                     HttpMethod.GET,
                     "/api/staff/secured/customers/*",
                     "/api/staff/customers/*"
-                ).authenticated()
-                .requestMatchers(
+                ).authenticated();
+                auth.requestMatchers(
                     HttpMethod.GET,
                     "/api/admin/savings/products",
                     "/api/admin/savings/subscriptions",
                     "/api/admin/loans/summary",
                     "/api/admin/assignments"
-                ).hasAuthority("ROLE_BANK_ADMIN")
-                .requestMatchers(HttpMethod.POST, "/api/admin/savings/products")
-                    .hasAuthority("ROLE_BANK_ADMIN")
-                .requestMatchers(HttpMethod.PATCH, "/api/admin/savings/products/*")
-                    .hasAuthority("ROLE_BANK_ADMIN")
-                .requestMatchers("/api/my/**").hasAuthority("ROLE_CUSTOMER")
-                .requestMatchers("/api/**").authenticated()
-                .anyRequest().authenticated()
-            )
+                ).hasAuthority("ROLE_BANK_ADMIN");
+                auth.requestMatchers(HttpMethod.POST, "/api/admin/savings/products")
+                    .hasAuthority("ROLE_BANK_ADMIN");
+                auth.requestMatchers(HttpMethod.PATCH, "/api/admin/savings/products/*")
+                    .hasAuthority("ROLE_BANK_ADMIN");
+                auth.requestMatchers("/api/my/**").hasAuthority("ROLE_CUSTOMER");
+                auth.requestMatchers("/api/**").authenticated();
+                auth.anyRequest().authenticated();
+            })
             .oauth2ResourceServer(oauth2 -> oauth2.jwt(jwt -> jwt
                 .decoder(jwtDecoder)
                 .jwtAuthenticationConverter(jwtAuthenticationConverter())

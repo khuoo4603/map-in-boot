@@ -4,15 +4,18 @@ import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import java.io.IOException;
 import com.mapinboot.starter.autoconfigure.MapInBootProperties;
+import org.springframework.core.env.Environment;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.servlet.HandlerInterceptor;
 
 // /mapinboot/** 전체 경로의 호스트 인증·역할 판정
 public final class WebAccessInterceptor implements HandlerInterceptor {
     private final MapInBootProperties properties;
+    private final Environment environment;
 
-    public WebAccessInterceptor(MapInBootProperties properties) {
+    public WebAccessInterceptor(MapInBootProperties properties, Environment environment) {
         this.properties = properties;
+        this.environment = environment;
     }
 
     @Override
@@ -22,7 +25,7 @@ public final class WebAccessInterceptor implements HandlerInterceptor {
             response.sendError(HttpStatus.NOT_FOUND.value());
             return false;
         }
-        HttpStatus denied = WebAccessGuard.deniedStatus(request, properties.getWeb().getRequiredRole());
+        HttpStatus denied = WebAccessGuard.deniedStatus(request, properties, environment);
         if (denied == null) {
             return true;
         }

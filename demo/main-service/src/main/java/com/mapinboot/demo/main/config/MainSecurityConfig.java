@@ -9,10 +9,13 @@ import java.util.ArrayList;
 import java.util.Base64;
 import java.util.Collection;
 import java.util.List;
+import com.mapinboot.starter.autoconfigure.MapInBootProperties;
+import com.mapinboot.starter.web.access.WebAccessGuard;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.core.annotation.Order;
+import org.springframework.core.env.Environment;
 import org.springframework.core.convert.converter.Converter;
 import org.springframework.http.HttpMethod;
 import org.springframework.security.authentication.AbstractAuthenticationToken;
@@ -109,7 +112,11 @@ public class MainSecurityConfig {
      */
     @Bean
     @Order(100)
-    public SecurityFilterChain securityFilterChain(HttpSecurity http, JwtDecoder jwtDecoder) throws Exception {
+    public SecurityFilterChain securityFilterChain(
+            HttpSecurity http,
+            JwtDecoder jwtDecoder,
+            MapInBootProperties mapInBootProperties,
+            Environment environment) throws Exception {
         http
             /*
              * Scenario: V01 (counterpart: N01)
@@ -122,22 +129,27 @@ public class MainSecurityConfig {
             .csrf(AbstractHttpConfigurer::disable)
             .cors(cors -> cors.configurationSource(corsConfigurationSource()))
             .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
-            .authorizeHttpRequests(auth -> auth
+            .authorizeHttpRequests(auth -> {
+                // SDK 정식 UI 정적 자원은 호스트 인증 없이 읽기 허용
+                auth.requestMatchers(HttpMethod.GET, WebAccessGuard.publicUiPaths()).permitAll();
+                if (WebAccessGuard.isAnonymousPreviewEnabled(mapInBootProperties, environment)) {
+                    auth.requestMatchers(HttpMethod.GET, WebAccessGuard.previewApiPaths()).permitAll();
+                }
                 // Demo 정적 리소스 및 오류 페이지 접근 허용
-                .requestMatchers("/demo/**", "/error", "/favicon.ico").permitAll()
-                .requestMatchers(HttpMethod.GET, "/api/public/notices").permitAll()
-                .requestMatchers(
+                auth.requestMatchers("/demo/**", "/error", "/favicon.ico").permitAll();
+                auth.requestMatchers(HttpMethod.GET, "/api/public/notices").permitAll();
+                auth.requestMatchers(
                         HttpMethod.GET,
                         "/api/portal/secured/accounts/*/summary",
                         "/api/portal/accounts/*/summary")
-                    .hasAuthority("ROLE_CUSTOMER")
-                .requestMatchers(HttpMethod.GET, "/api/staff/protected/reports/summary")
-                    .hasAuthority("ROLE_STAFF")
-                .requestMatchers(HttpMethod.GET, "/api/secured/legacy/account-summary/*")
-                    .authenticated()
+                    .hasAuthority("ROLE_CUSTOMER");
+                auth.requestMatchers(HttpMethod.GET, "/api/staff/protected/reports/summary")
+                    .hasAuthority("ROLE_STAFF");
+                auth.requestMatchers(HttpMethod.GET, "/api/secured/legacy/account-summary/*")
+                    .authenticated();
                 // 기타 모든 요청 기본 인증 요구
-                .anyRequest().authenticated()
-            )
+                auth.anyRequest().authenticated();
+            })
             .oauth2ResourceServer(oauth2 -> oauth2.jwt(jwt -> jwt
                 .decoder(jwtDecoder)
                 .jwtAuthenticationConverter(jwtAuthenticationConverter())

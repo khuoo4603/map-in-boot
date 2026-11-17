@@ -16,8 +16,6 @@
     COMPLETED: "완료",
     FAILED: "실패"
   };
-  const sidebar = document.querySelector("#sidebar");
-  const toggle = document.querySelector("#sidebar-toggle");
   const title = document.querySelector("#view-title");
   const viewState = document.querySelector("#view-state");
   const graphCanvas = document.querySelector("#graph-canvas");
@@ -31,23 +29,32 @@
   const inspector = document.querySelector("#inspector");
   const graphPopover = document.querySelector("#graph-popover");
   const endpointSearch = document.querySelector("#endpoint-search");
-  const endpointResults = document.querySelector("#endpoint-results");
   const nodeFilter = document.querySelector("#node-filter");
   const edgeFilter = document.querySelector("#edge-filter");
+  const filterToggle = document.querySelector("#filter-toggle");
+  const filterPanel = document.querySelector("#map-filter-panel");
   const filterStatus = document.querySelector("#graph-filter-status");
   const notice = document.querySelector("#shell-notice");
+  const refreshButton = document.querySelector("#refresh-button");
+  const helpButton = document.querySelector("#help-button");
+  const settingsButton = document.querySelector("#settings-button");
+  const helpPanel = document.querySelector("#help-panel");
+  const settingsPanel = document.querySelector("#settings-panel");
+  const showAreasSetting = document.querySelector("#setting-show-areas");
+  const showEdgeLabelsSetting = document.querySelector("#setting-show-edge-labels");
+  const showMinimapSetting = document.querySelector("#setting-show-minimap");
   const graphRenderer = window.MapInBootGraph;
   const layoutClient = window.MapInBootLayout;
   const navigationClient = window.MapInBootNavigation;
   const inspectorClientType = window.MapInBootInspector;
+  let noticeTimer = null;
   const state = {
-    pinned: false,
-    hovered: false,
     view: "all-flow",
     status: null,
     snapshot: null,
     snapshotState: "not-requested",
     error: null,
+    statusError: null,
     snapshotError: null,
     graph: null,
     graphRender: null,
@@ -57,6 +64,8 @@
     layoutError: null,
     visibleGraph: null,
     filters: { query: "", nodeType: "", edgeType: "" },
+    display: { areas: true, edgeLabels: true, minimap: true },
+    loading: false,
     selection: null,
     navigation: null
   };
@@ -93,31 +102,61 @@
   }
 
   function requestMessage(status, resource) {
-    const code = Number(status);
+    const code = typeof status === "number"
+      ? status
+      : typeof status === "string" && status.trim() ? Number(status) : null;
     if (code === 401) return resource === "snapshot" ? "Snapshot 인증 필요" : "인증 필요";
     if (code === 403) return resource === "snapshot" ? "Snapshot 관리자 권한 필요" : "관리자 권한 필요";
-    if (code === 404) return resource === "snapshot" ? "보존 Snapshot 없음" : "상태 조회 경로 없음";
+    if (code === 404) return resource === "snapshot" ? "보존 Snapshot 없음" : "상태 조회 불가";
+    if (code >= 500 && code <= 599) return "서버 오류";
+    if (!Number.isFinite(code) || code <= 0) return "연결 오류";
     return resource === "snapshot" ? "Snapshot 조회 실패" : "상태 조회 실패";
   }
 
-  function sidebarState() {
-    if (state.pinned) return "pinned-expanded";
-    if (state.hovered) return "hover-expanded";
-    return "collapsed";
+  function errorState(error, resource) {
+    const code = error && Number(error.status);
+    if (!Number.isFinite(code) || code <= 0) return "connection-error";
+    if (code === 404) return resource === "snapshot" ? "missing" : "status-unavailable";
+    if (code === 401 || code === 403) return "denied";
+    if (code >= 500 && code <= 599) return "server-error";
+    return "unavailable";
   }
 
-  function renderSidebarState() {
-    const current = sidebarState();
-    sidebar.dataset.sidebarState = current;
-    toggle.setAttribute("aria-expanded", String(state.pinned));
-    toggle.setAttribute("aria-label", state.pinned ? "메뉴 접기" : "메뉴 펼치기");
-    toggle.querySelector(".sidebar-label").textContent = state.pinned ? "메뉴 접기" : "메뉴 펼치기";
+  function hideNotice() {
+    if (noticeTimer !== null) {
+      clearTimeout(noticeTimer);
+      noticeTimer = null;
+    }
+    notice.textContent = "";
+    notice.dataset.kind = "";
+    notice.hidden = true;
   }
 
   function showNotice(message, kind) {
+    if (noticeTimer !== null) {
+      clearTimeout(noticeTimer);
+      noticeTimer = null;
+    }
+    if (!message) {
+      hideNotice();
+      return;
+    }
     notice.textContent = message;
     notice.dataset.kind = kind || "";
     notice.hidden = false;
+    const duration = kind === "loading" ? 0 : kind === "error" ? 4800 : 2600;
+    if (duration > 0) noticeTimer = setTimeout(hideNotice, duration);
+  }
+
+  function setFilterPanel(open, returnFocus = true) {
+    if (!filterToggle || !filterPanel) return;
+    const nextOpen = Boolean(open);
+    filterPanel.hidden = !nextOpen;
+    filterToggle.setAttribute("aria-expanded", String(nextOpen));
+    filterToggle.setAttribute("aria-label", nextOpen ? "필터 닫기" : "필터 열기");
+    filterToggle.dataset.active = String(nextOpen);
+    if (nextOpen && endpointSearch && typeof endpointSearch.focus === "function") endpointSearch.focus();
+    if (!nextOpen && returnFocus && typeof filterToggle.focus === "function") filterToggle.focus();
   }
 
   function selectView(view) {
@@ -125,14 +164,36 @@
     state.view = view;
     title.textContent = viewNames[view];
     renderStatus();
-    document.querySelectorAll(".nav-item").forEach((item) => {
+    document.querySelectorAll(".header-nav-item").forEach((item) => {
       const active = item.dataset.view === view;
       item.classList.toggle("is-active", active);
       if (active) item.setAttribute("aria-current", "page");
       else item.removeAttribute("aria-current");
     });
-    showNotice(`${viewNames[view]} 화면 선택`);
     if (navigation) navigation.apply();
+  }
+
+  function applyDisplaySettings() {
+    if (graphAreas) graphAreas.hidden = !state.display.areas;
+    if (graphCanvas) graphCanvas.dataset.showEdgeLabels = String(state.display.edgeLabels);
+    if (navigation && navigation.setMiniMapVisible) navigation.setMiniMapVisible(state.display.minimap);
+  }
+
+  function setPanel(panel, button, open) {
+    if (!panel || !button) return;
+    panel.hidden = !open;
+    button.setAttribute("aria-expanded", String(open));
+  }
+
+  function closeHeaderPanels() {
+    setPanel(helpPanel, helpButton, false);
+    setPanel(settingsPanel, settingsButton, false);
+  }
+
+  function toggleHeaderPanel(panel, button, otherPanel, otherButton) {
+    const open = Boolean(panel && panel.hidden);
+    setPanel(otherPanel, otherButton, false);
+    setPanel(panel, button, open);
   }
 
   function capturedTime(value) {
@@ -142,9 +203,13 @@
   }
 
   function snapshotLabel() {
+    if (state.statusError) return requestMessage(state.statusError.status, "status");
     if (state.snapshotState === "loaded") return "보존 Snapshot 있음";
     if (state.snapshotState === "missing") return "보존 Snapshot 없음";
     if (state.snapshotState === "loading") return "Snapshot 조회 중";
+    if (state.snapshotState === "server-error") return "Snapshot 서버 오류";
+    if (state.snapshotState === "connection-error") return "Snapshot 연결 오류";
+    if (state.snapshotState === "status-unavailable") return "상태 조회 불가";
     if (state.snapshotState === "unavailable") return "Snapshot 확인 불가";
     if (state.snapshotState === "denied") return "Snapshot 접근 제한";
     return "Snapshot 조회 전";
@@ -198,27 +263,6 @@
       nodeType: nodeFilter ? nodeFilter.value : "",
       edgeType: edgeFilter ? edgeFilter.value : ""
     };
-  }
-
-  function renderSearchResults(graph) {
-    if (!endpointResults) return;
-    endpointResults.replaceChildren();
-    const placeholder = document.createElement("option");
-    placeholder.value = "";
-    placeholder.textContent = state.filters.query ? "검색 결과 선택" : "검색어를 입력하세요";
-    endpointResults.appendChild(placeholder);
-    const matches = state.filters.query
-      ? graph.nodes.filter((node) => node.type === "ENDPOINT")
-      : [];
-    matches.forEach((node) => {
-      const option = document.createElement("option");
-      const attributes = node.attributes || {};
-      option.value = node.id;
-      option.textContent = [attributes.httpMethod, attributes.path].filter(Boolean).join(" ") || node.label;
-      endpointResults.appendChild(option);
-    });
-    endpointResults.value = "";
-    endpointResults.disabled = matches.length === 0;
   }
 
   function graphElement(kind, id) {
@@ -280,7 +324,8 @@
       viewport: graphViewport,
       areaLayer: graphAreas,
       edgeLayer: graphEdges,
-      nodeLayer: graphNodes,
+      nodeLayer: graphNodes
+    }, {
       positions,
       edgeRoutes: state.layout && state.layout.edgeRoutes,
       bounds: state.layout && { width: state.layout.width, height: state.layout.height },
@@ -309,7 +354,6 @@
         selection: state.selection
       });
     }
-    renderSearchResults(visibleGraph);
     if (navigation) {
       navigation.setGraph(visibleGraph, positions || result.positions, state.layout && {
         width: state.layout.width,
@@ -319,10 +363,10 @@
     const active = Boolean(state.filters.query || state.filters.nodeType || state.filters.edgeType);
     if (filterStatus) {
       filterStatus.textContent = !active
-        ? `전체 Graph · ${visibleGraph.nodes.length}개 Node · ${visibleGraph.edges.length}개 Edge`
+        ? "Graph 표시 준비 완료"
         : visibleGraph.nodes.length === 0 && state.filters.query
           ? "검색 결과 없음 · Snapshot 원본은 유지됩니다."
-          : `필터 적용 · ${visibleGraph.nodes.length}개 Node · ${visibleGraph.edges.length}개 Edge · 숨김 Node ${visibleGraph.hiddenNodes}개 · Edge ${visibleGraph.hiddenEdges}개`;
+          : "필터 적용";
     }
     graphEmpty.hidden = visibleGraph.nodes.length > 0;
     graphSvg.hidden = visibleGraph.nodes.length === 0;
@@ -331,7 +375,7 @@
         ? state.filters.query ? "검색 결과 없음 · Snapshot 원본은 유지됩니다." : "필터 결과가 없습니다."
         : "보존 Snapshot에 Graph Node가 없습니다.";
     } else if (active) {
-      graphStateMessage.textContent = `필터 적용 · 숨김 Node ${visibleGraph.hiddenNodes}개 · Edge ${visibleGraph.hiddenEdges}개`;
+      graphStateMessage.textContent = "필터 적용 · 조건에 맞는 Graph 요소만 표시합니다.";
     } else if (visibleGraph.invalidNodes || visibleGraph.invalidEdges) {
       graphStateMessage.textContent = `유효하지 않은 Graph 요소 ${visibleGraph.invalidNodes + visibleGraph.invalidEdges}개를 표시에서 제외했습니다.`;
     } else {
@@ -396,9 +440,9 @@
       if (state.filters.query || state.filters.nodeType || state.filters.edgeType) {
         graphStateMessage.textContent = state.visibleGraph.nodes.length === 0
           ? "필터 결과가 없습니다."
-          : `필터 적용 · 숨김 Node ${state.visibleGraph.hiddenNodes}개 · Edge ${state.visibleGraph.hiddenEdges}개`;
+          : "필터 적용 · 조건에 맞는 Graph 요소만 표시합니다.";
       }
-      showNotice(`Graph 자동 배치 완료 · ${state.graph.nodes.length}개 Node`, "success");
+      showNotice("Graph 자동 배치 완료", "success");
       return layout;
     }).catch((error) => {
       if (requestId !== state.layoutRequestId) return null;
@@ -414,14 +458,16 @@
   function updateHeader() {
     const persistedTime = state.status && state.status.persistedCapturedAt;
     const snapshot = state.snapshot;
-    document.querySelector("#service-name").textContent = snapshot && snapshot.serviceId
+    const serviceId = snapshot && snapshot.serviceId
       ? snapshot.serviceId
-      : "main-service";
+      : state.status && state.status.serviceId;
+    document.querySelector("#service-name").textContent = serviceId || "서비스 미확인";
     document.querySelector("#snapshot-time").textContent = capturedTime(persistedTime || (snapshot && snapshot.capturedAt));
   }
 
   async function fetchJson(url, resource) {
     const response = await fetch(url, {
+      method: "GET",
       credentials: "same-origin",
       headers: { Accept: "application/json" }
     });
@@ -435,9 +481,11 @@
   }
 
   async function loadStatus() {
-    const button = document.querySelector("#refresh-button");
-    button.disabled = true;
+    if (state.loading) return;
+    state.loading = true;
+    refreshButton.disabled = true;
     state.error = null;
+    state.statusError = null;
     state.snapshotError = null;
     state.status = null;
     state.snapshot = null;
@@ -447,10 +495,6 @@
     state.layoutError = null;
     state.layoutRequestId += 1;
     if (endpointSearch) endpointSearch.value = "";
-    if (endpointResults) {
-      endpointResults.value = "";
-      endpointResults.disabled = true;
-    }
     if (nodeFilter) nodeFilter.value = "";
     if (edgeFilter) edgeFilter.value = "";
     if (navigation) navigation.reset();
@@ -465,101 +509,104 @@
           state.snapshotState = "loaded";
         } catch (error) {
           state.snapshotError = error;
-          state.snapshotState = error.status === 404 ? "missing" : "denied";
+          state.snapshotState = errorState(error, "snapshot");
         }
       } else {
         state.snapshotState = "missing";
       }
       updateHeader();
       renderStatus();
+      let layoutFailed = false;
       if (state.snapshotState === "loaded") {
         renderGraph(state.snapshot);
-        layoutGraph();
+        await layoutGraph();
+        layoutFailed = state.layoutState === "failed" || state.layoutState === "unavailable";
       }
-      showNotice(
-        state.snapshotError ? requestMessage(state.snapshotError.status, "snapshot")
-          : state.snapshotState === "missing" ? "상태 조회 완료 · 보존 Snapshot 없음"
-            : "상태 및 Snapshot 조회 완료",
-        state.snapshotError ? "error" : "success"
-      );
+      if (!layoutFailed) {
+        showNotice(
+          state.snapshotError ? requestMessage(state.snapshotError.status, "snapshot")
+            : state.snapshotState === "missing" ? "상태 조회 완료 · 보존 Snapshot 없음"
+              : "상태 및 Snapshot 조회 완료",
+          state.snapshotError ? "error" : "success"
+        );
+      }
     } catch (error) {
       state.error = error;
-      state.snapshotState = "unavailable";
+      state.statusError = error;
+      state.snapshotState = errorState(error, "status");
       resetGraph();
       updateHeader();
       renderStatus();
       showNotice(requestMessage(error.status, "status"), "error");
     } finally {
-      button.disabled = false;
+      state.loading = false;
+      refreshButton.disabled = false;
     }
   }
 
-  toggle.addEventListener("click", () => {
-    state.pinned = !state.pinned;
-    if (state.pinned) state.hovered = false;
-    renderSidebarState();
-  });
-  sidebar.addEventListener("pointerenter", () => {
-    if (!state.pinned) {
-      state.hovered = true;
-      renderSidebarState();
-    }
-  });
-  sidebar.addEventListener("pointerleave", () => {
-    if (!state.pinned) {
-      state.hovered = false;
-      renderSidebarState();
-    }
-  });
-  document.querySelectorAll(".nav-item").forEach((item) => {
+  document.querySelectorAll(".header-nav-item").forEach((item) => {
     item.addEventListener("click", () => selectView(item.dataset.view));
   });
-  document.querySelector("#help-button").addEventListener("click", (event) => {
-    const expanded = event.currentTarget.getAttribute("aria-expanded") === "true";
-    event.currentTarget.setAttribute("aria-expanded", String(!expanded));
-    showNotice("메뉴는 포인터로 임시 확장하고, 펼치기 버튼으로 고정할 수 있습니다.");
+  helpButton.addEventListener("click", () => {
+    toggleHeaderPanel(helpPanel, helpButton, settingsPanel, settingsButton);
   });
-  document.querySelector("#settings-button").addEventListener("click", (event) => {
-    const expanded = event.currentTarget.getAttribute("aria-expanded") === "true";
-    event.currentTarget.setAttribute("aria-expanded", String(!expanded));
-    showNotice("현재 설정에서는 사이드바 고정 상태만 사용할 수 있습니다.");
+  settingsButton.addEventListener("click", () => {
+    toggleHeaderPanel(settingsPanel, settingsButton, helpPanel, helpButton);
   });
-  document.querySelector("#refresh-button").addEventListener("click", loadStatus);
+  refreshButton.addEventListener("click", loadStatus);
+  if (filterToggle && filterPanel) filterToggle.addEventListener("click", () => {
+    setFilterPanel(filterPanel.hidden);
+  });
+  if (showAreasSetting) showAreasSetting.addEventListener("change", () => {
+    state.display.areas = showAreasSetting.checked;
+    applyDisplaySettings();
+  });
+  if (showEdgeLabelsSetting) showEdgeLabelsSetting.addEventListener("change", () => {
+    state.display.edgeLabels = showEdgeLabelsSetting.checked;
+    applyDisplaySettings();
+  });
+  if (showMinimapSetting) showMinimapSetting.addEventListener("change", () => {
+    state.display.minimap = showMinimapSetting.checked;
+    applyDisplaySettings();
+  });
   if (endpointSearch) endpointSearch.addEventListener("input", applyGraphFilter);
-  if (endpointResults) endpointResults.addEventListener("change", () => {
-    if (endpointResults.value && navigation) navigation.focusNode(endpointResults.value);
-  });
   if (nodeFilter) nodeFilter.addEventListener("change", applyGraphFilter);
   if (edgeFilter) edgeFilter.addEventListener("change", applyGraphFilter);
   const searchReset = document.querySelector("#search-reset");
   if (searchReset) searchReset.addEventListener("click", () => {
     if (endpointSearch) endpointSearch.value = "";
-    if (endpointResults) {
-      endpointResults.value = "";
-      endpointResults.disabled = true;
-    }
     if (nodeFilter) nodeFilter.value = "";
     if (edgeFilter) edgeFilter.value = "";
     applyGraphFilter();
   });
+  if (document.addEventListener) document.addEventListener("click", (event) => {
+    if (!filterPanel || filterPanel.hidden) return;
+    const target = event && event.target;
+    if (target && target.closest
+      && (target.closest(".map-filter-panel") || target.closest(".map-filter-toggle"))) return;
+    setFilterPanel(false, false);
+  });
   if (graphCanvas) graphCanvas.addEventListener("click", (event) => {
     const target = event && event.target;
-    if (target && target.closest && (target.closest(".graph-node") || target.closest(".graph-edge"))) return;
+    if (target && target.closest
+      && (target.closest(".graph-node") || target.closest(".graph-edge") || target.closest(".map-toolbar"))) return;
     clearSelection();
   });
   if (document.addEventListener) document.addEventListener("keydown", (event) => {
     if (event.key === "Escape") {
+      closeHeaderPanels();
       hideGraphHover();
       clearSelection();
+      setFilterPanel(false);
     }
   });
 
-  renderSidebarState();
+  applyDisplaySettings();
   renderStatus();
   window.MapInBootUi = {
     state,
     selectView,
-    renderSidebarState,
+    applyDisplaySettings,
     executionPhaseLabel,
     requestMessage,
     loadStatus,
@@ -572,6 +619,8 @@
     clearSelection,
     showGraphHover,
     hideGraphHover,
+    showNotice,
+    hideNotice,
     setInspectorTab,
     focusEndpoint: (nodeId) => navigation && navigation.focusNode(nodeId),
     navigation,

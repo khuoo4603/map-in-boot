@@ -2,6 +2,8 @@ package com.mapinboot.demo.identity.config;
 
 import com.mapinboot.demo.identity.repository.InMemoryUserRepository;
 import com.mapinboot.demo.identity.security.RefreshTokenFilter;
+import com.mapinboot.starter.autoconfigure.MapInBootProperties;
+import com.mapinboot.starter.web.access.WebAccessGuard;
 import jakarta.servlet.http.Cookie;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -22,6 +24,7 @@ import org.springframework.core.env.Environment;
 import org.springframework.core.env.Profiles;
 import org.springframework.core.annotation.Order;
 import org.springframework.core.convert.converter.Converter;
+import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
 import org.springframework.security.authentication.AbstractAuthenticationToken;
 import org.springframework.security.authentication.AuthenticationManager;
@@ -156,7 +159,8 @@ public class IdentitySecurityConfig {
     public SecurityFilterChain securityFilterChain(
             HttpSecurity http,
             JwtDecoder jwtDecoder,
-            SecurityContextRepository securityContextRepository) throws Exception {
+            SecurityContextRepository securityContextRepository,
+            MapInBootProperties mapInBootProperties) throws Exception {
         http
             .csrf(csrf -> csrf
                 .csrfTokenRepository(CookieCsrfTokenRepository.withHttpOnlyFalse())
@@ -180,13 +184,18 @@ public class IdentitySecurityConfig {
             .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.IF_REQUIRED))
             .exceptionHandling(exception -> exception
                 .authenticationEntryPoint(diagnosticAuthenticationEntryPoint()))
-            .authorizeHttpRequests(auth -> auth
-                .requestMatchers("/mapinboot-assets/**",
-                        "/api/auth/login", "/api/auth/csrf", "/error").permitAll()
-                .requestMatchers("/api/identity/**").hasAuthority("ROLE_CUSTOMER")
-                .requestMatchers("/api/**").authenticated()
-                .anyRequest().authenticated()
-            )
+            .authorizeHttpRequests(auth -> {
+                // SDK 정식 UI 정적 자원은 호스트 인증 없이 읽기 허용
+                auth.requestMatchers(HttpMethod.GET, WebAccessGuard.publicUiPaths()).permitAll();
+                if (WebAccessGuard.isAnonymousPreviewEnabled(mapInBootProperties, environment)) {
+                    auth.requestMatchers(HttpMethod.GET, WebAccessGuard.previewApiPaths()).permitAll();
+                }
+                auth.requestMatchers("/mapinboot-assets/**",
+                        "/api/auth/login", "/api/auth/csrf", "/error").permitAll();
+                auth.requestMatchers("/api/identity/**").hasAuthority("ROLE_CUSTOMER");
+                auth.requestMatchers("/api/**").authenticated();
+                auth.anyRequest().authenticated();
+            })
             .logout(logout -> logout
                 .logoutUrl("/api/auth/logout")
                 .invalidateHttpSession(true)

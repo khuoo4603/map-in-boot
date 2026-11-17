@@ -258,7 +258,7 @@
     {
       id: "servlet-entry",
       label: "서블릿 컨테이너·진입",
-      matches: (node) => ["APPLICATION", "SERVLET", "ENDPOINT"].includes(node.type)
+      matches: (node) => ["APPLICATION", "SERVLET"].includes(node.type)
     },
     {
       id: "servlet-filter",
@@ -274,7 +274,7 @@
     {
       id: "servlet-handler",
       label: "서블릿·핸들러",
-      matches: (node) => ["SERVLET", "ENDPOINT", "HANDLER"].includes(node.type)
+      matches: (node) => ["ENDPOINT", "HANDLER"].includes(node.type)
     },
     {
       id: "authentication-authorization",

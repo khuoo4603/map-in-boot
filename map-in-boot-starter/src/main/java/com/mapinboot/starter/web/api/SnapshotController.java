@@ -7,6 +7,7 @@ import com.mapinboot.starter.web.access.WebAccessGuard;
 import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.core.env.Environment;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication;
@@ -24,15 +25,18 @@ import org.springframework.web.bind.annotation.RestController;
 public class SnapshotController {
     private final MapInBootBootstrap bootstrap;
     private final MapInBootProperties properties;
+    private final Environment environment;
 
-    public SnapshotController(MapInBootBootstrap bootstrap, MapInBootProperties properties) {
+    public SnapshotController(
+            MapInBootBootstrap bootstrap, MapInBootProperties properties, Environment environment) {
         this.bootstrap = bootstrap;
         this.properties = properties;
+        this.environment = environment;
     }
 
     @GetMapping("/snapshot")
     public ResponseEntity<?> snapshot(HttpServletRequest request) {
-        HttpStatus denied = WebAccessGuard.deniedStatus(request, properties.getWeb().getRequiredRole());
+        HttpStatus denied = WebAccessGuard.deniedStatus(request, properties, environment);
         if (denied != null) {
             return ResponseEntity.status(denied).build();
         }

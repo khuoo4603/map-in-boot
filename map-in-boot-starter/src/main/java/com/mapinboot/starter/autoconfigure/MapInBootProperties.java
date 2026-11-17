@@ -58,6 +58,7 @@ public class MapInBootProperties implements InitializingBean {
 
     public static class Web {
         private boolean enabled = false;
+        private boolean anonymousPreview = false;
         private String requiredRole = "MAP_IN_BOOT_ADMIN";
 
         public boolean isEnabled() {
@@ -66,6 +67,14 @@ public class MapInBootProperties implements InitializingBean {
 
         public void setEnabled(boolean enabled) {
             this.enabled = enabled;
+        }
+
+        public boolean isAnonymousPreview() {
+            return anonymousPreview;
+        }
+
+        public void setAnonymousPreview(boolean anonymousPreview) {
+            this.anonymousPreview = anonymousPreview;
         }
 
         public String getRequiredRole() {

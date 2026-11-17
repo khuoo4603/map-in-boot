@@ -32,6 +32,7 @@ import org.springframework.context.ApplicationContext;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Profile;
+import org.springframework.core.env.Environment;
 import org.springframework.web.servlet.config.annotation.InterceptorRegistry;
 import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
 
@@ -145,16 +146,18 @@ public class MapInBootAutoConfiguration {
         @ConditionalOnMissingBean
         @ConditionalOnProperty(prefix = "mapinboot", name = "enabled", havingValue = "true", matchIfMissing = true)
         @ConditionalOnProperty(prefix = "mapinboot.web", name = "enabled", havingValue = "true")
-        SnapshotController snapshotController(MapInBootBootstrap bootstrap, MapInBootProperties properties) {
-            return new SnapshotController(bootstrap, properties);
+        SnapshotController snapshotController(
+                MapInBootBootstrap bootstrap, MapInBootProperties properties, Environment environment) {
+            return new SnapshotController(bootstrap, properties, environment);
         }
 
         @Bean
         @ConditionalOnMissingBean
         @ConditionalOnProperty(prefix = "mapinboot", name = "enabled", havingValue = "true", matchIfMissing = true)
         @ConditionalOnProperty(prefix = "mapinboot.web", name = "enabled", havingValue = "true")
-        StatusController statusController(MapInBootBootstrap bootstrap, MapInBootProperties properties) {
-            return new StatusController(bootstrap, properties);
+        StatusController statusController(
+                MapInBootBootstrap bootstrap, MapInBootProperties properties, Environment environment) {
+            return new StatusController(bootstrap, properties, environment);
         }
 
         @Bean
@@ -175,8 +178,8 @@ public class MapInBootAutoConfiguration {
         }
 
         @Bean
-        WebAccessInterceptor webAccessInterceptor(MapInBootProperties properties) {
-            return new WebAccessInterceptor(properties);
+        WebAccessInterceptor webAccessInterceptor(MapInBootProperties properties, Environment environment) {
+            return new WebAccessInterceptor(properties, environment);
         }
 
         @Bean

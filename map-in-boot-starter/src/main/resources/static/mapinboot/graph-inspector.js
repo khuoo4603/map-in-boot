@@ -85,6 +85,7 @@
       }
       return { nodeIds, edgeIds };
     }
+    nodeIds.add(selection.id);
     graph.edges.forEach((edge) => {
       if (edge.sourceId !== selection.id && edge.targetId !== selection.id) return;
       edgeIds.add(edge.id);
@@ -234,12 +235,14 @@
       }
     }
 
-    function appendRelation(parent, edge, selection, nodes) {
+    function appendRelation(parent, edge, selection, nodes, direct = true) {
       const block = appendElement(parent, "div", "inspector-relation");
       appendRow(block, "Edge ID", edge.id);
       appendRow(block, "EdgeType", edge.type);
       if (selection.kind === "node") {
-        appendRow(block, "방향", edge.sourceId === selection.id ? "나감" : "들어옴");
+        appendRow(block, "방향", direct
+          ? edge.sourceId === selection.id ? "나감" : "들어옴"
+          : "직접 연결 아님");
       } else {
         appendRow(block, "방향", `${edge.sourceId} → ${edge.targetId}`);
       }
@@ -265,7 +268,7 @@
       if (referenced.length === 0) return;
       appendHeading(parent, "Finding 참조 관계");
       appendElement(parent, "p", "inspector-help", "선택 Node의 Finding이 참조한 Edge이며 직접 연결로 해석하지 않음");
-      referenced.forEach((edge) => appendRelation(parent, edge, selection, nodes));
+      referenced.forEach((edge) => appendRelation(parent, edge, selection, nodes, false));
     }
 
     function render({ graph, visibleGraph, snapshot, selection }) {

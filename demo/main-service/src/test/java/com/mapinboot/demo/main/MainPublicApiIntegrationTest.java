@@ -44,6 +44,7 @@ import static org.hamcrest.Matchers.containsInAnyOrder;
 import static org.hamcrest.Matchers.hasSize;
 import static org.springframework.security.test.web.servlet.setup.SecurityMockMvcConfigurers.springSecurity;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -53,7 +54,10 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @SpringBootTest
 @TestPropertySource(properties = {
     "demo.jwt.issuer=demo-identity",
-    "demo.jwt.audience=demo-services"
+    "demo.jwt.audience=demo-services",
+    "spring.profiles.active=develop",
+    "mapinboot.web.enabled=true",
+    "mapinboot.web.anonymous-preview=true"
 })
 class MainPublicApiIntegrationTest {
 
@@ -145,6 +149,19 @@ class MainPublicApiIntegrationTest {
     void otherApiRemainsProtected() throws Exception {
         mockMvc.perform(get("/api/protected"))
                 .andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    @DisplayName("익명 SDK UI와 Preview 조회는 허용하고 진단·쓰기 경로는 보호")
+    void anonymousSdkUiAndPreviewStayReadOnly() throws Exception {
+        mockMvc.perform(get("/mapinboot/")).andExpect(status().isOk());
+        mockMvc.perform(get("/mapinboot/app.css")).andExpect(status().isOk());
+        mockMvc.perform(get("/mapinboot/vendor/elk-worker.min.js")).andExpect(status().isOk());
+        mockMvc.perform(get("/mapinboot/api/status")).andExpect(status().isOk());
+        mockMvc.perform(get("/mapinboot/api/snapshot"))
+                .andExpect(result -> assertThat(result.getResponse().getStatus()).isIn(200, 404));
+        mockMvc.perform(get("/mapinboot/test")).andExpect(status().isUnauthorized());
+        mockMvc.perform(post("/mapinboot/api/snapshot")).andExpect(status().isUnauthorized());
     }
 
     @Test

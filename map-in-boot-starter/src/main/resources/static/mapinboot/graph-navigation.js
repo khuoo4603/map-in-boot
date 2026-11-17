@@ -46,9 +46,13 @@
 
   function canvasSize(svg) {
     const rect = svg && typeof svg.getBoundingClientRect === "function" ? svg.getBoundingClientRect() : null;
+    const clientWidth = finite(svg && svg.clientWidth, 0);
+    const clientHeight = finite(svg && svg.clientHeight, 0);
+    const rectWidth = finite(rect && rect.width, DEFAULT_CANVAS.width);
+    const rectHeight = finite(rect && rect.height, DEFAULT_CANVAS.height);
     return {
-      width: Math.max(1, finite(svg && svg.clientWidth, finite(rect && rect.width, DEFAULT_CANVAS.width))),
-      height: Math.max(1, finite(svg && svg.clientHeight, finite(rect && rect.height, DEFAULT_CANVAS.height)))
+      width: Math.max(1, clientWidth > 0 ? clientWidth : rectWidth > 0 ? rectWidth : DEFAULT_CANVAS.width),
+      height: Math.max(1, clientHeight > 0 ? clientHeight : rectHeight > 0 ? rectHeight : DEFAULT_CANVAS.height)
     };
   }
 
@@ -70,7 +74,8 @@
       positions: {},
       graphBounds: null,
       visibleBounds: null,
-      dragging: false
+      dragging: false,
+      minimapVisible: true
     };
     let pointer = null;
     let minimapGraph = null;
@@ -88,13 +93,18 @@
 
     function nodeTarget(target) {
       if (!target) return false;
-      if (typeof target.closest === "function" && (target.closest(".graph-node") || target.closest(".graph-minimap"))) return true;
+      if (typeof target.closest === "function"
+        && (target.closest(".graph-node") || target.closest(".graph-edge")
+          || target.closest(".graph-minimap") || target.closest(".map-toolbar"))) return true;
       const className = typeof target.getAttribute === "function" ? target.getAttribute("class") : "";
-      return typeof className === "string" && className.split(/\s+/).some((name) => name === "graph-node" || name === "graph-minimap");
+      return typeof className === "string"
+        && className.split(/\s+/).some((name) => name === "graph-node" || name === "graph-edge"
+          || name === "graph-minimap" || name === "map-toolbar");
     }
 
     function updateMiniMap() {
-      if (!minimap || !minimapSvg || !minimapNodes || !minimapViewport || !state.graph || state.graph.nodes.length === 0) {
+      if (!minimap || !minimapSvg || !minimapNodes || !minimapViewport
+        || !state.graph || state.graph.nodes.length === 0 || !state.minimapVisible) {
         if (minimap) minimap.hidden = true;
         minimapGraph = null;
         minimapPositions = null;
@@ -190,6 +200,11 @@
       return apply();
     }
 
+    function setMiniMapVisible(visible) {
+      state.minimapVisible = Boolean(visible);
+      return apply();
+    }
+
     function panBy(deltaX, deltaY) {
       state.panX += finite(deltaX, 0);
       state.panY += finite(deltaY, 0);
@@ -240,6 +255,11 @@
     if (options.fit) options.fit.addEventListener("click", fit);
     if (options.reset) options.reset.addEventListener("click", reset);
     if (typeof window.addEventListener === "function") window.addEventListener("resize", apply);
+    const ResizeObserverConstructor = typeof window !== "undefined" ? window.ResizeObserver : null;
+    if (typeof ResizeObserverConstructor === "function" && surface) {
+      const resizeObserver = new ResizeObserverConstructor(() => apply());
+      resizeObserver.observe(surface);
+    }
 
     return {
       state,
@@ -247,6 +267,7 @@
       apply,
       fit,
       reset,
+      setMiniMapVisible,
       panBy,
       focusNode,
       zoomAt,
