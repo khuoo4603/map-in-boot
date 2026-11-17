@@ -86,11 +86,33 @@ class WebAccessSmokeIntegrationTest {
                     .andExpect(jsonPath("$.persistedSnapshotPresent").value(false))
                     .andExpect(jsonPath("$.errorCode").value("MIB-007"));
             mvc.perform(get("/mapinboot/"))
-                    .andExpect(status().isUnauthorized());
-            mvc.perform(get("/mapinboot/").with(principal(false)))
-                    .andExpect(status().isForbidden());
-            mvc.perform(get("/mapinboot/").with(principal(true)))
-                    .andExpect(status().isNotFound());
+                    .andExpect(status().isOk())
+                    .andExpect(content().contentTypeCompatibleWith(MediaType.TEXT_HTML))
+                    .andExpect(content().string(org.hamcrest.Matchers.containsString("data-ui-shell")));
+            mvc.perform(get("/mapinboot/app.css"))
+                    .andExpect(status().isOk())
+                    .andExpect(content().contentTypeCompatibleWith(MediaType.valueOf("text/css")));
+            mvc.perform(get("/mapinboot/app.js"))
+                    .andExpect(status().isOk())
+                    .andExpect(content().contentTypeCompatibleWith(MediaType.valueOf("text/javascript")));
+            mvc.perform(get("/mapinboot/graph-navigation.js"))
+                    .andExpect(status().isOk())
+                    .andExpect(content().contentTypeCompatibleWith(MediaType.valueOf("text/javascript")))
+                    .andExpect(content().string(org.hamcrest.Matchers.containsString("MapInBootNavigation")));
+            mvc.perform(get("/mapinboot/graph-inspector.js"))
+                    .andExpect(status().isOk())
+                    .andExpect(content().contentTypeCompatibleWith(MediaType.valueOf("text/javascript")))
+                    .andExpect(content().string(org.hamcrest.Matchers.containsString("MapInBootInspector")));
+            mvc.perform(get("/mapinboot/vendor/elk-api.js"))
+                    .andExpect(status().isOk())
+                    .andExpect(content().contentTypeCompatibleWith(MediaType.valueOf("text/javascript")))
+                    .andExpect(content().string(org.hamcrest.Matchers.containsString("ELK")));
+            mvc.perform(get("/mapinboot/vendor/elk-worker.min.js"))
+                    .andExpect(status().isOk())
+                    .andExpect(content().contentTypeCompatibleWith(MediaType.valueOf("text/javascript")));
+            mvc.perform(get("/mapinboot/assets/mapinboot_logo_transparent.png"))
+                    .andExpect(status().isOk())
+                    .andExpect(content().contentTypeCompatibleWith(MediaType.IMAGE_PNG));
             mvc.perform(get("/mapinboot/smoke.txt"))
                     .andExpect(status().isUnauthorized());
             mvc.perform(get("/mapinboot/smoke.txt").with(principal(false)))
@@ -101,6 +123,51 @@ class WebAccessSmokeIntegrationTest {
                     .andExpect(status().isNotFound());
             mvc.perform(post("/mapinboot/api/snapshot").with(principal(true)))
                     .andExpect(status().isMethodNotAllowed());
+        }
+    }
+
+    @Test
+    void developAnonymousPreviewAllowsOnlySdkUiAndReadOnlyApis() throws Exception {
+        Path directory = tempDirectory.resolve("preview-file-target");
+        Files.writeString(directory, "not-a-directory");
+
+        try (ConfigurableApplicationContext context = start(
+                AccessHost.class,
+                Map.of(
+                        "spring.profiles.active", "develop",
+                        "mapinboot.web.enabled", "true",
+                        "mapinboot.web.anonymous-preview", "true",
+                        "mapinboot.snapshot.directory", directory.toString()))) {
+            MapInBootBootstrap bootstrap = context.getBean(MapInBootBootstrap.class);
+            await(() -> bootstrap.failureCode() != null || bootstrap.snapshot() != null);
+            MockMvc mvc = MockMvcBuilders.webAppContextSetup((WebApplicationContext) context).build();
+
+            mvc.perform(get("/mapinboot/")).andExpect(status().isOk());
+            mvc.perform(get("/mapinboot/api/status"))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.persistedSnapshotPresent").value(false));
+            mvc.perform(get("/mapinboot/api/snapshot")).andExpect(status().isNotFound());
+            mvc.perform(get("/mapinboot/test")).andExpect(status().isUnauthorized());
+            mvc.perform(get("/mapinboot/test/api/report")).andExpect(status().isUnauthorized());
+            mvc.perform(get("/mapinboot/smoke.txt")).andExpect(status().isUnauthorized());
+            mvc.perform(post("/mapinboot/api/snapshot")).andExpect(status().isMethodNotAllowed());
+        }
+    }
+
+    @Test
+    void anonymousPreviewFlagDoesNotOpenApiOutsideDevelopProfile() throws Exception {
+        try (ConfigurableApplicationContext context = start(
+                AccessHost.class,
+                Map.of(
+                        "spring.profiles.active", "production",
+                        "mapinboot.web.enabled", "true",
+                        "mapinboot.web.anonymous-preview", "true",
+                        "mapinboot.snapshot.directory", tempDirectory.resolve("production-preview").toString()))) {
+            MockMvc mvc = MockMvcBuilders.webAppContextSetup((WebApplicationContext) context).build();
+
+            mvc.perform(get("/mapinboot/")).andExpect(status().isOk());
+            mvc.perform(get("/mapinboot/api/status")).andExpect(status().isUnauthorized());
+            mvc.perform(get("/mapinboot/api/snapshot")).andExpect(status().isUnauthorized());
         }
     }
 

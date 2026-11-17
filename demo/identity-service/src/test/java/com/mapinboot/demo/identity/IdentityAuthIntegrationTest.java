@@ -57,6 +57,7 @@ import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 import org.springframework.web.context.WebApplicationContext;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.springframework.security.test.web.servlet.setup.SecurityMockMvcConfigurers.springSecurity;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
@@ -75,7 +76,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
     "demo.jwt.issuer=demo-identity",
     "demo.jwt.audience=demo-services",
     "spring.profiles.active=develop",
-    "mapinboot.web.enabled=true"
+    "mapinboot.web.enabled=true",
+    "mapinboot.web.anonymous-preview=true"
 })
 class IdentityAuthIntegrationTest {
 
@@ -146,6 +148,21 @@ class IdentityAuthIntegrationTest {
 
         assertThat(normalRefreshIndex).isGreaterThan(normalBearerIndex);
         assertThat(vulnerableRefreshIndex).isLessThan(vulnerableBearerIndex);
+    }
+
+    @Test
+    @DisplayName("익명 SDK UI와 Preview 조회는 허용하고 진단 API는 기존 인증 유지")
+    void anonymousSdkUiAndPreviewStayReadOnly() throws Exception {
+        mockMvc.perform(get("/mapinboot/")).andExpect(status().isOk());
+        mockMvc.perform(get("/mapinboot/app.css")).andExpect(status().isOk());
+        mockMvc.perform(get("/mapinboot/vendor/elk-worker.min.js")).andExpect(status().isOk());
+        mockMvc.perform(get("/mapinboot/api/status")).andExpect(status().isOk());
+        mockMvc.perform(get("/mapinboot/api/snapshot"))
+                .andExpect(result -> assertThat(result.getResponse().getStatus()).isIn(200, 404));
+        mockMvc.perform(get("/mapinboot/test/api/report")).andExpect(status().isUnauthorized());
+        mockMvc.perform(post("/mapinboot/api/snapshot"))
+                .andExpect(result -> assertTrue(result.getResponse().getStatus() < 200
+                        || result.getResponse().getStatus() >= 300));
     }
 
     @Test

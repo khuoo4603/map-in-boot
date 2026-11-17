@@ -67,7 +67,10 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 @SpringBootTest
 @TestPropertySource(properties = {
     "demo.jwt.issuer=demo-identity",
-    "demo.jwt.audience=demo-services"
+    "demo.jwt.audience=demo-services",
+    "spring.profiles.active=develop",
+    "mapinboot.web.enabled=true",
+    "mapinboot.web.anonymous-preview=true"
 })
 class AccountAuthIntegrationTest {
 
@@ -349,6 +352,19 @@ class AccountAuthIntegrationTest {
     void unauthenticatedTransactionRequestReturns401() throws Exception {
         mockMvc.perform(get("/api/my/accounts/ACC001/transactions"))
                 .andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    @DisplayName("익명 SDK UI와 Preview 조회는 허용하고 진단·쓰기 경로는 보호")
+    void anonymousSdkUiAndPreviewStayReadOnly() throws Exception {
+        mockMvc.perform(get("/mapinboot/")).andExpect(status().isOk());
+        mockMvc.perform(get("/mapinboot/app.css")).andExpect(status().isOk());
+        mockMvc.perform(get("/mapinboot/vendor/elk-worker.min.js")).andExpect(status().isOk());
+        mockMvc.perform(get("/mapinboot/api/status")).andExpect(status().isOk());
+        mockMvc.perform(get("/mapinboot/api/snapshot"))
+                .andExpect(result -> assertTrue(List.of(200, 404).contains(result.getResponse().getStatus())));
+        mockMvc.perform(get("/mapinboot/test")).andExpect(status().isUnauthorized());
+        mockMvc.perform(post("/mapinboot/api/snapshot")).andExpect(status().isUnauthorized());
     }
 
     @Test
