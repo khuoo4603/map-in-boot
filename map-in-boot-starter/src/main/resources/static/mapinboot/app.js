@@ -27,6 +27,7 @@
   const graphEdges = document.querySelector("#graph-edges");
   const graphNodes = document.querySelector("#graph-nodes");
   const flowSummary = document.querySelector("#flow-summary");
+  const standardFilterReference = document.querySelector("#standard-filter-reference");
   const inspector = document.querySelector("#inspector");
   const graphPopover = document.querySelector("#graph-popover");
   const endpointSearch = document.querySelector("#endpoint-search");
@@ -45,6 +46,7 @@
   const showEdgeLabelsSetting = document.querySelector("#setting-show-edge-labels");
   const showMinimapSetting = document.querySelector("#setting-show-minimap");
   const flowClient = window.MapInBootFlow;
+  const standardFiltersClient = window.MapInBootStandardFilters;
   const graphRenderer = window.MapInBootGraph;
   const layoutClient = window.MapInBootLayout;
   const navigationClient = window.MapInBootNavigation;
@@ -122,6 +124,38 @@
       `확인 불가 ${summary.uncertainCount}개`
     ].join(" · ");
     flowSummary.hidden = false;
+  }
+
+  // 표준 Filter 참고층을 실제 Graph와 분리한 DOM으로 갱신
+  function renderStandardFilterReference(chainId = null) {
+    if (!standardFilterReference) return;
+    if (!state.graph || !standardFiltersClient) {
+      standardFilterReference.replaceChildren();
+      standardFilterReference.hidden = true;
+      return;
+    }
+    const statuses = standardFiltersClient.classify(
+      state.graph,
+      state.snapshot && state.snapshot.analysisStatus,
+      chainId
+    );
+    standardFilterReference.replaceChildren();
+    const title = document.createElement("p");
+    title.className = "standard-filter-reference-title";
+    title.textContent = "Spring Security 7 표준 필터 참고";
+    standardFilterReference.appendChild(title);
+    const list = document.createElement("ul");
+    list.className = "standard-filter-reference-list";
+    statuses.forEach((status) => {
+      const item = document.createElement("li");
+      item.className = "standard-filter-reference-item";
+      item.dataset.status = status.status;
+      item.textContent = `${status.name} · ${status.statusLabel}`;
+      item.setAttribute("aria-label", `${status.fqcn} · ${status.statusLabel}`);
+      list.appendChild(item);
+    });
+    standardFilterReference.appendChild(list);
+    standardFilterReference.hidden = false;
   }
 
   function requestMessage(status, resource) {
@@ -279,6 +313,7 @@
     if (graphEmpty) graphEmpty.hidden = false;
     if (filterStatus) filterStatus.textContent = "Graph 없음";
     renderFlowSummary();
+    renderStandardFilterReference();
     if (message) graphStateMessage.textContent = message;
   }
 
@@ -372,6 +407,7 @@
     state.filters = visibleGraph.filters;
     state.graphRender = result;
     renderFlowSummary();
+    renderStandardFilterReference();
     if (inspectorClient) {
       inspectorClient.render({
         graph: state.graph,

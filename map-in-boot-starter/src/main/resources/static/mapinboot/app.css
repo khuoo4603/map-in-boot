@@ -132,6 +132,13 @@ button:focus-visible { outline: 2px solid var(--accent-strong); outline-offset: 
 .map-filter-reset { width: 100%; min-height: clamp(32px, 2.1vw, 36px); padding: 4px 8px; border: 1px solid var(--line); border-radius: 4px; color: var(--text); background: transparent; cursor: pointer; font: inherit; font-size: clamp(13px, .78vw, 15px); }
 .map-filter-reset:hover { border-color: var(--accent); color: var(--accent-strong); }
 .flow-summary { position: absolute; top: clamp(58px, 5vw, 74px); left: clamp(16px, 1.6vw, 26px); z-index: 2; max-width: calc(100% - 32px); margin: 0; color: var(--muted); font-size: 12px; line-height: 1.4; pointer-events: none; }
+.standard-filter-reference { position: absolute; top: clamp(58px, 5vw, 74px); right: clamp(14px, 1.6vw, 26px); z-index: 2; width: min(320px, calc(100% - 28px)); max-height: min(46vh, 420px); overflow: auto; padding: 9px 11px; border: 1px solid rgba(152, 170, 157, .55); border-radius: 4px; color: var(--muted); background: rgba(20, 27, 23, .94); font-size: 12px; line-height: 1.4; }
+.standard-filter-reference-title { margin: 0 0 6px; color: var(--text); font-weight: 650; }
+.standard-filter-reference-list { display: grid; gap: 3px; margin: 0; padding: 0; list-style: none; }
+.standard-filter-reference-item { padding: 3px 5px; border: 1px solid rgba(152, 170, 157, .35); overflow-wrap: anywhere; }
+.standard-filter-reference-item[data-status="UNREGISTERED_REFERENCE"] { border-style: dashed; color: #a8b3ab; }
+.standard-filter-reference-item[data-status="CURRENT_PATH_NOT_APPLIED"] { color: #a8b3ab; }
+.standard-filter-reference-item[data-status="UNKNOWN"], .standard-filter-reference-item[data-status="REGISTERED_UNCERTAIN"] { color: #d3b981; }
 .graph-surface { position: relative; display: flex; flex: 1; min-height: 280px; min-width: 0; overflow: hidden; cursor: grab; background-color: var(--page); background-image: radial-gradient(circle, rgba(117, 177, 130, .22) 1px, transparent 1.4px); background-size: 24px 24px; }
 .graph-surface:active { cursor: grabbing; }
 .canvas-empty { position: relative; z-index: 0; display: grid; flex: 1; place-items: center; min-height: 280px; padding: 24px; color: var(--muted); text-align: center; }

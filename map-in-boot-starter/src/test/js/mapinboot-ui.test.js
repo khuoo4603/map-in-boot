@@ -97,7 +97,7 @@ function loadUi({ fetchImpl, timers } = {}) {
     "graph-empty", "graph-state-message", "graph-svg", "graph-viewport", "graph-areas",
     "graph-edges", "graph-nodes", "service-name", "snapshot-time", "endpoint-search",
     "node-filter", "edge-filter", "search-reset", "filter-toggle", "map-filter-panel", "zoom-in", "zoom-out", "fit-graph",
-    "reset-view", "graph-filter-status", "flow-summary", "graph-minimap", "graph-minimap-svg",
+    "reset-view", "graph-filter-status", "flow-summary", "standard-filter-reference", "graph-minimap", "graph-minimap-svg",
     "graph-minimap-nodes", "graph-minimap-viewport", "inspector", "graph-popover"
   ];
   const elements = new Map(ids.map((id) => [id, createElement()]));
@@ -168,7 +168,7 @@ function loadUi({ fetchImpl, timers } = {}) {
     setTimeout: timers ? timers.setTimeout : setTimeout,
     clearTimeout: timers ? timers.clearTimeout : clearTimeout
   });
-  ["graph-flow.js", "graph-renderer.js", "graph-inspector.js", "layout-client.js", "graph-navigation.js", "app.js"].forEach((file) => {
+  ["graph-flow.js", "graph-standard-filters.js", "graph-renderer.js", "graph-inspector.js", "layout-client.js", "graph-navigation.js", "app.js"].forEach((file) => {
     vm.runInContext(
       readFileSync(`map-in-boot-starter/src/main/resources/static/mapinboot/${file}`, "utf8"),
       context
@@ -537,6 +537,86 @@ function flowGraphFixture() {
     analysisStatus: { "security-chain": "READY", "security-filter-registration-analysis": "READY" }
   };
 }
+
+function standardFilterGraphFixture() {
+  const graph = flowGraphFixture();
+  graph.nodes.find((node) => node.id === "security-filter-1").attributes.filterClass =
+    "org.springframework.security.web.csrf.CsrfFilter";
+  graph.nodes.find((node) => node.id === "security-filter-2").attributes.filterClass =
+    "org.springframework.security.web.context.SecurityContextHolderFilter";
+  graph.nodes.push({
+    id: "security-filter-3",
+    type: "FILTER",
+    serviceId: "orders",
+    label: "CsrfFilter (다른 Chain)",
+    attributes: {
+      registrationKind: "SECURITY",
+      filterClass: "org.springframework.security.web.csrf.CsrfFilter",
+      chainKey: "chain-b",
+      chainOrder: "2",
+      filterOrder: "1"
+    },
+    evidenceIds: ["evidence-security-filter-3"]
+  });
+  graph.edges.push({
+    id: "security-filtered-3",
+    sourceId: "chain-b",
+    targetId: "security-filter-3",
+    type: "FILTERED_BY",
+    attributes: { registrationKind: "SECURITY", filterOrder: "1" },
+    confidence: "CONFIRMED",
+    evidenceIds: ["evidence-security-filtered-3"]
+  });
+  graph.nodes.push({
+    id: "custom-csrf-filter",
+    type: "FILTER",
+    serviceId: "orders",
+    label: "Custom CsrfFilter",
+    attributes: { registrationKind: "SECURITY", filterClass: "com.example.CsrfFilter", chainKey: "chain-a", filterOrder: "3" },
+    evidenceIds: ["evidence-custom-csrf-filter"]
+  });
+  return graph;
+}
+
+test("Spring Security 7 표준 Filter 판정이 FQCN·보존 Snapshot 상태·Chain 적용을 구분함", () => {
+  const { window } = loadUi();
+  const graph = standardFilterGraphFixture();
+  const before = JSON.stringify(graph);
+  const api = window.MapInBootStandardFilters;
+  const ready = api.classify(graph, graph.analysisStatus);
+  const readyByName = new Map(ready.map((item) => [item.fqcn, item]));
+
+  assert.equal(readyByName.get("org.springframework.security.web.csrf.CsrfFilter").status, "REGISTERED");
+  assert.equal(readyByName.get("org.springframework.security.web.context.SecurityContextHolderFilter").status, "REGISTERED");
+  assert.equal(readyByName.get("org.springframework.security.web.access.intercept.AuthorizationFilter").status, "UNREGISTERED_REFERENCE");
+  assert.equal(readyByName.get("com.example.CsrfFilter"), undefined);
+
+  const detail = api.classify(graph, graph.analysisStatus, "chain-a");
+  const detailByName = new Map(detail.map((item) => [item.fqcn, item]));
+  assert.equal(detailByName.get("org.springframework.security.web.csrf.CsrfFilter").status, "CURRENT_PATH_APPLIED");
+  assert.equal(detailByName.get("org.springframework.security.web.csrf.CsrfFilter").registrations
+    .find((registration) => registration.chainId === "chain-b").pathStatus, "CURRENT_PATH_NOT_APPLIED");
+
+  const partial = api.classify(graph, { "security-chain": "PARTIAL", "security-filter-registration-analysis": "READY" });
+  assert.equal(new Map(partial.map((item) => [item.fqcn, item]))
+    .get("org.springframework.security.web.access.intercept.AuthorizationFilter").status, "UNKNOWN");
+  assert.equal(JSON.stringify(graph), before);
+});
+
+test("표준 Filter 참고층이 실제 Graph·ELK·MiniMap 배열에 편입되지 않고 안전한 텍스트로 표시됨", async () => {
+  const { ui, elements, layoutCalls } = loadUi();
+  const snapshot = standardFilterGraphFixture();
+  ui.renderGraph(snapshot);
+  await ui.layoutGraph();
+  const reference = elements.get("standard-filter-reference");
+
+  assert.equal(reference.hidden, false);
+  assert.match(textOf(reference), /참고: 미등록/);
+  assert.match(textOf(reference), /등록됨/);
+  assert.equal(ui.state.graph.nodes.some((node) => node.id.startsWith("standard-filter-")), false);
+  assert.equal(layoutCalls[0].children.length, snapshot.nodes.length);
+  assert.equal(elements.get("graph-minimap-nodes").children.length, snapshot.nodes.length);
+});
 
 test("Flow 인덱스가 실제 관계·등록 종류·순서 불확실성을 분리하고 원본을 보존함", () => {
   const { window } = loadUi();
