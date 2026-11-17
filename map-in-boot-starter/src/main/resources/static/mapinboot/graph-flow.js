@@ -12,6 +12,15 @@
     MATCHED_BY: "MATCHED_BY",
     FILTERED_BY: "FILTERED_BY"
   });
+  const DETAIL_RELATION_TYPES = Object.freeze(new Set([
+    "SECURED_BY",
+    "READS_SECURITY_DATA",
+    "WRITES_SECURITY_DATA",
+    "CONVERTS_TO_AUTHORITY",
+    "USES_FOR_AUTHORIZATION",
+    "SECURITY_STATE"
+  ]));
+  const MAX_DETAIL_DEPTH = 4;
 
   function text(value) {
     return value === null || value === undefined ? "" : String(value);
@@ -145,9 +154,103 @@
     };
   }
 
+  // 선택 Endpoint의 실제 관계만 원본 객체 참조로 추출
+  function deriveEndpointGraph(graph, endpointId) {
+    const source = graph && typeof graph === "object" ? graph : { nodes: [], edges: [] };
+    const index = createIndex(source);
+    const endpoint = index.nodeById.get(endpointId);
+    const match = endpoint && endpoint.type === NODE_TYPES.ENDPOINT
+      ? index.firstMatchedChain(endpointId)
+      : { status: "UNCERTAIN", reason: "MISSING", chain: null, edge: null };
+    const handler = endpoint && endpoint.type === NODE_TYPES.ENDPOINT
+      ? index.handlerFor(endpointId)
+      : { status: "UNCERTAIN", reason: "MISSING", node: null };
+    const nodeIds = new Set();
+    const edgeIds = new Set();
+    const securityFrontier = [];
+
+    const includeNode = (node) => {
+      if (!node || nodeIds.has(node.id)) return false;
+      nodeIds.add(node.id);
+      return true;
+    };
+    const includeEdge = (edge) => {
+      if (!edge || edgeIds.has(edge.id)) return false;
+      if (!nodeIds.has(edge.sourceId) || !nodeIds.has(edge.targetId)) return false;
+      edgeIds.add(edge.id);
+      return true;
+    };
+
+    if (endpoint && endpoint.type === NODE_TYPES.ENDPOINT) includeNode(endpoint);
+    if (handler.node) {
+      includeNode(handler.node);
+      securityFrontier.push({ id: handler.node.id, depth: 0 });
+    }
+    if (match.status === "CONFIRMED") {
+      includeNode(match.chain);
+      includeEdge(match.edge);
+      const chainFilters = index.securityFiltersForChain(match.chain.id);
+      chainFilters.edges.forEach((edge) => {
+        const filter = index.nodeById.get(edge.targetId);
+        if (filter) includeNode(filter);
+        includeEdge(edge);
+      });
+    }
+
+    // Handler·Endpoint에서 시작한 실제 SECURED_BY만 인증·인가 탐색의 근거로 사용
+    index.edges.forEach((edge) => {
+      if (edge.type !== "SECURED_BY") return;
+      if (!nodeIds.has(edge.sourceId)) return;
+      const target = index.nodeById.get(edge.targetId);
+      if (!target) return;
+      includeNode(target);
+      includeEdge(edge);
+      securityFrontier.push({ id: target.id, depth: 0 });
+    });
+
+    // 보안 관계 확장은 실제 방향과 허용된 관계 종류 안에서만 제한
+    const visited = new Set();
+    while (securityFrontier.length > 0) {
+      const current = securityFrontier.shift();
+      const currentId = current.id;
+      if (visited.has(currentId)) continue;
+      visited.add(currentId);
+      if (current.depth >= MAX_DETAIL_DEPTH) continue;
+      index.edges.forEach((edge) => {
+        if (!DETAIL_RELATION_TYPES.has(edge.type) || edge.sourceId !== currentId) return;
+        const target = index.nodeById.get(edge.targetId);
+        if (!target) return;
+        includeNode(target);
+        includeEdge(edge);
+        if (!visited.has(target.id)) securityFrontier.push({ id: target.id, depth: current.depth + 1 });
+      });
+    }
+
+    const nodes = index.nodes.filter((node) => nodeIds.has(node.id));
+    const edges = index.edges.filter((edge) => edgeIds.has(edge.id));
+    return {
+      ...source,
+      nodes,
+      edges,
+      invalidNodes: 0,
+      invalidEdges: 0,
+      filters: { query: "", nodeType: "", edgeType: "" },
+      sourceGraph: source,
+      endpointId,
+      index: createIndex({ ...source, nodes, edges }),
+      match,
+      handler,
+      securityFilters: match.status === "CONFIRMED"
+        ? index.securityFiltersForChain(match.chain.id).filters
+        : [],
+      relationIds: edges.map((edge) => edge.id)
+    };
+  }
+
   window.MapInBootFlow = {
     createIndex,
     positiveInteger,
-    orderState
+    orderState,
+    deriveEndpointGraph
   };
 })();

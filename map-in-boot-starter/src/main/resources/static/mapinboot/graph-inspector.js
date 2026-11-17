@@ -100,6 +100,7 @@
     const surface = options.surface;
     const onClear = options.onClear || (() => {});
     const onSelect = options.onSelect || (() => {});
+    const onOpenDetail = options.onOpenDetail || (() => {});
     let activeTab = "properties";
     let current = { graph: null, visibleGraph: null, snapshot: null, selection: null };
 
@@ -299,6 +300,12 @@
       close.setAttribute("type", "button");
       close.setAttribute("aria-label", "Inspector 닫기");
       close.addEventListener("click", onClear);
+      if (selection.kind === "node" && item.type === "ENDPOINT") {
+        const detailAction = appendElement(header, "button", "inspector-detail-action", "기능별 상세 보기");
+        detailAction.setAttribute("type", "button");
+        detailAction.setAttribute("data-endpoint-id", item.id);
+        detailAction.addEventListener("click", () => onOpenDetail(item.id));
+      }
 
       const tabBar = appendElement(inspector, "div", "inspector-tabs");
       tabs.forEach((tab) => {

@@ -98,12 +98,13 @@ function loadUi({ fetchImpl, timers } = {}) {
     "graph-edges", "graph-nodes", "service-name", "snapshot-time", "endpoint-search",
     "node-filter", "edge-filter", "search-reset", "filter-toggle", "map-filter-panel", "zoom-in", "zoom-out", "fit-graph",
     "reset-view", "graph-filter-status", "flow-summary", "standard-filter-reference", "graph-minimap", "graph-minimap-svg",
-    "graph-minimap-nodes", "graph-minimap-viewport", "inspector", "graph-popover"
+    "graph-minimap-nodes", "graph-minimap-viewport", "inspector", "graph-popover", "detail-return-all"
   ];
   const elements = new Map(ids.map((id) => [id, createElement()]));
   elements.get("help-panel").hidden = true;
   elements.get("settings-panel").hidden = true;
   elements.get("map-filter-panel").hidden = true;
+  elements.get("detail-return-all").hidden = true;
   const navigationViews = ["all-flow", "feature-flow", "security-flow", "security-detail"];
   const navigation = navigationViews.map((view) => ({
     dataset: { view },
@@ -578,6 +579,39 @@ function standardFilterGraphFixture() {
   return graph;
 }
 
+function detailGraphFixture() {
+  const graph = flowGraphFixture();
+  const node = (id, type, label, attributes = {}) => ({
+    id,
+    type,
+    serviceId: "orders",
+    label,
+    attributes,
+    evidenceIds: [`evidence-${id}`]
+  });
+  const edge = (id, sourceId, targetId, type, attributes = {}) => ({
+    id,
+    sourceId,
+    targetId,
+    type,
+    attributes,
+    confidence: "CONFIRMED",
+    evidenceIds: [`evidence-${id}`]
+  });
+  graph.nodes.push(
+    node("authorization-a", "AUTHORIZATION", "Order authorization", { authorizationKind: "ROLE" }),
+    node("security-data-a", "SECURITY_DATA", "Order security data", { dataType: "ACCOUNT" }),
+    node("authorization-b", "AUTHORIZATION", "Account authorization", { authorizationKind: "ROLE" })
+  );
+  graph.edges.push(
+    edge("secured-a", "handler-a", "authorization-a", "SECURED_BY", { authorizationKind: "ROLE" }),
+    edge("reads-a", "authorization-a", "security-data-a", "READS_SECURITY_DATA", { usage: "READ" }),
+    edge("uses-a", "authorization-a", "authorization-a", "USES_FOR_AUTHORIZATION", { usage: "DECISION" }),
+    edge("secured-b", "handler-b", "authorization-b", "SECURED_BY", { authorizationKind: "ROLE" })
+  );
+  return graph;
+}
+
 test("Spring Security 7 표준 Filter 판정이 FQCN·보존 Snapshot 상태·Chain 적용을 구분함", () => {
   const { window } = loadUi();
   const graph = standardFilterGraphFixture();
@@ -616,6 +650,227 @@ test("표준 Filter 참고층이 실제 Graph·ELK·MiniMap 배열에 편입되�
   assert.equal(ui.state.graph.nodes.some((node) => node.id.startsWith("standard-filter-")), false);
   assert.equal(layoutCalls[0].children.length, snapshot.nodes.length);
   assert.equal(elements.get("graph-minimap-nodes").children.length, snapshot.nodes.length);
+});
+
+test("Endpoint 상세 파생 Graph가 실제 Chain·Filter·보안 관계만 보존하고 합성 Edge를 만들지 않음", () => {
+  const { window } = loadUi();
+  const normalized = window.MapInBootGraph.normalize(detailGraphFixture());
+  const before = JSON.stringify(normalized);
+  const detail = window.MapInBootFlow.deriveEndpointGraph(normalized, "endpoint-a");
+  const nodeIds = Array.from(detail.nodes, (node) => node.id);
+  const edgeIds = Array.from(detail.edges, (edge) => edge.id);
+
+  assert.deepEqual(nodeIds, [
+    "endpoint-a", "handler-a", "chain-a", "security-filter-1", "security-filter-2",
+    "authorization-a", "security-data-a"
+  ]);
+  assert.deepEqual(edgeIds, [
+    "match-a", "security-filtered-1", "security-filtered-2", "secured-a", "reads-a", "uses-a"
+  ]);
+  assert.equal(detail.match.status, "CONFIRMED");
+  assert.equal(detail.nodes.find((node) => node.id === "endpoint-a"), normalized.nodes.find((node) => node.id === "endpoint-a"));
+  assert.equal(detail.edges.find((edge) => edge.id === "secured-a"), normalized.edges.find((edge) => edge.id === "secured-a"));
+  assert.equal(detail.edges.some((edge) => edge.sourceId === "endpoint-a" && edge.targetId === "handler-a"), false);
+  assert.equal(nodeIds.includes("endpoint-b"), false);
+  assert.equal(nodeIds.includes("chain-b"), false);
+  assert.equal(nodeIds.includes("security-filter-3"), false);
+  assert.equal(detail.edges.every((edge) => nodeIds.includes(edge.sourceId) && nodeIds.includes(edge.targetId)), true);
+  assert.equal(JSON.stringify(normalized), before);
+});
+
+test("MATCHED_BY가 없거나 복수·불확실한 Endpoint 상세는 임의 Chain을 선택하지 않음", () => {
+  const { window } = loadUi();
+  const raw = detailGraphFixture();
+  raw.edges = raw.edges.filter((edge) => edge.id !== "match-a");
+  raw.edges.push({
+    id: "match-a-uncertain",
+    sourceId: "endpoint-a",
+    targetId: "chain-a",
+    type: "MATCHED_BY",
+    attributes: { chainKey: "chain-a" },
+    confidence: "UNKNOWN",
+    evidenceIds: []
+  });
+  raw.edges.push({
+    id: "match-a-second",
+    sourceId: "endpoint-a",
+    targetId: "chain-b",
+    type: "MATCHED_BY",
+    attributes: { chainKey: "chain-b" },
+    confidence: "CONFIRMED",
+    evidenceIds: []
+  });
+  const detail = window.MapInBootFlow.deriveEndpointGraph(window.MapInBootGraph.normalize(raw), "endpoint-a");
+  const nodeIds = Array.from(detail.nodes, (node) => node.id);
+
+  assert.equal(detail.match.status, "UNCERTAIN");
+  assert.deepEqual(nodeIds, ["endpoint-a", "handler-a", "authorization-a", "security-data-a"]);
+  assert.equal(detail.edges.some((edge) => edge.type === "MATCHED_BY"), false);
+  assert.equal(detail.edges.some((edge) => edge.type === "FILTERED_BY"), false);
+  assert.equal(detail.edges.some((edge) => edge.id === "secured-a"), true);
+  assert.equal(detail.edges.some((edge) => edge.id === "reads-a"), true);
+});
+
+test("기능별 상세 진입은 선택한 Endpoint로 제한하고 미선택 메뉴에는 전체 MAP 복귀를 제공함", async () => {
+  const { ui, elements } = loadUi();
+  ui.renderGraph(detailGraphFixture());
+
+  ui.selectView("feature-flow");
+  assert.match(elements.get("graph-state-message").textContent, /전체 MAP에서 Endpoint를 선택하세요/);
+  assert.equal(elements.get("detail-return-all").hidden, false);
+  assert.equal(ui.state.visibleGraph.nodes.length, 0);
+
+  ui.selectView("all-flow");
+  ui.selectGraphElement("node", "endpoint-a");
+  const action = findAllByClass(elements.get("inspector"), "inspector-detail-action")[0];
+  assert.ok(action);
+  assert.match(textOf(action), /기능별 상세 보기/);
+  action.dispatchEvent({ type: "click" });
+  await ui.layoutGraph();
+
+  assert.equal(ui.state.view, "feature-flow");
+  assert.equal(ui.state.selectedEndpointId, "endpoint-a");
+  assert.deepEqual(Array.from(ui.state.visibleGraph.nodes, (node) => node.id), [
+    "endpoint-a", "handler-a", "chain-a", "security-filter-1", "security-filter-2",
+    "authorization-a", "security-data-a"
+  ]);
+  assert.equal(elements.get("detail-return-all").hidden, false);
+  ui.openEndpointDetail("endpoint-b");
+  await ui.layoutGraph();
+  assert.deepEqual(Array.from(ui.state.visibleGraph.nodes, (node) => node.id), [
+    "endpoint-b", "handler-b", "chain-b", "authorization-b"
+  ]);
+  assert.equal(ui.state.visibleGraph.nodes.some((node) => node.id === "security-filter-1"), false);
+  elements.get("detail-return-all").dispatchEvent({ type: "click" });
+  assert.equal(ui.state.view, "all-flow");
+  assert.equal(ui.state.selectedEndpointId, null);
+});
+
+test("상세 MAP의 실제 READS·USES 관계와 표준 Filter 경로 참고를 분리 표시함", async () => {
+  const { ui, elements } = loadUi();
+  const snapshot = detailGraphFixture();
+  snapshot.analysisStatus = { "security-chain": "READY", "security-filter-registration-analysis": "READY" };
+  snapshot.nodes.find((node) => node.id === "security-filter-1").attributes.filterClass =
+    "org.springframework.security.web.csrf.CsrfFilter";
+  snapshot.nodes.find((node) => node.id === "security-filter-2").attributes.filterClass =
+    "org.springframework.security.web.context.SecurityContextHolderFilter";
+  snapshot.nodes.push({
+    id: "security-filter-b",
+    type: "FILTER",
+    serviceId: "orders",
+    label: "CsrfFilter (다른 Chain)",
+    attributes: {
+      registrationKind: "SECURITY",
+      filterClass: "org.springframework.security.web.csrf.CsrfFilter",
+      chainKey: "chain-b",
+      filterOrder: "1"
+    },
+    evidenceIds: ["evidence-security-filter-b"]
+  });
+  snapshot.edges.push({
+    id: "security-filtered-b",
+    sourceId: "chain-b",
+    targetId: "security-filter-b",
+    type: "FILTERED_BY",
+    attributes: { registrationKind: "SECURITY", filterOrder: "1" },
+    confidence: "CONFIRMED",
+    evidenceIds: ["evidence-security-filtered-b"]
+  });
+  snapshot.evidence = ["reads-a", "uses-a"].map((id) => ({
+    id,
+    source: "RUNTIME",
+    location: `orders://${id}`,
+    summary: `${id} 근거`
+  }));
+
+  ui.renderGraph(snapshot);
+  ui.openEndpointDetail("endpoint-a");
+  await ui.layoutGraph();
+  const detailNodeIds = Array.from(ui.state.visibleGraph.nodes, (node) => node.id);
+  assert.equal(detailNodeIds.includes("security-filter-b"), false);
+  assert.match(textOf(elements.get("standard-filter-reference")), /현재 경로 적용/);
+  assert.match(textOf(elements.get("standard-filter-reference")), /현재 경로 미적용/);
+
+  ui.selectGraphElement("edge", "reads-a");
+  assert.match(textOf(elements.get("inspector")), /reads-a/);
+  assert.match(textOf(elements.get("inspector")), /READS_SECURITY_DATA/);
+  ui.selectGraphElement("edge", "uses-a");
+  assert.match(textOf(elements.get("inspector")), /uses-a/);
+  assert.match(textOf(elements.get("inspector")), /USES_FOR_AUTHORIZATION/);
+
+  elements.get("endpoint-search").value = "not-in-detail";
+  ui.applyGraphFilter();
+  assert.equal(ui.state.visibleGraph.nodes.length, detailNodeIds.length);
+  assert.match(elements.get("graph-state-message").textContent, /상세 MAP에서는 검색·필터 조건을 적용하지 않습니다/);
+});
+
+test("Edge가 적은 Graph와 다른 Chain의 대량 Filter에서도 상세 ELK 입력 범위를 제한함", async () => {
+  const { ui, layoutCalls } = loadUi();
+  const graph = detailGraphFixture();
+  for (let index = 0; index < 61; index += 1) {
+    graph.nodes.push({
+      id: `identity-filter-${index}`,
+      type: "FILTER",
+      serviceId: "identity",
+      label: `Identity Filter ${index}`,
+      attributes: {
+        registrationKind: "SECURITY",
+        filterClass: "com.example.IdentityFilter",
+        chainKey: "chain-b",
+        filterOrder: String(index + 1)
+      },
+      evidenceIds: []
+    });
+    graph.edges.push({
+      id: `identity-filtered-${index}`,
+      sourceId: "chain-b",
+      targetId: `identity-filter-${index}`,
+      type: "FILTERED_BY",
+      attributes: { registrationKind: "SECURITY", filterOrder: String(index + 1) },
+      confidence: "CONFIRMED",
+      evidenceIds: []
+    });
+  }
+
+  ui.renderGraph(graph);
+  ui.openEndpointDetail("endpoint-a");
+  await ui.layoutGraph();
+
+  assert.equal(ui.state.visibleGraph.nodes.length, 7);
+  assert.equal(ui.state.visibleGraph.nodes.some((node) => node.id === "identity-filter-60"), false);
+  assert.equal(layoutCalls.at(-1).children.length, 7);
+});
+
+test("View·Endpoint 전환 중 늦게 도착한 ELK 결과가 최신 Graph·Inspector·MiniMap을 덮지 않음", async () => {
+  const { ui, layoutApi } = loadUi();
+  ui.renderGraph(detailGraphFixture());
+  const pending = [];
+  layoutApi.layout = (graph) => new Promise((resolve) => pending.push({ graph, resolve }));
+
+  const allLayout = ui.layoutGraph();
+  ui.openEndpointDetail("endpoint-a");
+  ui.openEndpointDetail("endpoint-b");
+  ui.selectView("all-flow");
+  assert.equal(pending.length, 4);
+
+  const createResult = (graph, marker) => ({
+    width: 960,
+    height: 720,
+    positions: Object.fromEntries(graph.nodes.map((node, index) => [node.id, { x: marker + index, y: index }])),
+    edgeRoutes: Object.fromEntries(graph.edges.map((edge) => [edge.id, { sections: [] }]))
+  });
+  pending[0].resolve(createResult(pending[0].graph, 10));
+  pending[1].resolve(createResult(pending[1].graph, 20));
+  pending[2].resolve(createResult(pending[2].graph, 30));
+  pending[3].resolve(createResult(pending[3].graph, 40));
+  await Promise.all([allLayout, ...pending.map(({ graph }) => graph)]);
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(ui.state.view, "all-flow");
+  assert.equal(ui.state.selectedEndpointId, null);
+  assert.equal(ui.state.layout.positions["endpoint-a"].x, 40);
+  assert.equal(ui.state.visibleGraph.nodes.length, detailGraphFixture().nodes.length);
+  assert.equal(ui.navigation.state.graphBounds.width, 960);
 });
 
 test("Flow 인덱스가 실제 관계·등록 종류·순서 불확실성을 분리하고 원본을 보존함", () => {

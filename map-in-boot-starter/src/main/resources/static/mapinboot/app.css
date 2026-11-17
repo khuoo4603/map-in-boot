@@ -139,6 +139,9 @@ button:focus-visible { outline: 2px solid var(--accent-strong); outline-offset: 
 .standard-filter-reference-item[data-status="UNREGISTERED_REFERENCE"] { border-style: dashed; color: #a8b3ab; }
 .standard-filter-reference-item[data-status="CURRENT_PATH_NOT_APPLIED"] { color: #a8b3ab; }
 .standard-filter-reference-item[data-status="UNKNOWN"], .standard-filter-reference-item[data-status="REGISTERED_UNCERTAIN"] { color: #d3b981; }
+.standard-filter-registration { display: block; margin-top: 3px; padding-top: 3px; border-top: 1px solid rgba(152, 170, 157, .35); color: #a8b3ab; }
+.detail-return-all { position: absolute; top: clamp(82px, 7vw, 100px); left: clamp(16px, 1.6vw, 26px); z-index: 2; min-height: 32px; padding: 5px 9px; border: 1px solid var(--line); border-radius: 4px; color: var(--text); background: var(--surface); cursor: pointer; font: inherit; font-size: 12px; }
+.detail-return-all:hover { border-color: var(--accent); color: var(--accent-strong); }
 .graph-surface { position: relative; display: flex; flex: 1; min-height: 280px; min-width: 0; overflow: hidden; cursor: grab; background-color: var(--page); background-image: radial-gradient(circle, rgba(117, 177, 130, .22) 1px, transparent 1.4px); background-size: 24px 24px; }
 .graph-surface:active { cursor: grabbing; }
 .canvas-empty { position: relative; z-index: 0; display: grid; flex: 1; place-items: center; min-height: 280px; padding: 24px; color: var(--muted); text-align: center; }
@@ -177,6 +180,8 @@ button:focus-visible { outline: 2px solid var(--accent-strong); outline-offset: 
 .inspector-subtitle { color: var(--muted); font-size: 13px; overflow-wrap: anywhere; }
 .inspector-close { flex: 0 0 auto; padding: 3px 5px; border: 0; color: var(--muted); background: transparent; cursor: pointer; font-size: 14px; }
 .inspector-close:hover { color: var(--accent-strong); }
+.inspector-detail-action { flex: 0 0 auto; padding: 4px 7px; border: 1px solid var(--line); border-radius: 3px; color: var(--accent-strong); background: transparent; cursor: pointer; font: inherit; font-size: 12px; }
+.inspector-detail-action:hover { border-color: var(--accent); }
 .inspector-tabs { display: flex; gap: 2px; padding: 8px 10px 0; border-bottom: 1px solid var(--line); }
 .inspector-tab { min-height: 36px; padding: 5px 9px; border: 0; border-bottom: 2px solid transparent; color: var(--muted); background: transparent; cursor: pointer; font-size: 14px; }
 .inspector-tab:hover, .inspector-tab[aria-selected="true"] { border-bottom-color: var(--accent); color: var(--accent-strong); }
