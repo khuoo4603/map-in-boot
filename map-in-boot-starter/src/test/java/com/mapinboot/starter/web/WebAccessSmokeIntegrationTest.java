@@ -95,6 +95,15 @@ class WebAccessSmokeIntegrationTest {
             mvc.perform(get("/mapinboot/app.js"))
                     .andExpect(status().isOk())
                     .andExpect(content().contentTypeCompatibleWith(MediaType.valueOf("text/javascript")));
+            mvc.perform(get("/mapinboot/graph-flow.js"))
+                    .andExpect(status().isOk())
+                    .andExpect(content().contentTypeCompatibleWith(MediaType.valueOf("text/javascript")));
+            mvc.perform(get("/mapinboot/request-flow-animation.js"))
+                    .andExpect(status().isOk())
+                    .andExpect(content().contentTypeCompatibleWith(MediaType.valueOf("text/javascript")));
+            mvc.perform(get("/mapinboot/graph-standard-filters.js"))
+                    .andExpect(status().isOk())
+                    .andExpect(content().contentTypeCompatibleWith(MediaType.valueOf("text/javascript")));
             mvc.perform(get("/mapinboot/graph-navigation.js"))
                     .andExpect(status().isOk())
                     .andExpect(content().contentTypeCompatibleWith(MediaType.valueOf("text/javascript")))
