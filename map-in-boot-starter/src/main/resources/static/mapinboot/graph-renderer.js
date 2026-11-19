@@ -892,6 +892,8 @@
         marker.setAttribute("tabindex", "0");
         marker.setAttribute("role", "button");
         marker.setAttribute("data-confidence", finding.confidence || "UNKNOWN");
+        marker.setAttribute("data-selected", String(finding.id === options.selectedFindingId));
+        marker.setAttribute("aria-pressed", String(finding.id === options.selectedFindingId));
         const label = `${finding.title || finding.id} · ${finding.ruleId || ""} · ${confidenceNames[finding.confidence] || "확인 불가"}`;
         marker.setAttribute("aria-label", label);
         const title = createElement("title");
@@ -943,8 +945,20 @@
     const edgeElements = [];
     const nodeElements = [];
     const areas = renderAreas(graph, positions, layers.areaLayer, options.layoutPlan, size.height);
-    const guides = renderGuides(graph, displayPositions, layers.guideLayer, options.layoutPlan, options.flowIndex, selection, options.detailMode);
-    const projection = renderProjection(graph, displayPositions, layers.projectionLayer, options.layoutPlan && options.layoutPlan.projection, options.layoutPlan || {}, options);
+    let guides;
+    if (options.findingDetailMode) {
+      if (layers.guideLayer) layers.guideLayer.replaceChildren();
+      guides = [];
+    } else {
+      guides = renderGuides(graph, displayPositions, layers.guideLayer, options.layoutPlan, options.flowIndex, selection, options.detailMode);
+    }
+    let projection;
+    if (options.findingDetailMode) {
+      if (layers.projectionLayer) layers.projectionLayer.replaceChildren();
+      projection = { nodes: [], edges: [] };
+    } else {
+      projection = renderProjection(graph, displayPositions, layers.projectionLayer, options.layoutPlan && options.layoutPlan.projection, options.layoutPlan || {}, options);
+    }
     const renderEdgeRoutes = { ...(options.edgeRoutes || {}) };
     graph.edges.forEach((edge) => {
       const model = options.layoutPlan && options.layoutPlan.displayModel;

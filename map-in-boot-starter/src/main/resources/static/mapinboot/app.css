@@ -253,6 +253,7 @@ button:focus-visible { outline: 2px solid var(--accent-strong); outline-offset: 
 .finding-marker circle { fill: #333; stroke: #c3c9c4; stroke-width: 2; }
 .finding-marker[data-confidence="CONFIRMED"] circle { fill: #9b3434; }
 .finding-marker[data-confidence="LIKELY"] circle { fill: #896617; }
+.finding-marker[data-selected="true"] circle { stroke: #86efac; stroke-width: 4; }
 .finding-marker text { fill: #fff; font-size: 13px; font-weight: 700; pointer-events: none; }
 .finding-marker:focus-visible circle { stroke: white; stroke-width: 4; }
 .finding-list { max-height: 180px; overflow-y: auto; }

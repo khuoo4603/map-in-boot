@@ -78,6 +78,7 @@
     graph: null,
     findingIndex: [],
     selectedFindingId: null,
+    findingReturnId: null,
     flowIndex: null,
     viewGraph: null,
     graphRender: null,
@@ -133,7 +134,8 @@
       surface: graphCanvas,
       onClear: clearSelection,
       onSelect: selectGraphElement,
-      onOpenDetail: openEndpointDetail
+      onOpenDetail: openEndpointDetail,
+      onOpenFindingEndpoint: (endpointId) => openEndpointDetail(endpointId, state.selectedFindingId)
     })
     : null;
 
@@ -304,6 +306,10 @@
     return state.view === "feature-flow";
   }
 
+  function isFindingDetailView() {
+    return state.view === "security-detail";
+  }
+
   function endpointDetails(endpoint) {
     const endpointAttributes = endpoint && endpoint.attributes && typeof endpoint.attributes === "object"
       ? endpoint.attributes : {};
@@ -396,8 +402,13 @@
 
   function applyFilterView() {
     const detail = isDetailView();
+    const findingDetail = isFindingDetailView();
     if (findingFields) setHidden(findingFields, state.view !== "security-flow");
-    if (endpointFilterLabel) endpointFilterLabel.textContent = detail ? "API 선택" : "Endpoint 검색";
+    if (filterToggle) setHidden(filterToggle, findingDetail);
+    if (endpointFilterLabel) {
+      endpointFilterLabel.textContent = detail ? "API 선택" : "Endpoint 검색";
+      setHidden(endpointFilterLabel, findingDetail);
+    }
     if (endpointSearch) {
       endpointSearch.setAttribute("placeholder", detail ? "Method·Path·Handler 검색" : "Method·Path·Handler");
       endpointSearch.setAttribute("type", detail ? "text" : "search");
@@ -414,8 +425,8 @@
         closeEndpointOptions();
       }
     }
-    if (nodeFilterField) setHidden(nodeFilterField, detail);
-    if (edgeFilterField) setHidden(edgeFilterField, detail);
+    if (nodeFilterField) setHidden(nodeFilterField, detail || findingDetail);
+    if (edgeFilterField) setHidden(edgeFilterField, detail || findingDetail);
   }
 
   function selectEndpointOption(endpointId) {
@@ -450,6 +461,24 @@
 
   function viewGraphForState() {
     if (!state.graph) return null;
+    if (isFindingDetailView()) {
+      // 참조된 Node와 Edge 양 끝의 실제 원본 Node만 선택
+      const entry = state.findingIndex.find((item) => item.finding.id === state.selectedFindingId);
+      if (!entry) return null;
+      const edgesById = new Map(state.graph.edges.map((edge) => [edge.id, edge]));
+      const edges = entry.edgeIds.map((id) => edgesById.get(id)).filter(Boolean);
+      const nodeIds = new Set(entry.nodeIds);
+      edges.forEach((edge) => {
+        nodeIds.add(edge.sourceId);
+        nodeIds.add(edge.targetId);
+      });
+      return {
+        ...state.graph,
+        nodes: state.graph.nodes.filter((node) => nodeIds.has(node.id)),
+        edges,
+        filters: { query: "", nodeType: "", edgeType: "" }
+      };
+    }
     if (!isDetailView()) return state.graph;
     if (!state.selectedEndpointId || !flowClient || !flowClient.deriveEndpointGraph) return null;
     return flowClient.deriveEndpointGraph(state.graph, state.selectedEndpointId);
@@ -463,8 +492,17 @@
 
   function selectView(view) {
     if (!viewNames[view]) return;
+    if (view === "security-flow" || view === "security-detail") {
+      if (state.findingReturnId && state.findingIndex.some((item) => item.finding.id === state.findingReturnId)) {
+        state.selectedFindingId = state.findingReturnId;
+      }
+      state.findingReturnId = null;
+    }
     state.view = view;
-    if (view === "all-flow" || view === "feature-flow") state.selectedFindingId = null;
+    if (view === "all-flow" || (view === "feature-flow" && !state.findingReturnId)) {
+      state.selectedFindingId = null;
+      if (view === "all-flow") state.findingReturnId = null;
+    }
     if (!isDetailView()) {
       state.selectedEndpointId = null;
       state.selection = null;
@@ -472,6 +510,7 @@
       ensureFeatureEndpoint();
     }
     applyFilterView();
+    if (isFindingDetailView()) setFilterPanel(false, false);
     invalidateView();
     state.viewGraph = viewGraphForState();
     title.textContent = viewNames[view];
@@ -488,9 +527,10 @@
   }
 
   // 선택 Endpoint의 실제 상세 MAP으로 명시적 진입
-  function openEndpointDetail(endpointId) {
+  function openEndpointDetail(endpointId, returnFindingId = null) {
     const endpoint = graphElement("node", endpointId);
     if (!endpoint || endpoint.type !== "ENDPOINT") return null;
+    state.findingReturnId = returnFindingId;
     state.selectedEndpointId = endpointId;
     state.selection = { kind: "node", id: endpointId };
     selectView("feature-flow");
@@ -578,6 +618,7 @@
     state.graph = null;
     state.findingIndex = [];
     state.selectedFindingId = null;
+    state.findingReturnId = null;
     if (findingList) findingList.replaceChildren();
     state.flowIndex = null;
     state.viewGraph = null;
@@ -603,7 +644,7 @@
   }
 
   function filterValues() {
-    if (isDetailView()) return { query: "", nodeType: "", edgeType: "" };
+    if (isDetailView() || isFindingDetailView()) return { query: "", nodeType: "", edgeType: "" };
     return {
       query: endpointSearch ? endpointSearch.value : "",
       nodeType: nodeFilter ? nodeFilter.value : "",
@@ -616,7 +657,8 @@
     if (!entry) return;
     if (state.selection) clearSelection();
     state.selectedFindingId = id;
-    showNotice(`선택: ${entry.finding.title || id}`);
+    state.findingReturnId = null;
+    selectView("security-detail");
   }
 
   // 위치가 없거나 현재 필터에 가려진 Finding 접근 경로
@@ -664,23 +706,36 @@
   }
 
   function clearSelection() {
+    const keepFinding = isFindingDetailView() && Boolean(state.selection);
     state.selection = null;
-    state.selectedFindingId = null;
+    if (!keepFinding) state.selectedFindingId = null;
     if (inspectorClient) inspectorClient.hideHover();
     if (state.viewGraph && state.viewGraph.nodes.length > 0) {
       renderGraphView(state.layout ? "elk" : "initial", true);
+    } else if (isFindingDetailView()) {
+      renderGraphView("initial");
     } else if (inspectorClient) {
       inspectorClient.render({ graph: state.viewGraph || state.graph, visibleGraph: state.visibleGraph, snapshot: state.snapshot, selection: null });
     }
   }
 
   function selectGraphElement(kind, id) {
-    const item = graphElement(kind, id);
+    let selectedKind = kind;
+    let selectedId = id;
+    if (isFindingDetailView() && kind === "node") {
+      const group = displayGroups().find((candidate) =>
+        (candidate.nodeIds || []).includes(id) || (candidate.handlerIds || []).includes(id));
+      if (group) {
+        selectedKind = "controller-group";
+        selectedId = group.id;
+      }
+    }
+    const item = graphElement(selectedKind, selectedId);
     if (!item) return null;
-    state.selectedFindingId = null;
-    if (kind === "node" && item.type === "ENDPOINT" && isDetailView()
+    if (!isFindingDetailView()) state.selectedFindingId = null;
+    if (selectedKind === "node" && item.type === "ENDPOINT" && isDetailView()
       && state.selectedEndpointId !== item.id) return openEndpointDetail(item.id);
-    state.selection = { kind, id };
+    state.selection = { kind: selectedKind, id: selectedId };
     if (inspectorClient) inspectorClient.hideHover();
     renderGraphView(state.layout ? "elk" : "initial", true);
     return state.selection;
@@ -697,6 +752,29 @@
 
   function setInspectorTab(tab) {
     if (inspectorClient) inspectorClient.setTab(tab);
+  }
+
+  // 보존 Snapshot과 Finding 목록의 빈 상태를 구분
+  function findingPrompt() {
+    if (state.snapshotState === "loaded") {
+      if (!state.snapshot || !Array.isArray(state.snapshot.findings)) {
+        return { title: "Finding 데이터 확인 불가", description: "보존 Snapshot에서 Finding 목록을 확인할 수 없습니다." };
+      }
+      if (state.snapshot.findings.length === 0) {
+        return { title: "보존된 Finding 없음", description: "보존 Snapshot에 Finding이 없습니다." };
+      }
+      return { title: "Finding 선택 필요", description: "보안 MAP에서 확인할 Finding을 선택하세요." };
+    }
+    if (state.snapshotState === "missing") {
+      return { title: "보존 Snapshot 없음", description: "보존된 Snapshot이 없어 Finding을 확인할 수 없습니다." };
+    }
+    if (state.snapshotError) {
+      return { title: "Finding 조회 실패", description: requestMessage(state.snapshotError.status, "snapshot") };
+    }
+    if (state.statusError || state.error) {
+      return { title: "Finding 조회 실패", description: requestMessage(state.statusError?.status, "status") };
+    }
+    return { title: "Finding 조회 전", description: "보존 Snapshot을 확인한 뒤 Finding을 선택할 수 있습니다." };
   }
 
   function renderGraphView(layoutMode, selectionOnly = false) {
@@ -729,25 +807,41 @@
       if (graphEdges) graphEdges.replaceChildren();
       if (graphNodes) graphNodes.replaceChildren();
       if (inspectorClient) {
-        inspectorClient.render({
-          graph: viewGraph || state.graph,
-          visibleGraph: emptyGraph,
-          snapshot: state.snapshot,
-          selection: null
-        });
+        if (isFindingDetailView()) {
+          inspectorClient.renderFinding({
+            graph: state.graph,
+            snapshot: state.snapshot,
+            entry: state.findingIndex.find((item) => item.finding.id === state.selectedFindingId) || null,
+            emptyPrompt: findingPrompt(),
+            onReturn: () => selectView("security-flow"),
+            onOpenEndpoint: (endpointId) => openEndpointDetail(endpointId, state.selectedFindingId)
+          });
+        } else {
+          inspectorClient.render({
+            graph: viewGraph || state.graph,
+            visibleGraph: emptyGraph,
+            snapshot: state.snapshot,
+            selection: null
+          });
+        }
       }
       if (navigation) navigation.setGraph(emptyGraph, {}, null);
-      if (filterStatus) filterStatus.textContent = isDetailView() ? "Endpoint 선택 필요" : "Graph 없음";
+      if (filterStatus) filterStatus.textContent = isFindingDetailView()
+        ? state.selectedFindingId ? "확인된 연결 위치 없음" : "Finding 선택 필요"
+        : isDetailView() ? "Endpoint 선택 필요" : "Graph 없음";
       graphEmpty.hidden = false;
       setHidden(graphSvg, true);
-      if (isDetailView() && !state.selectedEndpointId) {
+      if (isFindingDetailView()) {
+        if (state.selectedFindingId) graphStateMessage.textContent = "선택한 Finding의 확인된 연결 위치가 없습니다.";
+        else graphStateMessage.textContent = findingPrompt().description;
+      } else if (isDetailView() && !state.selectedEndpointId) {
         graphStateMessage.textContent = "선택할 수 있는 Endpoint가 없습니다.";
       } else if (isDetailView()) {
         graphStateMessage.textContent = "선택한 Endpoint의 실제 관계를 확인할 수 없습니다.";
       }
       return null;
     }
-    const visibleGraph = isDetailView()
+    const visibleGraph = isDetailView() || isFindingDetailView()
       ? { ...viewGraph, filters: { query: "", nodeType: "", edgeType: "" } }
       : graphRenderer.filter(state.graph, currentFilters);
     renderFindingList(findings, visibleGraph);
@@ -779,13 +873,15 @@
       bounds: state.layout && { width: state.layout.width, height: state.layout.height },
       layoutPlan: state.layout && state.layout.plan,
       detailMode: isDetailView(),
+      findingDetailMode: isFindingDetailView(),
       flowIndex: state.flowIndex,
       layoutMode,
-      edgeLabelMode: isDetailView() ? "detail" : "overview",
+      edgeLabelMode: isDetailView() || isFindingDetailView() ? "detail" : "overview",
       displayEdgeLabels: state.display.edgeLabels,
       selection: state.selection,
       related,
       findings,
+      selectedFindingId: state.selectedFindingId,
       onFindingClick: selectFinding,
       onNodeClick: (id) => selectGraphElement("node", id),
       onNodeFocus: (id, anchor) => showGraphHover("node", id, anchor),
@@ -807,18 +903,32 @@
     state.filters = visibleGraph.filters;
     state.graphRender = result;
     if (inspectorClient) {
-      inspectorClient.render({
-        graph: viewGraph,
-        visibleGraph,
-        snapshot: state.snapshot,
-        selection: state.selection,
-        controllerGroups: displayGroups(),
-        displayModel: !isDetailView() && state.layout && state.layout.plan && state.layout.plan.displayModel
-      });
+      if (isFindingDetailView() && !state.selection) {
+        inspectorClient.renderFinding({
+          graph: state.graph,
+          snapshot: state.snapshot,
+          entry: state.findingIndex.find((item) => item.finding.id === state.selectedFindingId) || null,
+          emptyPrompt: findingPrompt(),
+          onReturn: () => selectView("security-flow"),
+          onOpenEndpoint: (endpointId) => openEndpointDetail(endpointId, state.selectedFindingId)
+        });
+      } else {
+        inspectorClient.render({
+          graph: viewGraph,
+          visibleGraph,
+          snapshot: state.snapshot,
+          selection: state.selection,
+          findingId: isFindingDetailView() ? state.selectedFindingId : null,
+          onShowFinding: () => selectFinding(state.selectedFindingId),
+          onOpenFindingEndpoint: (endpointId) => openEndpointDetail(endpointId, state.selectedFindingId),
+          controllerGroups: displayGroups(),
+          displayModel: !isDetailView() && state.layout && state.layout.plan && state.layout.plan.displayModel
+        });
+      }
     }
     if (navigation) {
       const renderedPositions = result && result.positions ? result.positions : positions || {};
-      const projectionNodes = state.layout && state.layout.plan && state.layout.plan.projection
+      const projectionNodes = !isFindingDetailView() && state.layout && state.layout.plan && state.layout.plan.projection
         && Array.isArray(state.layout.plan.projection.nodes) ? state.layout.plan.projection.nodes : [];
       const projectionPositions = projectionNodes.length > 0
         ? Object.fromEntries(projectionNodes.map((node) => [node.id, node.position]))
@@ -838,11 +948,11 @@
         height: state.layout.height
       }, fitPositions, presentationNodes);
     }
-    const active = isDetailView()
+    const active = isDetailView() || isFindingDetailView()
       ? Boolean(currentFilters.query || currentFilters.nodeType || currentFilters.edgeType)
       : Boolean(state.filters.query || state.filters.nodeType || state.filters.edgeType);
     if (filterStatus) {
-      filterStatus.textContent = isDetailView() && active
+      filterStatus.textContent = (isDetailView() || isFindingDetailView()) && active
         ? "상세 MAP에서는 검색·필터 조건을 적용하지 않습니다."
         : !active
         ? "Graph 표시 준비 완료"
@@ -853,10 +963,10 @@
     graphEmpty.hidden = visibleGraph.nodes.length > 0;
     setHidden(graphSvg, visibleGraph.nodes.length === 0);
     if (visibleGraph.nodes.length === 0) {
-      graphStateMessage.textContent = active && !isDetailView()
+      graphStateMessage.textContent = active && !(isDetailView() || isFindingDetailView())
         ? state.filters.query ? "검색 결과 없음 · Snapshot 원본은 유지됩니다." : "필터 결과가 없습니다."
         : "보존 Snapshot에 Graph Node가 없습니다.";
-    } else if (isDetailView() && active) {
+    } else if ((isDetailView() || isFindingDetailView()) && active) {
       graphStateMessage.textContent = "상세 MAP에서는 검색·필터 조건을 적용하지 않습니다.";
     } else if (active) {
       graphStateMessage.textContent = "필터 적용 · 조건에 맞는 Graph 요소만 표시합니다.";
@@ -881,6 +991,7 @@
     state.graph = graph;
     state.findingIndex = graphRenderer.indexFindings(snapshot, graph);
     state.selectedFindingId = null;
+    state.findingReturnId = null;
     if (findingRule) {
       const knownRules = new Set(["CHAIN_MISSING", "CHAIN_ORDER", "PUBLIC_ENDPOINT", "METHOD_MISMATCH", "FILTER_ORDER", "OBJECT_BINDING", "STATE_BYPASS"]);
       Array.from(findingRule.children).filter((option) => option.dataset && option.dataset.extraRule).forEach((option) => option.remove());
@@ -927,6 +1038,7 @@
     const viewVersion = state.viewVersion;
     const requestedView = state.view;
     const requestedEndpointId = state.selectedEndpointId;
+    const requestedFindingId = state.selectedFindingId;
     state.layoutState = "loading";
     state.layoutError = null;
     graphCanvas.dataset.layoutState = "loading";
@@ -942,6 +1054,7 @@
         || viewVersion !== state.viewVersion
         || requestedView !== state.view
         || requestedEndpointId !== state.selectedEndpointId
+        || requestedFindingId !== state.selectedFindingId
         || layout.stale) return { ...layout, stale: true };
       state.layout = layout;
       renderGraphView("elk");
@@ -965,7 +1078,8 @@
       if (requestId !== state.layoutRequestId
         || viewVersion !== state.viewVersion
         || requestedView !== state.view
-        || requestedEndpointId !== state.selectedEndpointId) return null;
+        || requestedEndpointId !== state.selectedEndpointId
+        || requestedFindingId !== state.selectedFindingId) return null;
       state.layoutState = "failed";
       state.layoutError = error.message || "원인 확인 불가";
       graphCanvas.dataset.layoutState = "failed";
@@ -1005,6 +1119,8 @@
     const previousView = state.view;
     const previousEndpointId = state.selectedEndpointId;
     const previousSelection = state.selection;
+    const previousFindingId = state.selectedFindingId;
+    const previousFindingReturnId = state.findingReturnId;
     state.loading = true;
     refreshButton.disabled = true;
     state.error = null;
@@ -1043,6 +1159,15 @@
       let layoutFailed = false;
       if (state.snapshotState === "loaded") {
         renderGraph(state.snapshot);
+        state.selectedFindingId = previousFindingId
+          && state.findingIndex.some((item) => item.finding.id === previousFindingId)
+          ? previousFindingId : null;
+        state.findingReturnId = previousFindingReturnId
+          && state.findingIndex.some((item) => item.finding.id === previousFindingReturnId)
+          ? previousFindingReturnId : null;
+        if (previousView === "security-detail" || previousView === "security-flow") {
+          renderGraphView("initial");
+        }
         if (previousView === "feature-flow") {
           state.selectedEndpointId = previousEndpointId
             && graphElement("node", previousEndpointId)?.type === "ENDPOINT"

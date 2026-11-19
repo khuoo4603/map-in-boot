@@ -255,10 +255,12 @@ test("보안 MAP은 원본 위치와 위치 미확인 Finding을 필터와 함�
   assert.ok(findAllByClass(elements.get("graph-nodes"), "finding-marker").length > 0);
   const edgeMarker = findAllByClass(elements.get("graph-edges"), "finding-marker")[0];
   assert.equal(edgeMarker.getAttribute("transform"), "translate(123 45)");
+  assert.match(textOf(elements.get("finding-list")), /위치 미확인/);
   edgeMarker.dispatchEvent({ type: "click" });
   assert.equal(ui.state.selectedFindingId, "finding-1");
-  assert.match(textOf(elements.get("finding-list")), /위치 미확인/);
-  assert.match(textOf(elements.get("finding-list")), /연결 위치 확인 불가/);
+  assert.equal(ui.state.view, "security-detail");
+  assert.match(textOf(elements.get("inspector")), /실제 참조 Finding/);
+  ui.selectView("security-flow");
   elements.get("finding-confidence").value = "LIKELY";
   elements.get("finding-confidence").dispatchEvent({ type: "change" });
   assert.equal(findAllByClass(elements.get("graph-nodes"), "finding-marker").length, 0);
@@ -275,11 +277,209 @@ test("Graph가 비어 있어도 위치 없는 Finding을 필터 목록에서 찾
   assert.match(textOf(elements.get("finding-list")), /체인 점검.*연결 위치 확인 불가/);
   elements.get("finding-list").children[0].dispatchEvent({ type: "click" });
   assert.equal(ui.state.selectedFindingId, "unlocated");
+  assert.equal(ui.state.view, "security-detail");
+  assert.equal(elements.get("inspector").hidden, false);
+  assert.match(textOf(elements.get("inspector")), /확인된 연결 위치 없음/);
+  assert.match(textOf(elements.get("inspector")), /Evidence 없음/);
+  assert.match(textOf(elements.get("inspector")), /제공된 점검 가이드 없음/);
+  ui.selectView("security-flow");
   elements.get("finding-confidence").value = "CONFIRMED";
   elements.get("finding-confidence").dispatchEvent({ type: "change" });
   assert.doesNotMatch(textOf(elements.get("finding-list")), /체인 점검/);
   elements.get("search-reset").dispatchEvent({ type: "click" });
   assert.match(textOf(elements.get("finding-list")), /체인 점검/);
+});
+
+test("위치 없는 Finding을 선택해도 상세 판단과 근거 및 가이드를 표시함", () => {
+  const { ui, elements } = loadUi();
+  const snapshot = graphFixture();
+  snapshot.findings = [{ id: "finding-empty", ruleId: "CHAIN_MISSING", title: "체인 점검", description: "판단 설명", confidence: "UNKNOWN", nodeIds: [], edgeIds: [], evidenceIds: ["evidence-2", "missing"], guide: "설정 확인" }];
+  ui.renderGraph(snapshot);
+  ui.selectView("security-flow");
+  elements.get("finding-list").children[0].dispatchEvent({ type: "click" });
+  assert.equal(ui.state.view, "security-detail");
+  assert.equal(elements.get("inspector").hidden, false);
+  assert.match(textOf(elements.get("inspector")), /체인 점검/);
+  assert.match(textOf(elements.get("inspector")), /판단 설명/);
+  assert.match(textOf(elements.get("inspector")), /CHAIN_MISSING/);
+  assert.match(textOf(elements.get("inspector")), /UNKNOWN/);
+  assert.match(textOf(elements.get("inspector")), /runtime evidence 2/);
+  assert.match(textOf(elements.get("inspector")), /orders:\/\/node\/2/);
+  assert.match(textOf(elements.get("inspector")), /참조 확인 불가/);
+  assert.match(textOf(elements.get("inspector")), /설정 확인/);
+  assert.equal(ui.state.viewGraph.nodes.length, 0);
+});
+
+test("Finding 상세 Graph는 직접 참조 Edge와 기존 양 끝 Node만 표시하고 보안 MAP으로 복귀함", () => {
+  const { ui, elements } = loadUi();
+  const snapshot = graphFixture();
+  snapshot.findings = [
+    { id: "edge-only", ruleId: "CHAIN_ORDER", title: "Edge 판단", description: "Edge 설명", confidence: "LIKELY", nodeIds: [], edgeIds: ["edge-3"], evidenceIds: ["evidence-3"], guide: "Edge 가이드" },
+    { id: "node-only", ruleId: "OBJECT_BINDING", title: "Node 판단", description: "Node 설명", confidence: "CONFIRMED", nodeIds: ["node-7", "missing-node"], edgeIds: [], evidenceIds: ["evidence-7"], guide: "Node 가이드" }
+  ];
+  const original = JSON.stringify(snapshot);
+  ui.renderGraph(snapshot);
+  ui.selectView("security-flow");
+  let marker = findAllByClass(elements.get("graph-edges"), "finding-marker")
+    .find((item) => /Edge 판단/.test(item.getAttribute("aria-label")));
+  marker.dispatchEvent({ type: "click" });
+  assert.equal(ui.state.selectedFindingId, "edge-only");
+  assert.deepEqual(Array.from(ui.state.viewGraph.nodes, (node) => node.id), ["node-3", "node-4"]);
+  assert.deepEqual(Array.from(ui.state.viewGraph.edges, (edge) => edge.id), ["edge-3"]);
+  assert.match(textOf(elements.get("inspector")), /RUNTIME/);
+  assert.match(textOf(elements.get("inspector")), /Edge 가이드/);
+  assert.equal(ui.state.viewGraph.edges.some((edge) => edge.id !== "edge-3"), false);
+  const back = findAllByClass(elements.get("inspector"), "inspector-detail-action")
+    .find((button) => button.textContent === "보안 MAP으로");
+  assert.ok(back);
+  back.dispatchEvent({ type: "click" });
+  assert.equal(ui.state.view, "security-flow");
+  assert.equal(ui.state.selectedFindingId, "edge-only");
+  marker = findAllByClass(elements.get("graph-nodes"), "finding-marker")
+    .find((item) => /Node 판단/.test(item.getAttribute("aria-label")));
+  marker.dispatchEvent({ type: "click" });
+  assert.equal(ui.state.selectedFindingId, "node-only");
+  assert.deepEqual(Array.from(ui.state.viewGraph.nodes, (node) => node.id), ["node-7"]);
+  assert.deepEqual(Array.from(ui.state.viewGraph.edges, (edge) => edge.id), []);
+  assert.match(textOf(elements.get("inspector")), /Node 판단/);
+  assert.match(textOf(elements.get("inspector")), /Node 가이드/);
+  assert.match(textOf(elements.get("inspector")), /evidence-7/);
+  assert.doesNotMatch(textOf(elements.get("inspector")), /Edge 판단|Edge 설명|Edge 가이드|evidence-3/);
+  assert.match(textOf(elements.get("inspector")), /일부 Graph 참조를 확인할 수 없습니다/);
+  assert.equal(JSON.stringify(snapshot), original);
+});
+
+test("상세 취약점 직접 진입과 Endpoint 이동은 실제 Finding 관계만 유지함", () => {
+  const { ui, elements } = loadUi();
+  const snapshot = detailGraphFixture();
+  snapshot.findings = [{ id: "endpoint-finding", ruleId: "PUBLIC_ENDPOINT", title: "API 판단", description: "실제 Endpoint 참조", confidence: "UNKNOWN", nodeIds: ["endpoint-a"], edgeIds: [], evidenceIds: [], guide: "실제 가이드" }];
+  ui.renderGraph(snapshot);
+  ui.state.snapshotState = "loaded";
+  ui.selectView("security-detail");
+  assert.equal(ui.state.selectedFindingId, null);
+  assert.equal(elements.get("inspector").hidden, false);
+  assert.match(textOf(elements.get("inspector")), /Finding 선택 필요/);
+  assert.match(elements.get("graph-state-message").textContent, /보안 MAP에서.*Finding/);
+  ui.selectView("security-flow");
+  const marker = findAllByClass(elements.get("graph-nodes"), "finding-marker")[0];
+  marker.dispatchEvent({ type: "click" });
+  const endpointAction = findAllByClass(elements.get("inspector"), "inspector-detail-action")
+    .find((button) => button.textContent === "기능별 상세 보기");
+  assert.ok(endpointAction);
+  endpointAction.dispatchEvent({ type: "click" });
+  assert.equal(ui.state.view, "feature-flow");
+  assert.equal(ui.state.selectedEndpointId, "endpoint-a");
+  ui.selectView("security-flow");
+  assert.equal(ui.state.selectedFindingId, "endpoint-finding");
+  ui.selectView("security-detail");
+  assert.deepEqual(Array.from(ui.state.viewGraph.nodes, (node) => node.id), ["endpoint-a"]);
+  ui.selectGraphElement("node", "endpoint-a");
+  const returnToFinding = findAllByClass(elements.get("inspector"), "inspector-detail-action")
+    .find((button) => button.textContent === "선택 Finding 다시 보기");
+  assert.ok(returnToFinding);
+  returnToFinding.dispatchEvent({ type: "click" });
+  assert.equal(ui.state.view, "security-detail");
+  assert.equal(ui.state.selectedFindingId, "endpoint-finding");
+  ui.renderGraph({ ...snapshot, findings: [] });
+  assert.equal(ui.state.selectedFindingId, null);
+  assert.equal(ui.state.viewGraph, null);
+});
+
+test("다른 View와 Finding의 늦은 ELK 응답은 선택 Finding의 Graph를 덮지 않음", async () => {
+  const { ui, layoutApi, elements } = loadUi();
+  ui.renderGraph(graphFixture());
+  const pending = [];
+  layoutApi.layout = (graph) => new Promise((resolve) => pending.push({ graph, resolve }));
+  ui.selectView("security-flow");
+  const marker = findAllByClass(elements.get("graph-edges"), "finding-marker")[0];
+  marker.dispatchEvent({ type: "click" });
+  const currentLayout = ui.layoutGraph();
+  assert.equal(pending.length, 3);
+
+  const resultFor = (graph, x) => ({
+    width: 960,
+    height: 720,
+    positions: Object.fromEntries(graph.nodes.map((node, index) => [node.id, { x: x + index, y: index * 40 }])),
+    edgeRoutes: Object.fromEntries(graph.edges.map((edge) => [edge.id, { sections: [] }]))
+  });
+  pending[2].resolve(resultFor(pending[2].graph, 300));
+  await currentLayout;
+  pending[0].resolve(resultFor(pending[0].graph, 10));
+  pending[1].resolve(resultFor(pending[1].graph, 100));
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(ui.state.view, "security-detail");
+  assert.deepEqual(Object.keys(ui.state.layout.positions).sort(), ["node-2", "node-3", "node-4"]);
+  assert.deepEqual(Array.from(ui.state.visibleGraph.edges, (edge) => edge.id), ["edge-3"]);
+  assert.equal(ui.state.layout.positions["node-2"].x, 300);
+  assert.equal(elements.get("graph-minimap-nodes").children.length, ui.state.graphRender.displayNodes.length);
+  assert.equal(elements.get("graph-flow-projection").children.length, 0);
+  assert.equal(elements.get("graph-guides").children.length, 0);
+});
+
+test("Finding 참조가 표시 그룹에 포함되어도 원본 Node로 Inspector를 다시 열 수 있음", async () => {
+  const { ui, elements } = loadUi();
+  const snapshot = detailGraphFixture();
+  snapshot.evidence = [
+    { id: "evidence-authorization-a", source: "SPRING_METADATA", location: "authorization-a", summary: "인가 노드 근거" },
+    { id: "e-auth-a", source: "CODE_PATTERN", location: "OrderPolicy#check", summary: "인가 조건 근거" }
+  ];
+  snapshot.findings = [{ id: "grouped-finding", ruleId: "OBJECT_BINDING", title: "인가 판단", description: "인가 정보 참조", confidence: "LIKELY", nodeIds: ["authorization-a"], edgeIds: ["secured-a"], evidenceIds: ["e-auth-a"], guide: "인가 조건 확인" }];
+  ui.renderGraph(snapshot);
+  ui.selectView("security-flow");
+  await ui.layoutGraph();
+  findAllByClass(elements.get("graph-nodes"), "finding-marker")[0].dispatchEvent({ type: "click" });
+  await ui.layoutGraph();
+
+  const supportGroup = ui.state.layout.plan.displayModel.groups.find((group) => group.nodeIds.includes("authorization-a"));
+  assert.ok(supportGroup);
+  assert.deepEqual(new Set(ui.state.viewGraph.nodes.map((node) => node.id)), new Set(["handler-a", "authorization-a"]));
+  assert.deepEqual(Array.from(ui.state.viewGraph.edges, (edge) => edge.id), ["secured-a"]);
+  const originalNode = findAllByClass(elements.get("inspector"), "inspector-link")
+    .find((button) => button.attributes["data-node-id"] === "authorization-a");
+  assert.ok(originalNode);
+  originalNode.dispatchEvent({ type: "click" });
+  assert.equal(ui.state.selection.kind, "controller-group");
+  assert.equal(ui.state.selection.id, supportGroup.id);
+  assert.match(textOf(elements.get("inspector")), /포함된 원본 Fact/);
+  const reopen = findAllByClass(elements.get("inspector"), "inspector-detail-action")
+    .find((button) => button.textContent === "선택 Finding 다시 보기");
+  assert.ok(reopen);
+  reopen.dispatchEvent({ type: "click" });
+  assert.equal(ui.state.view, "security-detail");
+  assert.equal(ui.state.selectedFindingId, "grouped-finding");
+  assert.match(textOf(elements.get("inspector")), /CODE_PATTERN/);
+  assert.match(textOf(elements.get("inspector")), /OrderPolicy#check/);
+  assert.match(textOf(elements.get("inspector")), /인가 조건 근거/);
+});
+
+test("Snapshot 새로고침은 같은 Finding만 복원하고 사라진 ID는 폐기함", async () => {
+  const snapshot = graphFixture();
+  const replacement = { ...graphFixture(), findings: [] };
+  const responses = [
+    { ok: true, json: async () => ({ phase: "COMPLETED", persistedSnapshotPresent: true }) },
+    { ok: true, json: async () => snapshot },
+    { ok: true, json: async () => ({ phase: "COMPLETED", persistedSnapshotPresent: true }) },
+    { ok: true, json: async () => snapshot },
+    { ok: true, json: async () => ({ phase: "COMPLETED", persistedSnapshotPresent: true }) },
+    { ok: true, json: async () => replacement }
+  ];
+  const instance = loadUi({ fetchImpl: () => Promise.resolve(responses.shift()) });
+  await new Promise((resolve) => setImmediate(resolve));
+  await new Promise((resolve) => setImmediate(resolve));
+  instance.ui.selectView("security-flow");
+  findAllByClass(instance.elements.get("graph-nodes"), "finding-marker")[0].dispatchEvent({ type: "click" });
+  await instance.ui.loadStatus();
+  assert.equal(instance.ui.state.view, "security-detail");
+  assert.equal(instance.ui.state.selectedFindingId, "finding-1");
+  assert.match(textOf(instance.elements.get("inspector")), /실제 참조 Finding/);
+
+  await instance.ui.loadStatus();
+  assert.equal(instance.ui.state.view, "security-detail");
+  assert.equal(instance.ui.state.selectedFindingId, null);
+  assert.equal(instance.ui.state.viewGraph, null);
+  assert.match(textOf(instance.elements.get("inspector")), /보존된 Finding 없음/);
+  assert.doesNotMatch(textOf(instance.elements.get("inspector")), /후속 단계/);
 });
 
 test("같은 Node의 다중 Finding과 신뢰도 필터가 원본을 보존함", () => {
@@ -293,7 +493,6 @@ test("같은 Node의 다중 Finding과 신뢰도 필터가 원본을 보존함",
   ui.selectView("security-flow");
   ui.selectGraphElement("node", "node-2");
   assert.equal(ui.state.selection.id, "node-2");
-  const before = layoutCalls.length;
   let markers = findAllByClass(elements.get("graph-nodes"), "finding-marker");
   assert.equal(markers.length, 3);
   assert.equal(markers[1].getAttribute("tabindex"), "0");
@@ -302,13 +501,20 @@ test("같은 Node의 다중 Finding과 신뢰도 필터가 원본을 보존함",
   assert.match(appCss, /\.finding-marker:focus-visible/);
   markers[1].dispatchEvent({ type: "keydown", key: " " });
   assert.equal(ui.state.selectedFindingId, "f1");
+  assert.equal(ui.state.view, "security-detail");
   assert.equal(ui.state.selection, null);
+  ui.selectView("security-flow");
+  markers = findAllByClass(elements.get("graph-nodes"), "finding-marker");
+  assert.equal(markers[1].getAttribute("data-selected"), "true");
   ui.clearSelection();
   assert.equal(ui.state.selectedFindingId, null);
   markers = findAllByClass(elements.get("graph-nodes"), "finding-marker");
   markers[1].dispatchEvent({ type: "click" });
+  assert.equal(ui.state.view, "security-detail");
+  ui.selectView("security-flow");
   ui.selectGraphElement("node", "node-2");
   assert.equal(ui.state.selectedFindingId, null);
+  const beforeFilters = layoutCalls.length;
   for (const confidence of ["CONFIRMED", "LIKELY", "UNKNOWN"]) {
     elements.get("finding-confidence").value = confidence;
     elements.get("finding-confidence").dispatchEvent({ type: "change" });
@@ -316,7 +522,7 @@ test("같은 Node의 다중 Finding과 신뢰도 필터가 원본을 보존함",
     assert.equal(markers.length, 1);
     assert.equal(markers[0].getAttribute("data-confidence"), confidence);
   }
-  assert.equal(layoutCalls.length, before);
+  assert.equal(layoutCalls.length, beforeFilters);
   assert.equal(JSON.stringify(snapshot), original);
   markers[0].dispatchEvent({ type: "click" });
   ui.selectView("all-flow");
@@ -2683,6 +2889,8 @@ test("표시 그룹의 원본 Node 참조와 Snapshot 교체가 마커를 정확
   assert.equal(marker.getAttribute("transform"), `translate(${group.position.x + 246} ${group.position.y + 14})`);
   marker.dispatchEvent({ type: "click" });
   assert.equal(ui.state.selectedFindingId, "grouped");
+  assert.equal(ui.state.view, "security-detail");
+  ui.selectView("security-flow");
   assert.match(textOf(elements.get("finding-list")), /연결 위치 확인 불가/);
   const replacement = detailGraphFixture();
   replacement.findings = [];
