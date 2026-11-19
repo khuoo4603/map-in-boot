@@ -124,6 +124,18 @@
                         <option value="SECURITY_STATE">SECURITY_STATE</option>
                       </select>
                     </label>
+                    <div id="finding-filter-fields" hidden>
+                      <label>Finding 유형<select id="finding-rule">
+                        <option value="">모든 유형</option>
+                        <option>CHAIN_MISSING</option><option>CHAIN_ORDER</option><option>PUBLIC_ENDPOINT</option>
+                        <option>METHOD_MISMATCH</option><option>FILTER_ORDER</option><option>OBJECT_BINDING</option><option>STATE_BYPASS</option>
+                      </select></label>
+                      <label>판단 신뢰도<select id="finding-confidence">
+                        <option value="">모든 상태</option><option value="CONFIRMED">확정</option>
+                        <option value="LIKELY">검토 필요</option><option value="UNKNOWN">확인 불가</option>
+                      </select></label>
+                      <div id="finding-list" class="finding-list"></div>
+                    </div>
                     <button class="map-filter-reset" id="search-reset" type="button">검색 초기화</button>
                     <span class="graph-filter-status sr-only" id="graph-filter-status" role="status" aria-live="polite">Graph 없음</span>
                   </div>
@@ -134,7 +146,7 @@
             <div class="canvas-empty" id="graph-empty">
             <p id="graph-state-message">Snapshot 조회 후 Graph를 표시합니다.</p>
             </div>
-            <svg id="graph-svg" class="graph-svg" viewBox="0 0 640 360" role="img" aria-label="Snapshot Graph" hidden>
+            <svg id="graph-svg" class="graph-svg" viewBox="0 0 640 360" role="group" aria-label="Snapshot Graph" hidden>
               <defs>
                 <marker id="graph-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
                   <path d="M 0 0 L 10 5 L 0 10 z" fill="#86efac"></path>

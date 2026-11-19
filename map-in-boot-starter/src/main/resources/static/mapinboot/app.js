@@ -37,6 +37,10 @@
   const nodeFilter = document.querySelector("#node-filter");
   const edgeFilterField = document.querySelector("#edge-filter-field");
   const edgeFilter = document.querySelector("#edge-filter");
+  const findingFields = document.querySelector("#finding-filter-fields");
+  const findingRule = document.querySelector("#finding-rule");
+  const findingConfidence = document.querySelector("#finding-confidence");
+  const findingList = document.querySelector("#finding-list");
   const filterToggle = document.querySelector("#filter-toggle");
   const filterPanel = document.querySelector("#map-filter-panel");
   const filterStatus = document.querySelector("#graph-filter-status");
@@ -72,6 +76,8 @@
     statusError: null,
     snapshotError: null,
     graph: null,
+    findingIndex: [],
+    selectedFindingId: null,
     flowIndex: null,
     viewGraph: null,
     graphRender: null,
@@ -390,6 +396,7 @@
 
   function applyFilterView() {
     const detail = isDetailView();
+    if (findingFields) setHidden(findingFields, state.view !== "security-flow");
     if (endpointFilterLabel) endpointFilterLabel.textContent = detail ? "API 선택" : "Endpoint 검색";
     if (endpointSearch) {
       endpointSearch.setAttribute("placeholder", detail ? "Method·Path·Handler 검색" : "Method·Path·Handler");
@@ -457,6 +464,7 @@
   function selectView(view) {
     if (!viewNames[view]) return;
     state.view = view;
+    if (view === "all-flow" || view === "feature-flow") state.selectedFindingId = null;
     if (!isDetailView()) {
       state.selectedEndpointId = null;
       state.selection = null;
@@ -568,6 +576,9 @@
   function resetGraph(message) {
     resetRequestFlow();
     state.graph = null;
+    state.findingIndex = [];
+    state.selectedFindingId = null;
+    if (findingList) findingList.replaceChildren();
     state.flowIndex = null;
     state.viewGraph = null;
     state.graphRender = null;
@@ -600,6 +611,42 @@
     };
   }
 
+  function selectFinding(id) {
+    const entry = state.findingIndex.find((item) => item.finding.id === id);
+    if (!entry) return;
+    if (state.selection) clearSelection();
+    state.selectedFindingId = id;
+    showNotice(`선택: ${entry.finding.title || id}`);
+  }
+
+  // 위치가 없거나 현재 필터에 가려진 Finding 접근 경로
+  function renderFindingList(findings, visibleGraph) {
+    if (!findingList) return;
+    findingList.replaceChildren();
+    const visibleNodes = new Set(visibleGraph.nodes.map((node) => node.id));
+    const visibleEdges = new Set(visibleGraph.edges.map((edge) => edge.id));
+    findings.forEach((entry) => {
+      const hidden = entry.nodeIds.some((id) => !visibleNodes.has(id))
+        || entry.edgeIds.some((id) => !visibleEdges.has(id));
+      if (!entry.unlocated && !entry.missing && !hidden) return;
+      const button = document.createElement("button");
+      button.setAttribute("type", "button");
+      const status = entry.unlocated || entry.missing ? "연결 위치 확인 불가" : "필터로 숨겨진 항목";
+      const confidence = { CONFIRMED: "확정", LIKELY: "검토 필요", UNKNOWN: "확인 불가" }[entry.finding.confidence] || "확인 불가";
+      button.textContent = `${entry.finding.title || entry.finding.id} · ${entry.finding.ruleId || ""} · ${confidence} · ${status}`;
+      button.addEventListener("click", () => selectFinding(entry.finding.id));
+      findingList.appendChild(button);
+    });
+    if (state.view === "security-flow" && state.findingIndex.length === 0) {
+      findingList.textContent = state.snapshot && Array.isArray(state.snapshot.findings)
+        ? "보존된 Finding 없음" : "Finding 데이터 확인 불가";
+    } else if (findings.some((entry) => entry.unlocated || entry.missing)) {
+      const note = document.createElement("p");
+      note.textContent = "연결 위치 확인 여부는 판단 신뢰도와 무관합니다.";
+      findingList.appendChild(note);
+    }
+  }
+
   function graphElement(kind, id) {
     if (!state.graph || !id) return null;
     if (kind === "controller-group") {
@@ -618,6 +665,7 @@
 
   function clearSelection() {
     state.selection = null;
+    state.selectedFindingId = null;
     if (inspectorClient) inspectorClient.hideHover();
     if (state.viewGraph && state.viewGraph.nodes.length > 0) {
       renderGraphView(state.layout ? "elk" : "initial", true);
@@ -629,6 +677,7 @@
   function selectGraphElement(kind, id) {
     const item = graphElement(kind, id);
     if (!item) return null;
+    state.selectedFindingId = null;
     if (kind === "node" && item.type === "ENDPOINT" && isDetailView()
       && state.selectedEndpointId !== item.id) return openEndpointDetail(item.id);
     state.selection = { kind, id };
@@ -658,6 +707,9 @@
     const positions = state.layout
       ? state.layout.positions
       : state.graphRender && state.graphRender.positions;
+    const findings = state.view === "security-flow" ? state.findingIndex.filter(({ finding }) =>
+      (!findingRule || !findingRule.value || finding.ruleId === findingRule.value)
+      && (!findingConfidence || !findingConfidence.value || finding.confidence === findingConfidence.value)) : [];
     if (!viewGraph || viewGraph.nodes.length === 0) {
       const emptyGraph = viewGraph || {
         nodes: [],
@@ -667,7 +719,8 @@
         filters: { query: "", nodeType: "", edgeType: "" }
       };
       state.visibleGraph = emptyGraph;
-      state.filters = emptyGraph.filters;
+      renderFindingList(findings, emptyGraph);
+      state.filters = emptyGraph.filters || { query: "", nodeType: "", edgeType: "" };
       state.selection = null;
       state.graphRender = null;
       if (graphAreas) graphAreas.replaceChildren();
@@ -697,6 +750,7 @@
     const visibleGraph = isDetailView()
       ? { ...viewGraph, filters: { query: "", nodeType: "", edgeType: "" } }
       : graphRenderer.filter(state.graph, currentFilters);
+    renderFindingList(findings, visibleGraph);
     if (state.selection) {
       const visibleItem = state.selection.kind === "node"
         ? visibleGraph.nodes.find((node) => node.id === state.selection.id)
@@ -731,6 +785,8 @@
       displayEdgeLabels: state.display.edgeLabels,
       selection: state.selection,
       related,
+      findings,
+      onFindingClick: selectFinding,
       onNodeClick: (id) => selectGraphElement("node", id),
       onNodeFocus: (id, anchor) => showGraphHover("node", id, anchor),
       onNodeBlur: hideGraphHover,
@@ -823,6 +879,20 @@
     resetRequestFlow();
     state.snapshot = snapshot;
     state.graph = graph;
+    state.findingIndex = graphRenderer.indexFindings(snapshot, graph);
+    state.selectedFindingId = null;
+    if (findingRule) {
+      const knownRules = new Set(["CHAIN_MISSING", "CHAIN_ORDER", "PUBLIC_ENDPOINT", "METHOD_MISMATCH", "FILTER_ORDER", "OBJECT_BINDING", "STATE_BYPASS"]);
+      Array.from(findingRule.children).filter((option) => option.dataset && option.dataset.extraRule).forEach((option) => option.remove());
+      const extraRules = new Set(state.findingIndex.map(({ finding }) => finding.ruleId).filter((id) => id && !knownRules.has(id)));
+      extraRules.forEach((id) => {
+        const option = document.createElement("option");
+        option.value = id;
+        option.textContent = id;
+        option.dataset.extraRule = "true";
+        findingRule.appendChild(option);
+      });
+    }
     state.flowIndex = flowClient ? flowClient.createIndex(graph) : null;
     state.selectedEndpointId = null;
     state.selection = null;
@@ -835,13 +905,15 @@
     if (graph.nodes.length === 0) {
       resetGraph(graph.invalidNodes > 0 ? "유효한 Graph Node가 없어 표시할 수 없습니다." : "보존 Snapshot에 Graph Node가 없습니다.");
       state.graph = graph;
+      state.findingIndex = graphRenderer.indexFindings(snapshot, graph);
+      if (state.view === "security-flow") renderGraphView("initial");
       return graph;
     }
     return renderGraphView("initial");
   }
 
   function applyGraphFilter() {
-    if (!state.graph || state.graph.nodes.length === 0) return null;
+    if (!state.graph) return null;
     renderGraphView(state.layout ? "elk" : "initial");
     if (state.filters.query && state.visibleGraph.nodes.length === 0) showNotice("검색 결과 없음");
     return state.visibleGraph;
@@ -1074,6 +1146,8 @@
   });
   if (nodeFilter) nodeFilter.addEventListener("change", applyGraphFilter);
   if (edgeFilter) edgeFilter.addEventListener("change", applyGraphFilter);
+  if (findingRule) findingRule.addEventListener("change", () => renderGraphView(state.layout ? "elk" : "initial", true));
+  if (findingConfidence) findingConfidence.addEventListener("change", () => renderGraphView(state.layout ? "elk" : "initial", true));
   const searchReset = document.querySelector("#search-reset");
   if (searchReset) searchReset.addEventListener("click", () => {
     if (isDetailView()) {
@@ -1086,6 +1160,8 @@
     if (endpointSearch) endpointSearch.value = "";
     if (nodeFilter) nodeFilter.value = "";
     if (edgeFilter) edgeFilter.value = "";
+    if (findingRule) findingRule.value = "";
+    if (findingConfidence) findingConfidence.value = "";
     applyGraphFilter();
   });
   if (requestFlowStart && requestFlowController) requestFlowStart.addEventListener("click", () => requestFlowController.play());

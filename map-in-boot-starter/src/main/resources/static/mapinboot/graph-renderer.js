@@ -184,6 +184,26 @@
     };
   }
 
+  // 보존 Graph에 존재하는 참조와 유실된 참조를 분리
+  function indexFindings(snapshot, graph) {
+    const findings = snapshot && Array.isArray(snapshot.findings) ? snapshot.findings : [];
+    const nodeIds = new Set(graph.nodes.map((node) => node.id));
+    const edgeIds = new Set(graph.edges.map((edge) => edge.id));
+    return findings.filter((finding) => finding && typeof finding === "object").map((finding) => {
+      const nodes = Array.isArray(finding.nodeIds) ? finding.nodeIds : [];
+      const edges = Array.isArray(finding.edgeIds) ? finding.edgeIds : [];
+      const existingNodes = [...new Set(nodes.filter((id) => nodeIds.has(id)))];
+      const existingEdges = [...new Set(edges.filter((id) => edgeIds.has(id)))];
+      return {
+        finding,
+        nodeIds: existingNodes,
+        edgeIds: existingEdges,
+        missing: nodes.some((id) => !nodeIds.has(id)) || edges.some((id) => !edgeIds.has(id)),
+        unlocated: existingNodes.length === 0 && existingEdges.length === 0
+      };
+    });
+  }
+
   function shorten(value, limit) {
     const text = stringValue(value, "");
     if (text.length <= limit) return text;
@@ -862,6 +882,42 @@
   }
 
   function render(graph, layers, options = {}) {
+    const findings = Array.isArray(options.findings) ? options.findings : [];
+    const confidenceNames = { CONFIRMED: "확정", LIKELY: "검토 필요", UNKNOWN: "확인 불가" };
+    function appendMarkers(parent, entries, x, y) {
+      entries.forEach(({ finding }, index) => {
+        const marker = createElement("g");
+        marker.setAttribute("class", "finding-marker");
+        marker.setAttribute("transform", `translate(${x + index * 22} ${y})`);
+        marker.setAttribute("tabindex", "0");
+        marker.setAttribute("role", "button");
+        marker.setAttribute("data-confidence", finding.confidence || "UNKNOWN");
+        const label = `${finding.title || finding.id} · ${finding.ruleId || ""} · ${confidenceNames[finding.confidence] || "확인 불가"}`;
+        marker.setAttribute("aria-label", label);
+        const title = createElement("title");
+        title.textContent = label;
+        marker.appendChild(title);
+        const circle = createElement("circle");
+        circle.setAttribute("r", "9");
+        marker.appendChild(circle);
+        const text = createElement("text");
+        text.setAttribute("text-anchor", "middle");
+        text.setAttribute("y", "4");
+        text.textContent = "!";
+        marker.appendChild(text);
+        const select = (event) => {
+          if (event && event.stopPropagation) event.stopPropagation();
+          if (options.onFindingClick) options.onFindingClick(finding.id);
+        };
+        marker.addEventListener("click", select);
+        marker.addEventListener("keydown", (event) => {
+          if (event.key !== "Enter" && event.key !== " ") return;
+          event.preventDefault();
+          select(event);
+        });
+        parent.appendChild(marker);
+      });
+    }
     const positions = positionsFor(graph.nodes, options.positions);
     const visibleIds = new Set(graph.nodes.map((node) => node.id));
     const controllerGroups = !options.detailMode && options.layoutPlan && Array.isArray(options.layoutPlan.controllerGroups)
@@ -959,6 +1015,17 @@
       });
       layers.edgeLayer.appendChild(path);
       edgeElements.push(path);
+      if (typeof path.getTotalLength === "function" && typeof path.getPointAtLength === "function") {
+        const matching = findings.filter((entry) => entry.edgeIds.some((id) => edgeIds.includes(id)));
+        if (matching.length) {
+          const length = path.getTotalLength();
+          matching.forEach((entry, index) => {
+            const distance = Math.max(0, Math.min(length, length / 2 + (index - (matching.length - 1) / 2) * 22));
+            const point = path.getPointAtLength(distance);
+            appendMarkers(layers.edgeLayer, [entry], point.x, point.y);
+          });
+        }
+      }
 
       const label = createElement("text");
       label.setAttribute("class", "graph-edge-label");
@@ -1075,6 +1142,7 @@
       output.setAttribute("data-port", "out");
       group.appendChild(output);
       layers.nodeLayer.appendChild(group);
+      appendMarkers(layers.nodeLayer, findings.filter((entry) => entry.nodeIds.includes(node.id)), position.x + NODE_WIDTH - 14, position.y + 14);
       nodeElements.push(group);
     });
 
@@ -1138,7 +1206,9 @@
         port.setAttribute("data-port", x === 0 ? "in" : "out");
         group.appendChild(port);
       });
+      const groupedNodeIds = (groupDefinition.nodeIds || []).concat(groupDefinition.handlerIds || []);
       layers.nodeLayer.appendChild(group);
+      appendMarkers(layers.nodeLayer, findings.filter((entry) => entry.nodeIds.some((id) => groupedNodeIds.includes(id))), position.x + NODE_WIDTH - 14, position.y + 14);
       nodeElements.push(group);
     });
 
@@ -1193,6 +1263,7 @@
     handlerDisplay,
     securityDataDisplay,
     normalize,
+    indexFindings,
     filter: filterGraph,
     render,
     nodeDisplay

@@ -53,10 +53,18 @@ function createElement(tagName = "div") {
     style: {},
     append(...items) { items.forEach((item) => { item.parentNode = this; children.push(item); }); },
     appendChild(item) { item.parentNode = this; children.push(item); return item; },
+    remove() {
+      if (!this.parentNode) return;
+      const siblings = this.parentNode.children;
+      const index = siblings.indexOf(this);
+      if (index >= 0) siblings.splice(index, 1);
+      this.parentNode = null;
+    },
     focus() { this.focused = true; },
     replaceChildren(...items) {
       children.forEach((child) => { child.parentNode = null; });
       children.length = 0;
+      this.textContent = "";
       items.forEach((item) => { item.parentNode = this; children.push(item); });
     },
     getAttribute(name) { return attributes[name] || null; },
@@ -85,6 +93,8 @@ function createElement(tagName = "div") {
         bottom: this.clientHeight
       };
     },
+    getTotalLength() { return 100; },
+    getPointAtLength() { return { x: 123, y: 45 }; },
     closest(selector) {
       let current = this;
       while (current) {
@@ -109,7 +119,7 @@ function loadUi({ fetchImpl, timers } = {}) {
     "graph-canvas",
     "graph-empty", "graph-state-message", "graph-svg", "graph-viewport", "graph-areas", "graph-flow-projection", "graph-guides",
     "graph-edges", "graph-nodes", "service-name", "snapshot-time", "endpoint-search", "endpoint-filter-label",
-    "endpoint-options", "node-filter-field", "node-filter", "edge-filter-field", "edge-filter", "search-reset", "filter-toggle", "map-filter-panel", "zoom-in", "zoom-out", "fit-graph",
+    "endpoint-options", "node-filter-field", "node-filter", "edge-filter-field", "edge-filter", "finding-filter-fields", "finding-rule", "finding-confidence", "finding-list", "search-reset", "filter-toggle", "map-filter-panel", "zoom-in", "zoom-out", "fit-graph",
     "reset-view", "graph-filter-status", "graph-minimap", "graph-minimap-svg",
     "graph-minimap-nodes", "graph-minimap-viewport", "inspector", "graph-popover",
     "request-flow-controls", "request-flow-start", "request-flow-pause", "request-flow-reset",
@@ -210,6 +220,133 @@ function loadUi({ fetchImpl, timers } = {}) {
 function textOf(element) {
   return [element.textContent || "", ...element.children.map(textOf)].join(" ");
 }
+
+test("Finding 위치는 정규화된 원본 참조만 사용하고 유실 참조를 구분함", () => {
+  const { window } = loadUi();
+  const snapshot = graphFixture();
+  const graph = window.MapInBootGraph.normalize(snapshot);
+  const nodeId = graph.nodes[0].id;
+  const edgeId = graph.edges[0].id;
+  const findings = [
+    { id: "f1", nodeIds: [nodeId, "missing-node"], edgeIds: [edgeId] },
+    { id: "f2", nodeIds: [], edgeIds: [] },
+    { id: "f3", nodeIds: [nodeId], edgeIds: [] },
+    { id: "f4", nodeIds: ["absent"], edgeIds: ["absent-edge"] }
+  ];
+  const original = JSON.stringify(findings);
+  const index = window.MapInBootGraph.indexFindings({ findings }, graph);
+  assert.deepEqual(Array.from(index[0].nodeIds), [nodeId]);
+  assert.deepEqual(Array.from(index[0].edgeIds), [edgeId]);
+  assert.equal(index[0].missing, true);
+  assert.equal(index[1].unlocated, true);
+  assert.equal(index[2].unlocated, false);
+  assert.equal(index[3].unlocated, true);
+  assert.equal(index[3].missing, true);
+  assert.equal(JSON.stringify(findings), original);
+});
+
+test("보안 MAP은 원본 위치와 위치 미확인 Finding을 필터와 함께 제공함", () => {
+  assert.match(indexHtml, /id="graph-svg"[^>]*role="group"/);
+  const { ui, elements } = loadUi();
+  const snapshot = graphFixture();
+  snapshot.findings.push({ id: "missing", ruleId: "PUBLIC_ENDPOINT", title: "위치 미확인", confidence: "LIKELY", nodeIds: [], edgeIds: [] });
+  ui.renderGraph(snapshot);
+  ui.selectView("security-flow");
+  assert.ok(findAllByClass(elements.get("graph-nodes"), "finding-marker").length > 0);
+  const edgeMarker = findAllByClass(elements.get("graph-edges"), "finding-marker")[0];
+  assert.equal(edgeMarker.getAttribute("transform"), "translate(123 45)");
+  edgeMarker.dispatchEvent({ type: "click" });
+  assert.equal(ui.state.selectedFindingId, "finding-1");
+  assert.match(textOf(elements.get("finding-list")), /위치 미확인/);
+  assert.match(textOf(elements.get("finding-list")), /연결 위치 확인 불가/);
+  elements.get("finding-confidence").value = "LIKELY";
+  elements.get("finding-confidence").dispatchEvent({ type: "change" });
+  assert.equal(findAllByClass(elements.get("graph-nodes"), "finding-marker").length, 0);
+  assert.match(textOf(elements.get("finding-list")), /위치 미확인/);
+  assert.equal(snapshot.nodes.length, 10);
+});
+
+test("Graph가 비어 있어도 위치 없는 Finding을 필터 목록에서 찾을 수 있음", () => {
+  const { ui, elements } = loadUi();
+  ui.selectView("security-flow");
+  ui.renderGraph({ nodes: [], edges: [], findings: [
+    { id: "unlocated", ruleId: "CHAIN_MISSING", title: "체인 점검", confidence: "UNKNOWN", nodeIds: [], edgeIds: [] }
+  ] });
+  assert.match(textOf(elements.get("finding-list")), /체인 점검.*연결 위치 확인 불가/);
+  elements.get("finding-list").children[0].dispatchEvent({ type: "click" });
+  assert.equal(ui.state.selectedFindingId, "unlocated");
+  elements.get("finding-confidence").value = "CONFIRMED";
+  elements.get("finding-confidence").dispatchEvent({ type: "change" });
+  assert.doesNotMatch(textOf(elements.get("finding-list")), /체인 점검/);
+  elements.get("search-reset").dispatchEvent({ type: "click" });
+  assert.match(textOf(elements.get("finding-list")), /체인 점검/);
+});
+
+test("같은 Node의 다중 Finding과 신뢰도 필터가 원본을 보존함", () => {
+  const { ui, elements, layoutCalls } = loadUi();
+  const snapshot = graphFixture();
+  snapshot.findings = ["CONFIRMED", "LIKELY", "UNKNOWN"].map((confidence, index) => ({
+    id: `f${index}`, title: `판단 ${index}`, ruleId: "CHAIN_MISSING", confidence, nodeIds: ["node-2"], edgeIds: []
+  }));
+  const original = JSON.stringify(snapshot);
+  ui.renderGraph(snapshot);
+  ui.selectView("security-flow");
+  ui.selectGraphElement("node", "node-2");
+  assert.equal(ui.state.selection.id, "node-2");
+  const before = layoutCalls.length;
+  let markers = findAllByClass(elements.get("graph-nodes"), "finding-marker");
+  assert.equal(markers.length, 3);
+  assert.equal(markers[1].getAttribute("tabindex"), "0");
+  assert.equal(markers[1].getAttribute("role"), "button");
+  assert.match(markers[1].getAttribute("aria-label"), /판단 1.*CHAIN_MISSING.*검토 필요/);
+  assert.match(appCss, /\.finding-marker:focus-visible/);
+  markers[1].dispatchEvent({ type: "keydown", key: " " });
+  assert.equal(ui.state.selectedFindingId, "f1");
+  assert.equal(ui.state.selection, null);
+  ui.clearSelection();
+  assert.equal(ui.state.selectedFindingId, null);
+  markers = findAllByClass(elements.get("graph-nodes"), "finding-marker");
+  markers[1].dispatchEvent({ type: "click" });
+  ui.selectGraphElement("node", "node-2");
+  assert.equal(ui.state.selectedFindingId, null);
+  for (const confidence of ["CONFIRMED", "LIKELY", "UNKNOWN"]) {
+    elements.get("finding-confidence").value = confidence;
+    elements.get("finding-confidence").dispatchEvent({ type: "change" });
+    markers = findAllByClass(elements.get("graph-nodes"), "finding-marker");
+    assert.equal(markers.length, 1);
+    assert.equal(markers[0].getAttribute("data-confidence"), confidence);
+  }
+  assert.equal(layoutCalls.length, before);
+  assert.equal(JSON.stringify(snapshot), original);
+  markers[0].dispatchEvent({ type: "click" });
+  ui.selectView("all-flow");
+  assert.equal(ui.state.selectedFindingId, null);
+  assert.equal(findAllByClass(elements.get("graph-nodes"), "finding-marker").length, 0);
+});
+
+test("Finding 유형 필터는 원본 Rule ID를 구분하고 숨긴 위치를 알림", () => {
+  const { ui, elements } = loadUi();
+  const snapshot = graphFixture();
+  const rules = ["CHAIN_MISSING", "CHAIN_ORDER", "PUBLIC_ENDPOINT", "METHOD_MISMATCH", "FILTER_ORDER", "OBJECT_BINDING", "STATE_BYPASS", "EXTRA_RULE"];
+  snapshot.findings = rules.map((ruleId) => ({ id: ruleId, title: ruleId, ruleId, confidence: "UNKNOWN", nodeIds: ["node-2"], edgeIds: [] }));
+  ui.renderGraph(snapshot);
+  ui.selectView("security-flow");
+  for (const ruleId of rules) {
+    elements.get("finding-rule").value = ruleId;
+    elements.get("finding-rule").dispatchEvent({ type: "change" });
+    const markers = findAllByClass(elements.get("graph-nodes"), "finding-marker");
+    assert.equal(markers.length, 1);
+    assert.match(markers[0].getAttribute("aria-label"), new RegExp(ruleId));
+  }
+  assert.ok(elements.get("finding-rule").children.some((option) => option.value === "EXTRA_RULE"));
+  elements.get("node-filter").value = "FILTER";
+  elements.get("node-filter").dispatchEvent({ type: "change" });
+  assert.match(textOf(elements.get("finding-list")), /필터로 숨겨진 항목/);
+  elements.get("search-reset").dispatchEvent({ type: "click" });
+  assert.equal(elements.get("finding-rule").value, "");
+  assert.equal(elements.get("node-filter").value, "");
+  rules.slice(0, 7).forEach((ruleId) => assert.ok(indexHtml.includes(`<option>${ruleId}</option>`)));
+});
 
 function findAllByClass(element, className) {
   const matches = [];
@@ -471,6 +608,17 @@ test("MAP 오버레이 툴바 조작은 Graph Pan 상태를 시작하지 않음"
   assert.equal(ui.state.selection.id, "node-2");
   toolbar.dispatchEvent({ type: "click" });
   assert.equal(ui.state.selection.id, "node-2");
+});
+
+test("Finding 마커 포인터 입력은 Graph Pan을 시작하지 않음", () => {
+  const { ui, elements } = loadUi();
+  const marker = createElement("g");
+  marker.setAttribute("class", "finding-marker");
+  const circle = createElement("circle");
+  marker.appendChild(circle);
+  elements.get("graph-canvas").appendChild(marker);
+  circle.dispatchEvent({ type: "pointerdown", pointerId: 1, clientX: 20, clientY: 20 });
+  assert.equal(ui.navigation.state.dragging, false);
 });
 
 test("도움말·설정 패널과 실제 Graph 표시 설정이 동작하고 새로고침 중복 요청을 막음", () => {
@@ -2499,6 +2647,49 @@ test("묶인 표시 관계에서 개별 Edge와 Evidence를 선택할 수 있음
   link.dispatchEvent({ type: "click" });
   assert.equal(ui.state.selection.id, "secured-a2");
   assert.match(textOf(elements.get("inspector")), /e-edge2/);
+});
+
+test("묶인 Edge의 Finding은 원본 Edge별로 따로 선택됨", async () => {
+  const { ui, elements } = loadUi();
+  const snapshot = detailGraphFixture();
+  snapshot.nodes.push({ id: "authorization-a2", type: "AUTHORIZATION", serviceId: "orders", label: "other", attributes: {}, evidenceIds: [] });
+  snapshot.edges.push({ id: "secured-a2", sourceId: "handler-a", targetId: "authorization-a2", type: "SECURED_BY", attributes: {}, confidence: "CONFIRMED", evidenceIds: [] });
+  snapshot.findings = [
+    { id: "first", title: "첫 판단", ruleId: "CHAIN_ORDER", confidence: "CONFIRMED", nodeIds: [], edgeIds: ["secured-a"] },
+    { id: "second", title: "둘째 판단", ruleId: "FILTER_ORDER", confidence: "LIKELY", nodeIds: [], edgeIds: ["secured-a2"] }
+  ];
+  ui.renderGraph(snapshot);
+  ui.selectView("security-flow");
+  await ui.layoutGraph();
+  const markers = findAllByClass(elements.get("graph-edges"), "finding-marker");
+  assert.equal(markers.length, 2);
+  assert.match(markers[0].getAttribute("aria-label"), /첫 판단/);
+  assert.match(markers[1].getAttribute("aria-label"), /둘째 판단/);
+  markers[1].dispatchEvent({ type: "keydown", key: "Enter" });
+  assert.equal(ui.state.selectedFindingId, "second");
+});
+
+test("표시 그룹의 원본 Node 참조와 Snapshot 교체가 마커를 정확히 갱신함", async () => {
+  const { ui, elements } = loadUi();
+  const snapshot = detailGraphFixture();
+  snapshot.findings = [
+    { id: "grouped", title: "인가 판단", ruleId: "OBJECT_BINDING", confidence: "LIKELY", nodeIds: ["authorization-a", "missing"], edgeIds: [] }
+  ];
+  ui.renderGraph(snapshot);
+  ui.selectView("security-flow");
+  await ui.layoutGraph();
+  const group = ui.state.layout.plan.displayModel.groups.find((item) => item.nodeIds.includes("authorization-a"));
+  const marker = findAllByClass(elements.get("graph-nodes"), "finding-marker")[0];
+  assert.equal(marker.getAttribute("transform"), `translate(${group.position.x + 246} ${group.position.y + 14})`);
+  marker.dispatchEvent({ type: "click" });
+  assert.equal(ui.state.selectedFindingId, "grouped");
+  assert.match(textOf(elements.get("finding-list")), /연결 위치 확인 불가/);
+  const replacement = detailGraphFixture();
+  replacement.findings = [];
+  ui.renderGraph(replacement);
+  assert.equal(findAllByClass(elements.get("graph-nodes"), "finding-marker").length, 0);
+  assert.match(textOf(elements.get("finding-list")), /보존된 Finding 없음/);
+  assert.equal(ui.state.selectedFindingId, null);
 });
 
 test("표시 그룹 관계 경로는 최종 카드 포트에서 시작하고 끝남", () => {

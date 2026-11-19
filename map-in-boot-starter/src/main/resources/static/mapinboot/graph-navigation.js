@@ -114,11 +114,11 @@
     function nodeTarget(target) {
       if (!target) return false;
       if (typeof target.closest === "function"
-        && (target.closest(".graph-node") || target.closest(".graph-edge")
+        && (target.closest(".graph-node") || target.closest(".graph-edge") || target.closest(".finding-marker")
           || target.closest(".graph-minimap") || target.closest(".map-toolbar"))) return true;
       const className = typeof target.getAttribute === "function" ? target.getAttribute("class") : "";
       return typeof className === "string"
-        && className.split(/\s+/).some((name) => name === "graph-node" || name === "graph-edge"
+        && className.split(/\s+/).some((name) => name === "graph-node" || name === "graph-edge" || name === "finding-marker"
           || name === "graph-minimap" || name === "map-toolbar");
     }
 
