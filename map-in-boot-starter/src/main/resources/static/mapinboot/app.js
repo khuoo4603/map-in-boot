@@ -24,12 +24,18 @@
   const graphSvg = document.querySelector("#graph-svg");
   const graphViewport = document.querySelector("#graph-viewport");
   const graphAreas = document.querySelector("#graph-areas");
+  const graphFlowProjection = document.querySelector("#graph-flow-projection");
+  const graphGuides = document.querySelector("#graph-guides");
   const graphEdges = document.querySelector("#graph-edges");
   const graphNodes = document.querySelector("#graph-nodes");
   const inspector = document.querySelector("#inspector");
   const graphPopover = document.querySelector("#graph-popover");
   const endpointSearch = document.querySelector("#endpoint-search");
+  const endpointFilterLabel = document.querySelector("#endpoint-filter-label-text");
+  const endpointOptions = document.querySelector("#endpoint-options");
+  const nodeFilterField = document.querySelector("#node-filter-field");
   const nodeFilter = document.querySelector("#node-filter");
+  const edgeFilterField = document.querySelector("#edge-filter-field");
   const edgeFilter = document.querySelector("#edge-filter");
   const filterToggle = document.querySelector("#filter-toggle");
   const filterPanel = document.querySelector("#map-filter-panel");
@@ -43,10 +49,19 @@
   const showAreasSetting = document.querySelector("#setting-show-areas");
   const showEdgeLabelsSetting = document.querySelector("#setting-show-edge-labels");
   const showMinimapSetting = document.querySelector("#setting-show-minimap");
+  const flowClient = window.MapInBootFlow;
+  const requestFlowClient = window.MapInBootRequestFlow;
   const graphRenderer = window.MapInBootGraph;
   const layoutClient = window.MapInBootLayout;
   const navigationClient = window.MapInBootNavigation;
   const inspectorClientType = window.MapInBootInspector;
+  const requestFlowControls = document.querySelector("#request-flow-controls");
+  const requestFlowStart = document.querySelector("#request-flow-start");
+  const requestFlowPause = document.querySelector("#request-flow-pause");
+  const requestFlowReset = document.querySelector("#request-flow-reset");
+  const requestFlowStatus = document.querySelector("#request-flow-status");
+  const requestFlowEducation = document.querySelector("#request-flow-education");
+  const requestFlowDot = document.querySelector("#request-flow-dot");
   let noticeTimer = null;
   const state = {
     view: "all-flow",
@@ -57,6 +72,8 @@
     statusError: null,
     snapshotError: null,
     graph: null,
+    flowIndex: null,
+    viewGraph: null,
     graphRender: null,
     layout: null,
     layoutState: "not-requested",
@@ -64,11 +81,27 @@
     layoutError: null,
     visibleGraph: null,
     filters: { query: "", nodeType: "", edgeType: "" },
+    allEndpointQuery: "",
+    featureEndpointQuery: "",
+    featureEndpointOptionIndex: -1,
     display: { areas: true, edgeLabels: true, minimap: true },
     loading: false,
     selection: null,
+    hoverEdgeId: null,
+    selectedEndpointId: null,
+    viewVersion: 0,
+    requestFlowSteps: [],
+    requestFlowPositions: {},
     navigation: null
   };
+
+  const requestFlowController = requestFlowClient && requestFlowControls
+    ? requestFlowClient.createController({
+      reducedMotion: Boolean(window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches),
+      onUpdate: renderRequestFlowUpdate,
+      onStateChange: renderRequestFlowUpdate
+    })
+    : null;
 
   const navigation = navigationClient && graphSvg && graphViewport
     ? navigationClient.create({
@@ -93,12 +126,111 @@
       popover: graphPopover,
       surface: graphCanvas,
       onClear: clearSelection,
-      onSelect: selectGraphElement
+      onSelect: selectGraphElement,
+      onOpenDetail: openEndpointDetail
     })
     : null;
 
   function executionPhaseLabel(phase) {
     return phaseNames[phase] || "확인 불가";
+  }
+
+  // SVG 표시 상태를 hidden 속성으로 동기화
+  function setHidden(element, hidden) {
+    if (!element) return;
+    if (typeof element.toggleAttribute === "function") {
+      element.toggleAttribute("hidden", Boolean(hidden));
+      return;
+    }
+    if (hidden) element.setAttribute("hidden", "");
+    else element.removeAttribute("hidden");
+  }
+
+  function setRequestFlowVisibility(visible) {
+    const nextVisible = Boolean(visible);
+    if (requestFlowControls) requestFlowControls.hidden = !nextVisible;
+    if (requestFlowEducation) {
+      setHidden(requestFlowEducation, !nextVisible);
+      requestFlowEducation.setAttribute("aria-hidden", String(!nextVisible));
+    }
+    if (!nextVisible && requestFlowDot) setHidden(requestFlowDot, true);
+  }
+
+  // 교육용 빛 점과 단계 상태를 실제 Graph 좌표에 맞춰 갱신
+  function renderRequestFlowUpdate(flowState) {
+    const currentState = flowState || { status: "idle", stepIndex: 0, progress: 0, step: null };
+    const statusLabel = currentState.status === "running" && currentState.step
+      ? `진행 중 · ${currentState.step.label}`
+      : currentState.status === "paused"
+        ? "일시정지"
+        : currentState.status === "complete"
+          ? "완료"
+          : "시작 전";
+    const message = `교육용 예시 · 실제 요청 추적 아님 · ${statusLabel}`;
+    if (requestFlowStatus && requestFlowStatus.textContent !== message) requestFlowStatus.textContent = message;
+    if (requestFlowStart) requestFlowStart.disabled = currentState.status === "running";
+    if (requestFlowPause) requestFlowPause.disabled = currentState.status !== "running";
+    if (requestFlowReset) requestFlowReset.disabled = state.requestFlowSteps.length === 0;
+    if (!requestFlowDot || !isDetailView() || !state.selectedEndpointId || !currentState.step) {
+      if (requestFlowDot) setHidden(requestFlowDot, true);
+      return;
+    }
+    const step = currentState.step;
+    if (!step.anchorId) {
+      setHidden(requestFlowDot, true);
+      return;
+    }
+    const target = state.requestFlowPositions[step.anchorId] || step.position;
+    if (!target) {
+      setHidden(requestFlowDot, true);
+      return;
+    }
+    let origin = null;
+    for (let index = currentState.stepIndex - 1; index >= 0; index -= 1) {
+      const previous = state.requestFlowSteps[index];
+      if (!previous || !previous.anchorId) continue;
+      origin = state.requestFlowPositions[previous.anchorId] || previous.position;
+      if (origin) break;
+    }
+    const progress = Number.isFinite(currentState.progress) ? currentState.progress : 1;
+    const point = origin && progress < 1
+      ? { x: origin.x + (target.x - origin.x) * progress, y: origin.y + (target.y - origin.y) * progress }
+      : target;
+    requestFlowDot.setAttribute("cx", String(point.x));
+    requestFlowDot.setAttribute("cy", String(point.y));
+    setHidden(requestFlowDot, false);
+  }
+
+  function resetRequestFlow() {
+    state.requestFlowSteps = [];
+    state.requestFlowPositions = {};
+    if (requestFlowController) requestFlowController.setSteps([]);
+    setRequestFlowVisibility(false);
+  }
+
+  function prepareRequestFlow() {
+    if (!requestFlowController || !isDetailView() || !state.selectedEndpointId
+      || !state.viewGraph || !state.layout || !requestFlowClient) {
+      resetRequestFlow();
+      return;
+    }
+    const positions = {
+      ...(state.layout.positions || {}),
+      ...Object.fromEntries((state.layout.plan && state.layout.plan.projection && state.layout.plan.projection.nodes || [])
+        .map((node) => [node.id, node.position]))
+    };
+    const steps = requestFlowClient.buildSteps({
+      graph: state.viewGraph,
+      index: state.flowIndex,
+      endpointId: state.selectedEndpointId,
+      positions,
+      projection: state.layout.plan && state.layout.plan.projection
+    });
+    state.requestFlowSteps = steps;
+    state.requestFlowPositions = positions;
+    requestFlowController.setSteps(steps);
+    setRequestFlowVisibility(true);
+    renderRequestFlowUpdate(requestFlowController.state());
   }
 
   function requestMessage(status, resource) {
@@ -155,13 +287,185 @@
     filterToggle.setAttribute("aria-expanded", String(nextOpen));
     filterToggle.setAttribute("aria-label", nextOpen ? "필터 닫기" : "필터 열기");
     filterToggle.dataset.active = String(nextOpen);
-    if (nextOpen && endpointSearch && typeof endpointSearch.focus === "function") endpointSearch.focus();
+    if (nextOpen && endpointSearch && typeof endpointSearch.focus === "function") {
+      endpointSearch.focus();
+      if (isDetailView()) renderEndpointOptions(state.featureEndpointQuery);
+    }
     if (!nextOpen && returnFocus && typeof filterToggle.focus === "function") filterToggle.focus();
+  }
+
+  function isDetailView() {
+    return state.view === "feature-flow";
+  }
+
+  function endpointDetails(endpoint) {
+    const endpointAttributes = endpoint && endpoint.attributes && typeof endpoint.attributes === "object"
+      ? endpoint.attributes : {};
+    const method = String(endpointAttributes.httpMethod || "").trim().toUpperCase();
+    const path = String(endpointAttributes.path || endpoint.label || "").trim();
+    const handler = String(endpointAttributes.handler || "").trim();
+    const label = `${method} ${path}`.trim() || String(endpoint.id || "");
+    return { label, handler, searchText: `${label} ${handler}`.toLocaleLowerCase() };
+  }
+
+  function sortedEndpoints() {
+    if (!state.graph || !Array.isArray(state.graph.nodes)) return [];
+    return state.graph.nodes.filter((node) => node.type === "ENDPOINT").slice().sort((left, right) => {
+      const leftDetails = endpointDetails(left);
+      const rightDetails = endpointDetails(right);
+      return leftDetails.label.localeCompare(rightDetails.label)
+        || leftDetails.handler.localeCompare(rightDetails.handler)
+        || String(left.id).localeCompare(String(right.id));
+    });
+  }
+
+  function selectedEndpoint() {
+    return sortedEndpoints().find((endpoint) => endpoint.id === state.selectedEndpointId) || null;
+  }
+
+  function setEndpointInputValue(endpoint) {
+    if (!endpointSearch) return;
+    endpointSearch.value = endpoint ? endpointDetails(endpoint).label : "";
+  }
+
+  function closeEndpointOptions() {
+    state.featureEndpointOptionIndex = -1;
+    if (endpointOptions) {
+      setHidden(endpointOptions, true);
+      endpointOptions.replaceChildren();
+      endpointOptions.removeAttribute("aria-activedescendant");
+    }
+    if (endpointSearch) endpointSearch.setAttribute("aria-expanded", "false");
+  }
+
+  // 기능별 상세 API 선택 목록을 실제 Snapshot Endpoint에서 구성
+  function renderEndpointOptions(query = "") {
+    if (!endpointOptions || !isDetailView()) return;
+    const term = String(query || "").trim().toLocaleLowerCase();
+    const matches = sortedEndpoints().filter((endpoint) => endpointDetails(endpoint).searchText.includes(term));
+    endpointOptions.replaceChildren();
+    setHidden(endpointOptions, false);
+    if (endpointSearch) endpointSearch.setAttribute("aria-expanded", "true");
+    if (matches.length === 0) {
+      const empty = document.createElement("div");
+      empty.setAttribute("class", "endpoint-options-empty");
+      empty.setAttribute("role", "option");
+      empty.setAttribute("aria-disabled", "true");
+      empty.textContent = sortedEndpoints().length === 0 ? "Snapshot에 Endpoint가 없습니다." : "검색 결과가 없습니다.";
+      endpointOptions.appendChild(empty);
+      return;
+    }
+    matches.forEach((endpoint, index) => {
+      const details = endpointDetails(endpoint);
+      const option = document.createElement("div");
+      option.setAttribute("class", "endpoint-option");
+      option.setAttribute("role", "option");
+      option.setAttribute("id", `endpoint-option-${endpoint.id}`);
+      option.setAttribute("aria-selected", String(endpoint.id === state.selectedEndpointId));
+      option.setAttribute("data-active", String(index === state.featureEndpointOptionIndex));
+      option.dataset.endpointId = endpoint.id;
+      option.tabIndex = -1;
+      const label = document.createElement("span");
+      label.textContent = details.label;
+      option.appendChild(label);
+      if (details.handler) {
+        const detail = document.createElement("span");
+        detail.setAttribute("class", "endpoint-option-detail");
+        detail.textContent = details.handler;
+        option.appendChild(detail);
+      }
+      option.addEventListener("click", () => selectEndpointOption(endpoint.id));
+      endpointOptions.appendChild(option);
+    });
+  }
+
+  function ensureFeatureEndpoint() {
+    const endpoints = sortedEndpoints();
+    if (state.selectedEndpointId && endpoints.some((endpoint) => endpoint.id === state.selectedEndpointId)) return;
+    const endpoint = endpoints[0] || null;
+    state.selectedEndpointId = endpoint ? endpoint.id : null;
+    state.selection = endpoint ? { kind: "node", id: endpoint.id } : null;
+    setEndpointInputValue(endpoint);
+  }
+
+  function applyFilterView() {
+    const detail = isDetailView();
+    if (endpointFilterLabel) endpointFilterLabel.textContent = detail ? "API 선택" : "Endpoint 검색";
+    if (endpointSearch) {
+      endpointSearch.setAttribute("placeholder", detail ? "Method·Path·Handler 검색" : "Method·Path·Handler");
+      endpointSearch.setAttribute("type", detail ? "text" : "search");
+      if (detail) {
+        endpointSearch.setAttribute("role", "combobox");
+        endpointSearch.setAttribute("aria-autocomplete", "list");
+        endpointSearch.setAttribute("aria-controls", "endpoint-options");
+        endpointSearch.setAttribute("aria-expanded", "false");
+        setEndpointInputValue(selectedEndpoint());
+      } else {
+        endpointSearch.value = state.allEndpointQuery;
+        endpointSearch.removeAttribute("role");
+        endpointSearch.setAttribute("aria-expanded", "false");
+        closeEndpointOptions();
+      }
+    }
+    if (nodeFilterField) setHidden(nodeFilterField, detail);
+    if (edgeFilterField) setHidden(edgeFilterField, detail);
+  }
+
+  function selectEndpointOption(endpointId) {
+    const endpoint = sortedEndpoints().find((item) => item.id === endpointId);
+    if (!endpoint) return null;
+    state.selectedEndpointId = endpoint.id;
+    state.selection = { kind: "node", id: endpoint.id };
+    state.featureEndpointQuery = "";
+    setEndpointInputValue(endpoint);
+    closeEndpointOptions();
+    if (!isDetailView()) {
+      selectView("feature-flow");
+      return endpoint;
+    }
+    invalidateView();
+    state.viewGraph = viewGraphForState();
+    renderGraphView("initial");
+    if (state.viewGraph && state.viewGraph.nodes.length > 0) void layoutGraph();
+    return endpoint;
+  }
+
+  function invalidateView() {
+    state.viewVersion += 1;
+    state.layoutRequestId += 1;
+    state.layout = null;
+    state.layoutState = "not-requested";
+    state.layoutError = null;
+    state.graphRender = null;
+    if (graphCanvas) graphCanvas.dataset.layoutState = "not-requested";
+    resetRequestFlow();
+  }
+
+  function viewGraphForState() {
+    if (!state.graph) return null;
+    if (!isDetailView()) return state.graph;
+    if (!state.selectedEndpointId || !flowClient || !flowClient.deriveEndpointGraph) return null;
+    return flowClient.deriveEndpointGraph(state.graph, state.selectedEndpointId);
+  }
+
+  function detailMatchChainId() {
+    if (!isDetailView() || !state.selectedEndpointId || !state.flowIndex) return null;
+    const match = state.flowIndex.firstMatchedChain(state.selectedEndpointId);
+    return match.status === "CONFIRMED" ? match.chain.id : null;
   }
 
   function selectView(view) {
     if (!viewNames[view]) return;
     state.view = view;
+    if (!isDetailView()) {
+      state.selectedEndpointId = null;
+      state.selection = null;
+    } else {
+      ensureFeatureEndpoint();
+    }
+    applyFilterView();
+    invalidateView();
+    state.viewGraph = viewGraphForState();
     title.textContent = viewNames[view];
     renderStatus();
     document.querySelectorAll(".header-nav-item").forEach((item) => {
@@ -170,11 +474,31 @@
       if (active) item.setAttribute("aria-current", "page");
       else item.removeAttribute("aria-current");
     });
+    renderGraphView("initial");
+    if (state.viewGraph && state.viewGraph.nodes.length > 0) void layoutGraph();
     if (navigation) navigation.apply();
   }
 
+  // 선택 Endpoint의 실제 상세 MAP으로 명시적 진입
+  function openEndpointDetail(endpointId) {
+    const endpoint = graphElement("node", endpointId);
+    if (!endpoint || endpoint.type !== "ENDPOINT") return null;
+    state.selectedEndpointId = endpointId;
+    state.selection = { kind: "node", id: endpointId };
+    selectView("feature-flow");
+    return state.viewGraph;
+  }
+
+  function returnToAllMap() {
+    state.selectedEndpointId = null;
+    state.selection = null;
+    selectView("all-flow");
+  }
+
   function applyDisplaySettings() {
-    if (graphAreas) graphAreas.hidden = !state.display.areas;
+    if (graphAreas) setHidden(graphAreas, !state.display.areas);
+    if (graphFlowProjection) setHidden(graphFlowProjection, !state.display.areas);
+    if (graphGuides) setHidden(graphGuides, !state.display.areas);
     if (graphCanvas) graphCanvas.dataset.showEdgeLabels = String(state.display.edgeLabels);
     if (navigation && navigation.setMiniMapVisible) navigation.setMiniMapVisible(state.display.minimap);
   }
@@ -223,7 +547,7 @@
     viewState.dataset.state = phaseCode;
     graphCanvas.dataset.graphState = state.snapshotState;
     if (state.snapshotState === "loaded") {
-      graphStateMessage.textContent = "보존 Snapshot 조회 완료 · Graph는 다음 단계에서 표시됩니다.";
+      graphStateMessage.textContent = "보존 Snapshot 조회 완료 · Graph 표시 준비 중.";
       return;
     }
     if (state.snapshotError) {
@@ -242,22 +566,33 @@
   }
 
   function resetGraph(message) {
+    resetRequestFlow();
     state.graph = null;
+    state.flowIndex = null;
+    state.viewGraph = null;
     state.graphRender = null;
     state.visibleGraph = null;
     state.selection = null;
+    state.selectedEndpointId = null;
+    state.viewVersion += 1;
+    state.layoutRequestId += 1;
+    state.layout = null;
+    state.layoutState = "not-requested";
     if (navigation) navigation.setGraph(null);
     if (inspectorClient) {
       inspectorClient.hideHover();
       inspectorClient.render({ graph: null, visibleGraph: null, snapshot: state.snapshot, selection: null });
     }
-    if (graphSvg) graphSvg.hidden = true;
+    if (graphFlowProjection) graphFlowProjection.replaceChildren();
+    if (graphGuides) graphGuides.replaceChildren();
+    if (graphSvg) setHidden(graphSvg, true);
     if (graphEmpty) graphEmpty.hidden = false;
     if (filterStatus) filterStatus.textContent = "Graph 없음";
     if (message) graphStateMessage.textContent = message;
   }
 
   function filterValues() {
+    if (isDetailView()) return { query: "", nodeType: "", edgeType: "" };
     return {
       query: endpointSearch ? endpointSearch.value : "",
       nodeType: nodeFilter ? nodeFilter.value : "",
@@ -267,31 +602,44 @@
 
   function graphElement(kind, id) {
     if (!state.graph || !id) return null;
+    if (kind === "controller-group") {
+      const groups = displayGroups();
+      return Array.isArray(groups) ? groups.find((group) => group.id === id) || null : null;
+    }
     const collection = kind === "node" ? state.graph.nodes : kind === "edge" ? state.graph.edges : [];
     return collection.find((item) => item.id === id) || null;
+  }
+
+  function displayGroups() {
+    const plan = state.layout && state.layout.plan;
+    if (!plan || isDetailView()) return [];
+    return (plan.controllerGroups || []).concat(plan.displayModel ? plan.displayModel.groups : []);
   }
 
   function clearSelection() {
     state.selection = null;
     if (inspectorClient) inspectorClient.hideHover();
-    if (state.graph && state.graph.nodes.length > 0) {
-      renderGraphView(state.layout ? "elk" : "initial");
+    if (state.viewGraph && state.viewGraph.nodes.length > 0) {
+      renderGraphView(state.layout ? "elk" : "initial", true);
     } else if (inspectorClient) {
-      inspectorClient.render({ graph: state.graph, visibleGraph: state.visibleGraph, snapshot: state.snapshot, selection: null });
+      inspectorClient.render({ graph: state.viewGraph || state.graph, visibleGraph: state.visibleGraph, snapshot: state.snapshot, selection: null });
     }
   }
 
   function selectGraphElement(kind, id) {
-    if (!graphElement(kind, id)) return null;
+    const item = graphElement(kind, id);
+    if (!item) return null;
+    if (kind === "node" && item.type === "ENDPOINT" && isDetailView()
+      && state.selectedEndpointId !== item.id) return openEndpointDetail(item.id);
     state.selection = { kind, id };
     if (inspectorClient) inspectorClient.hideHover();
-    renderGraphView(state.layout ? "elk" : "initial");
+    renderGraphView(state.layout ? "elk" : "initial", true);
     return state.selection;
   }
 
   function showGraphHover(kind, id, anchor) {
-    if (!inspectorClient || !state.graph) return;
-    inspectorClient.showHover({ graph: state.graph, snapshot: state.snapshot, kind, id, anchor });
+    if (!inspectorClient || !(state.viewGraph || state.graph)) return;
+    inspectorClient.showHover({ graph: state.viewGraph || state.graph, snapshot: state.snapshot, kind, id, anchor });
   }
 
   function hideGraphHover() {
@@ -302,34 +650,85 @@
     if (inspectorClient) inspectorClient.setTab(tab);
   }
 
-  function renderGraphView(layoutMode) {
+  function renderGraphView(layoutMode, selectionOnly = false) {
+    const previousGraph = state.visibleGraph;
+    const viewGraph = viewGraphForState();
+    state.viewGraph = viewGraph;
+    const currentFilters = filterValues();
     const positions = state.layout
       ? state.layout.positions
       : state.graphRender && state.graphRender.positions;
-    const visibleGraph = graphRenderer.filter(state.graph, filterValues());
+    if (!viewGraph || viewGraph.nodes.length === 0) {
+      const emptyGraph = viewGraph || {
+        nodes: [],
+        edges: [],
+        invalidNodes: 0,
+        invalidEdges: 0,
+        filters: { query: "", nodeType: "", edgeType: "" }
+      };
+      state.visibleGraph = emptyGraph;
+      state.filters = emptyGraph.filters;
+      state.selection = null;
+      state.graphRender = null;
+      if (graphAreas) graphAreas.replaceChildren();
+      if (graphFlowProjection) graphFlowProjection.replaceChildren();
+      if (graphGuides) graphGuides.replaceChildren();
+      if (graphEdges) graphEdges.replaceChildren();
+      if (graphNodes) graphNodes.replaceChildren();
+      if (inspectorClient) {
+        inspectorClient.render({
+          graph: viewGraph || state.graph,
+          visibleGraph: emptyGraph,
+          snapshot: state.snapshot,
+          selection: null
+        });
+      }
+      if (navigation) navigation.setGraph(emptyGraph, {}, null);
+      if (filterStatus) filterStatus.textContent = isDetailView() ? "Endpoint 선택 필요" : "Graph 없음";
+      graphEmpty.hidden = false;
+      setHidden(graphSvg, true);
+      if (isDetailView() && !state.selectedEndpointId) {
+        graphStateMessage.textContent = "선택할 수 있는 Endpoint가 없습니다.";
+      } else if (isDetailView()) {
+        graphStateMessage.textContent = "선택한 Endpoint의 실제 관계를 확인할 수 없습니다.";
+      }
+      return null;
+    }
+    const visibleGraph = isDetailView()
+      ? { ...viewGraph, filters: { query: "", nodeType: "", edgeType: "" } }
+      : graphRenderer.filter(state.graph, currentFilters);
     if (state.selection) {
       const visibleItem = state.selection.kind === "node"
         ? visibleGraph.nodes.find((node) => node.id === state.selection.id)
-        : visibleGraph.edges.find((edge) => edge.id === state.selection.id);
+        : state.selection.kind === "edge"
+          ? visibleGraph.edges.find((edge) => edge.id === state.selection.id)
+          : graphElement("controller-group", state.selection.id);
       if (!visibleItem) {
         state.selection = null;
         if (inspectorClient) inspectorClient.hideHover();
       }
     }
     const related = inspectorClient
-      ? inspectorClient.related(state.graph, state.selection)
+      ? inspectorClient.related(viewGraph, state.selection, displayGroups())
       : { nodeIds: new Set(), edgeIds: new Set() };
     const result = graphRenderer.render(visibleGraph, {
       svg: graphSvg,
       viewport: graphViewport,
       areaLayer: graphAreas,
+      projectionLayer: graphFlowProjection,
+      guideLayer: graphGuides,
       edgeLayer: graphEdges,
       nodeLayer: graphNodes
     }, {
       positions,
       edgeRoutes: state.layout && state.layout.edgeRoutes,
       bounds: state.layout && { width: state.layout.width, height: state.layout.height },
+      layoutPlan: state.layout && state.layout.plan,
+      detailMode: isDetailView(),
+      flowIndex: state.flowIndex,
       layoutMode,
+      edgeLabelMode: isDetailView() ? "detail" : "overview",
+      displayEdgeLabels: state.display.edgeLabels,
       selection: state.selection,
       related,
       onNodeClick: (id) => selectGraphElement("node", id),
@@ -337,6 +736,11 @@
       onNodeBlur: hideGraphHover,
       onNodeHover: (id, anchor) => showGraphHover("node", id, anchor),
       onNodeLeave: hideGraphHover,
+      onControllerGroupClick: (id) => selectGraphElement("controller-group", id),
+      onControllerGroupFocus: (id, anchor) => showGraphHover("controller-group", id, anchor),
+      onControllerGroupBlur: hideGraphHover,
+      onControllerGroupHover: (id, anchor) => showGraphHover("controller-group", id, anchor),
+      onControllerGroupLeave: hideGraphHover,
       onEdgeClick: (id) => selectGraphElement("edge", id),
       onEdgeFocus: (id, anchor) => showGraphHover("edge", id, anchor),
       onEdgeBlur: hideGraphHover,
@@ -348,39 +752,63 @@
     state.graphRender = result;
     if (inspectorClient) {
       inspectorClient.render({
-        graph: state.graph,
+        graph: viewGraph,
         visibleGraph,
         snapshot: state.snapshot,
-        selection: state.selection
+        selection: state.selection,
+        controllerGroups: displayGroups(),
+        displayModel: !isDetailView() && state.layout && state.layout.plan && state.layout.plan.displayModel
       });
     }
     if (navigation) {
-      navigation.setGraph(visibleGraph, positions || result.positions, state.layout && {
+      const renderedPositions = result && result.positions ? result.positions : positions || {};
+      const projectionNodes = state.layout && state.layout.plan && state.layout.plan.projection
+        && Array.isArray(state.layout.plan.projection.nodes) ? state.layout.plan.projection.nodes : [];
+      const projectionPositions = projectionNodes.length > 0
+        ? Object.fromEntries(projectionNodes.map((node) => [node.id, node.position]))
+        : {};
+      const fitPositions = { ...renderedPositions, ...projectionPositions };
+      const presentationNodes = [
+        ...((result && Array.isArray(result.displayNodes)) ? result.displayNodes : visibleGraph.nodes),
+        ...projectionNodes.map((node) => ({ ...node, kind: "education" }))
+      ];
+      const sameItems = (left, right) => left.length === right.length
+        && left.every((item, index) => item.id === right[index].id);
+      const unchanged = selectionOnly && previousGraph
+        && sameItems(previousGraph.nodes, visibleGraph.nodes) && sameItems(previousGraph.edges, visibleGraph.edges);
+      if (unchanged) navigation.apply();
+      else navigation.setGraph(visibleGraph, { ...renderedPositions, ...projectionPositions }, state.layout && {
         width: state.layout.width,
         height: state.layout.height
-      });
+      }, fitPositions, presentationNodes);
     }
-    const active = Boolean(state.filters.query || state.filters.nodeType || state.filters.edgeType);
+    const active = isDetailView()
+      ? Boolean(currentFilters.query || currentFilters.nodeType || currentFilters.edgeType)
+      : Boolean(state.filters.query || state.filters.nodeType || state.filters.edgeType);
     if (filterStatus) {
-      filterStatus.textContent = !active
+      filterStatus.textContent = isDetailView() && active
+        ? "상세 MAP에서는 검색·필터 조건을 적용하지 않습니다."
+        : !active
         ? "Graph 표시 준비 완료"
         : visibleGraph.nodes.length === 0 && state.filters.query
           ? "검색 결과 없음 · Snapshot 원본은 유지됩니다."
           : "필터 적용";
     }
     graphEmpty.hidden = visibleGraph.nodes.length > 0;
-    graphSvg.hidden = visibleGraph.nodes.length === 0;
+    setHidden(graphSvg, visibleGraph.nodes.length === 0);
     if (visibleGraph.nodes.length === 0) {
-      graphStateMessage.textContent = active
+      graphStateMessage.textContent = active && !isDetailView()
         ? state.filters.query ? "검색 결과 없음 · Snapshot 원본은 유지됩니다." : "필터 결과가 없습니다."
         : "보존 Snapshot에 Graph Node가 없습니다.";
+    } else if (isDetailView() && active) {
+      graphStateMessage.textContent = "상세 MAP에서는 검색·필터 조건을 적용하지 않습니다.";
     } else if (active) {
       graphStateMessage.textContent = "필터 적용 · 조건에 맞는 Graph 요소만 표시합니다.";
     } else if (visibleGraph.invalidNodes || visibleGraph.invalidEdges) {
       graphStateMessage.textContent = `유효하지 않은 Graph 요소 ${visibleGraph.invalidNodes + visibleGraph.invalidEdges}개를 표시에서 제외했습니다.`;
     } else {
       graphStateMessage.textContent = layoutMode === "elk"
-        ? "ELK.js 좌→우 자동 배치 완료"
+        ? "ELK.js 요청 처리 Lane 배치 완료"
         : "보존 Snapshot Graph 표시 완료";
     }
     return result;
@@ -392,8 +820,15 @@
       return null;
     }
     const graph = graphRenderer.normalize(snapshot);
+    resetRequestFlow();
     state.snapshot = snapshot;
     state.graph = graph;
+    state.flowIndex = flowClient ? flowClient.createIndex(graph) : null;
+    state.selectedEndpointId = null;
+    state.selection = null;
+    state.viewVersion += 1;
+    state.layoutRequestId += 1;
+    state.viewGraph = null;
     state.layout = null;
     state.layoutState = "not-requested";
     state.layoutError = null;
@@ -413,8 +848,13 @@
   }
 
   function layoutGraph() {
-    if (!state.graph || state.graph.nodes.length === 0) return Promise.resolve(null);
+    const viewGraph = state.viewGraph || viewGraphForState();
+    state.viewGraph = viewGraph;
+    if (!viewGraph || viewGraph.nodes.length === 0) return Promise.resolve(null);
     const requestId = ++state.layoutRequestId;
+    const viewVersion = state.viewVersion;
+    const requestedView = state.view;
+    const requestedEndpointId = state.selectedEndpointId;
     state.layoutState = "loading";
     state.layoutError = null;
     graphCanvas.dataset.layoutState = "loading";
@@ -425,8 +865,12 @@
       showNotice("ELK.js 자동 배치 자원을 불러오지 못했습니다.", "error");
       return Promise.resolve(null);
     }
-    return layoutClient.layout(state.graph).then((layout) => {
-      if (requestId !== state.layoutRequestId || layout.stale) return layout;
+    return layoutClient.layout(viewGraph).then((layout) => {
+      if (requestId !== state.layoutRequestId
+        || viewVersion !== state.viewVersion
+        || requestedView !== state.view
+        || requestedEndpointId !== state.selectedEndpointId
+        || layout.stale) return { ...layout, stale: true };
       state.layout = layout;
       renderGraphView("elk");
       graphSvg.setAttribute("data-layout-mode", "elk");
@@ -435,8 +879,9 @@
       state.layoutError = null;
       graphCanvas.dataset.layoutState = "loaded";
       graphEmpty.hidden = true;
-      graphSvg.hidden = false;
+      setHidden(graphSvg, false);
       if (navigation) navigation.fit();
+      prepareRequestFlow();
       if (state.filters.query || state.filters.nodeType || state.filters.edgeType) {
         graphStateMessage.textContent = state.visibleGraph.nodes.length === 0
           ? "필터 결과가 없습니다."
@@ -445,7 +890,10 @@
       showNotice("Graph 자동 배치 완료", "success");
       return layout;
     }).catch((error) => {
-      if (requestId !== state.layoutRequestId) return null;
+      if (requestId !== state.layoutRequestId
+        || viewVersion !== state.viewVersion
+        || requestedView !== state.view
+        || requestedEndpointId !== state.selectedEndpointId) return null;
       state.layoutState = "failed";
       state.layoutError = error.message || "원인 확인 불가";
       graphCanvas.dataset.layoutState = "failed";
@@ -482,6 +930,9 @@
 
   async function loadStatus() {
     if (state.loading) return;
+    const previousView = state.view;
+    const previousEndpointId = state.selectedEndpointId;
+    const previousSelection = state.selection;
     state.loading = true;
     refreshButton.disabled = true;
     state.error = null;
@@ -494,6 +945,7 @@
     state.layoutState = "not-requested";
     state.layoutError = null;
     state.layoutRequestId += 1;
+    state.allEndpointQuery = "";
     if (endpointSearch) endpointSearch.value = "";
     if (nodeFilter) nodeFilter.value = "";
     if (edgeFilter) edgeFilter.value = "";
@@ -519,6 +971,20 @@
       let layoutFailed = false;
       if (state.snapshotState === "loaded") {
         renderGraph(state.snapshot);
+        if (previousView === "feature-flow") {
+          state.selectedEndpointId = previousEndpointId
+            && graphElement("node", previousEndpointId)?.type === "ENDPOINT"
+            ? previousEndpointId
+            : null;
+          ensureFeatureEndpoint();
+          if (state.selectedEndpointId) {
+            state.selection = previousSelection && graphElement(previousSelection.kind, previousSelection.id)
+              ? previousSelection
+              : { kind: "node", id: state.selectedEndpointId };
+          }
+          applyFilterView();
+          renderGraphView("initial");
+        }
         await layoutGraph();
         layoutFailed = state.layoutState === "failed" || state.layoutState === "unavailable";
       }
@@ -569,15 +1035,70 @@
     state.display.minimap = showMinimapSetting.checked;
     applyDisplaySettings();
   });
-  if (endpointSearch) endpointSearch.addEventListener("input", applyGraphFilter);
+  if (endpointSearch) endpointSearch.addEventListener("input", () => {
+    if (!isDetailView()) {
+      state.allEndpointQuery = endpointSearch.value;
+      applyGraphFilter();
+      return;
+    }
+    state.featureEndpointQuery = endpointSearch.value;
+    state.featureEndpointOptionIndex = -1;
+    renderEndpointOptions(state.featureEndpointQuery);
+  });
+  if (endpointSearch) endpointSearch.addEventListener("focus", () => {
+    if (isDetailView()) renderEndpointOptions(state.featureEndpointQuery);
+  });
+  if (endpointSearch) endpointSearch.addEventListener("keydown", (event) => {
+    if (!isDetailView() || !endpointOptions || endpointOptions.hidden) return;
+    const options = endpointOptions.children.filter
+      ? endpointOptions.children.filter((item) => item.dataset && item.dataset.endpointId)
+      : Array.from(endpointOptions.children || []).filter((item) => item.dataset && item.dataset.endpointId);
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      state.featureEndpointOptionIndex = Math.min(state.featureEndpointOptionIndex + 1, options.length - 1);
+      renderEndpointOptions(state.featureEndpointQuery);
+    } else if (event.key === "ArrowUp") {
+      event.preventDefault();
+      state.featureEndpointOptionIndex = Math.max(state.featureEndpointOptionIndex - 1, 0);
+      renderEndpointOptions(state.featureEndpointQuery);
+    } else if (event.key === "Enter") {
+      event.preventDefault();
+      const option = options[state.featureEndpointOptionIndex] || options[0];
+      if (option && option.dataset.endpointId) selectEndpointOption(option.dataset.endpointId);
+    } else if (event.key === "Escape") {
+      event.preventDefault();
+      state.featureEndpointQuery = "";
+      setEndpointInputValue(selectedEndpoint());
+      closeEndpointOptions();
+    }
+  });
   if (nodeFilter) nodeFilter.addEventListener("change", applyGraphFilter);
   if (edgeFilter) edgeFilter.addEventListener("change", applyGraphFilter);
   const searchReset = document.querySelector("#search-reset");
   if (searchReset) searchReset.addEventListener("click", () => {
+    if (isDetailView()) {
+      state.featureEndpointQuery = "";
+      ensureFeatureEndpoint();
+      renderEndpointOptions("");
+      return;
+    }
+    state.allEndpointQuery = "";
     if (endpointSearch) endpointSearch.value = "";
     if (nodeFilter) nodeFilter.value = "";
     if (edgeFilter) edgeFilter.value = "";
     applyGraphFilter();
+  });
+  if (requestFlowStart && requestFlowController) requestFlowStart.addEventListener("click", () => requestFlowController.play());
+  if (requestFlowPause && requestFlowController) requestFlowPause.addEventListener("click", () => requestFlowController.pause());
+  if (requestFlowReset && requestFlowController) requestFlowReset.addEventListener("click", () => requestFlowController.reset());
+  if (document.addEventListener && requestFlowController) document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "hidden") requestFlowController.pause();
+  });
+  if (window.addEventListener && layoutClient) window.addEventListener("pagehide", (event) => {
+    if (!event.persisted && typeof layoutClient.terminate === "function") layoutClient.terminate();
+  });
+  if (window.addEventListener && requestFlowController) window.addEventListener("resize", () => {
+    if (isDetailView()) requestFlowController.pause();
   });
   if (document.addEventListener) document.addEventListener("click", (event) => {
     if (!filterPanel || filterPanel.hidden) return;
@@ -589,7 +1110,8 @@
   if (graphCanvas) graphCanvas.addEventListener("click", (event) => {
     const target = event && event.target;
     if (target && target.closest
-      && (target.closest(".graph-node") || target.closest(".graph-edge") || target.closest(".map-toolbar"))) return;
+      && (target.closest(".graph-node") || target.closest(".graph-edge") || target.closest(".map-toolbar")
+        || target.closest(".request-flow-controls"))) return;
     clearSelection();
   });
   if (document.addEventListener) document.addEventListener("keydown", (event) => {
@@ -601,6 +1123,7 @@
     }
   });
 
+  applyFilterView();
   applyDisplaySettings();
   renderStatus();
   window.MapInBootUi = {
@@ -616,6 +1139,9 @@
     layoutGraph,
     applyGraphFilter,
     selectGraphElement,
+    openEndpointDetail,
+    returnToAllMap,
+    requestFlow: requestFlowController,
     clearSelection,
     showGraphHover,
     hideGraphHover,
