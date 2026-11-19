@@ -20,8 +20,6 @@
     "USES_FOR_AUTHORIZATION",
     "SECURITY_STATE"
   ]));
-  const MAX_DETAIL_DEPTH = 4;
-
   function text(value) {
     return value === null || value === undefined ? "" : String(value);
   }
@@ -45,6 +43,17 @@
     if (numbers.some((value) => value === null)) return "UNKNOWN";
     if (new Set(numbers).size !== numbers.length) return "AMBIGUOUS";
     return "CONFIRMED";
+  }
+
+  function filterOrderInfo(edge, node) {
+    const edgeOrder = positiveInteger(attributes(edge).filterOrder);
+    const nodeOrder = positiveInteger(attributes(node).filterOrder);
+    if (edgeOrder !== null && nodeOrder !== null && edgeOrder !== nodeOrder) {
+      return { status: "MISMATCHED", order: null, source: "CONFLICT" };
+    }
+    if (edgeOrder !== null) return { status: "CONFIRMED", order: edgeOrder, source: "EDGE" };
+    if (nodeOrder !== null) return { status: "CONFIRMED", order: nodeOrder, source: "NODE" };
+    return { status: "UNKNOWN", order: null, source: "NONE" };
   }
 
   function createIndex(graph) {
@@ -84,21 +93,23 @@
           && (!attributes(item.edge).registrationKind
             || attributes(item.edge).registrationKind === registrationKind));
       const items = relationships.map((item) => item.node);
+      const orderInfo = Object.fromEntries(relationships.map((item) => [item.node.id, filterOrderInfo(item.edge, item.node)]));
       const result = {
         filters: items.slice().sort((left, right) => text(left.id).localeCompare(text(right.id))),
         edges: relationships.map((item) => item.edge),
-        orderStatus: orderState(relationships, (item) => {
-          const edgeOrder = attributes(item.edge).filterOrder;
-          return edgeOrder === undefined ? attributes(item.node).filterOrder : edgeOrder;
-        })
+        orderInfo,
+        orderStatus: "UNKNOWN"
       };
-      if (result.orderStatus === "CONFIRMED") {
-        result.filters.sort((left, right) => {
-          const leftOrder = positiveInteger(attributes(left).filterOrder);
-          const rightOrder = positiveInteger(attributes(right).filterOrder);
-          return leftOrder - rightOrder || text(left.id).localeCompare(text(right.id));
-        });
-      }
+      const orderValues = items.map((item) => orderInfo[item.id]);
+      if (orderValues.some((item) => item.status === "MISMATCHED")) result.orderStatus = "UNKNOWN";
+      else if (orderValues.some((item) => item.status === "UNKNOWN")) result.orderStatus = "UNKNOWN";
+      else if (new Set(orderValues.map((item) => item.order)).size !== orderValues.length) result.orderStatus = "AMBIGUOUS";
+      else result.orderStatus = "CONFIRMED";
+      result.filters.sort((left, right) => {
+        const leftOrder = orderInfo[left.id].order === null ? Number.POSITIVE_INFINITY : orderInfo[left.id].order;
+        const rightOrder = orderInfo[right.id].order === null ? Number.POSITIVE_INFINITY : orderInfo[right.id].order;
+        return leftOrder - rightOrder || text(left.id).localeCompare(text(right.id));
+      });
       return result;
     }
 
@@ -149,6 +160,7 @@
       firstMatchedChain,
       securityFiltersForChain,
       servletFiltersForServlet,
+      filterOrderInfo,
       handlerFor,
       summary
     };
@@ -168,9 +180,17 @@
     const nodeIds = new Set();
     const edgeIds = new Set();
     const securityFrontier = [];
+    const selectedChainId = match.status === "CONFIRMED" ? match.chain.id : null;
+
+    const canIncludeNode = (node) => {
+      if (!node) return false;
+      if (node.type === NODE_TYPES.ENDPOINT) return node.id === endpointId;
+      if (node.type === NODE_TYPES.SECURITY_CHAIN) return node.id === selectedChainId;
+      return true;
+    };
 
     const includeNode = (node) => {
-      if (!node || nodeIds.has(node.id)) return false;
+      if (!canIncludeNode(node) || nodeIds.has(node.id)) return false;
       nodeIds.add(node.id);
       return true;
     };
@@ -184,7 +204,7 @@
     if (endpoint && endpoint.type === NODE_TYPES.ENDPOINT) includeNode(endpoint);
     if (handler.node) {
       includeNode(handler.node);
-      securityFrontier.push({ id: handler.node.id, depth: 0 });
+      securityFrontier.push(handler.node.id);
     }
     if (match.status === "CONFIRMED") {
       includeNode(match.chain);
@@ -205,24 +225,23 @@
       if (!target) return;
       includeNode(target);
       includeEdge(edge);
-      securityFrontier.push({ id: target.id, depth: 0 });
+       securityFrontier.push(target.id);
     });
 
     // 보안 관계 확장은 실제 방향과 허용된 관계 종류 안에서만 제한
     const visited = new Set();
     while (securityFrontier.length > 0) {
-      const current = securityFrontier.shift();
-      const currentId = current.id;
+      const currentId = securityFrontier.shift();
       if (visited.has(currentId)) continue;
       visited.add(currentId);
-      if (current.depth >= MAX_DETAIL_DEPTH) continue;
       index.edges.forEach((edge) => {
         if (!DETAIL_RELATION_TYPES.has(edge.type) || edge.sourceId !== currentId) return;
         const target = index.nodeById.get(edge.targetId);
         if (!target) return;
+        if (!canIncludeNode(target)) return;
         includeNode(target);
         includeEdge(edge);
-        if (!visited.has(target.id)) securityFrontier.push({ id: target.id, depth: current.depth + 1 });
+        if (!visited.has(target.id)) securityFrontier.push(target.id);
       });
     }
 

@@ -53,6 +53,20 @@
     });
   }
 
+  function educationStep(steps, projection, positions, id, label, description) {
+    const node = projection && Array.isArray(projection.nodes)
+      ? projection.nodes.find((item) => item.id === id)
+      : null;
+    appendStep(steps, {
+      id,
+      label,
+      kind: "education",
+      anchorId: node ? node.id : null,
+      description,
+      position: node ? node.position : positions && positions[id]
+    });
+  }
+
   function endpointFor(graph, endpointId) {
     const nodes = graph && Array.isArray(graph.nodes) ? graph.nodes : [];
     const candidateId = endpointId || graph && graph.endpointId;
@@ -99,7 +113,7 @@
   }
 
   // 실제 Snapshot 관계와 교육 전용 개념 단계를 분리한 Request 흐름 생성
-  function buildSteps({ graph, index, endpointId, positions } = {}) {
+  function buildSteps({ graph, index, endpointId, positions, projection } = {}) {
     const source = graph && typeof graph === "object" ? graph : { nodes: [], edges: [] };
     const nodes = nodeMap(source);
     const edges = edgeMap(source);
@@ -110,31 +124,23 @@
       : null);
     const steps = [];
 
-    appendStep(steps, {
-      id: "client-request",
-      label: "클라이언트 요청 (교육 예시)",
-      description: "클라이언트가 요청을 시작하는 개념 단계"
-    });
-    appendStep(steps, {
-      id: "container-request-response",
-      label: "서블릿 컨테이너의 Request·Response 준비 (교육 예시)",
-      description: "컨테이너가 Request와 Response를 준비하는 개념 단계"
-    });
-    appendStep(steps, {
-      id: "synchronous-request-thread",
-      label: "동기 요청 처리 스레드 개념 (교육 예시)",
-      description: "Request 객체가 Thread가 되는 것이 아닌 동기 처리 흐름의 설명"
-    });
-    appendStep(steps, {
-      id: "servlet-filter-chain",
-      label: "Servlet Filter#doFilter·FilterChain.doFilter (적용 범위 확인 불가)",
-      description: "Servlet Filter 적용 범위가 확인된 경우에만 실제 호출로 해석"
-    });
-    appendStep(steps, {
-      id: "security-delegating-proxy",
-      label: "DelegatingFilterProxy → FilterChainProxy (교육 예시)",
-      description: "Spring Security 위임 구조의 개념 단계"
-    });
+    educationStep(steps, projection, positions, "education-http-request", "HTTP 요청 수신", "실제 요청 Trace가 아닌 표준 처리 원리의 교육 단계");
+    educationStep(steps, projection, positions, "education-request-prepare", "Request 준비", "HttpServletRequest·HttpServletResponse 참조 준비");
+    educationStep(steps, projection, positions, "education-thread-context", "동기 처리 스레드", "일반적인 처리 문맥이며 실제 Thread ID가 아님");
+    educationStep(steps, projection, positions, "education-servlet-filter-chain", "FilterChain 전달", "Filter#doFilter·FilterChain.doFilter의 객체 참조 전달");
+
+    const servlet = source.nodes.find((node) => node.type === "SERVLET");
+    const servletOrder = servlet && flowIndex && typeof flowIndex.servletFiltersForServlet === "function"
+      ? flowIndex.servletFiltersForServlet(servlet.id)
+      : { orderStatus: "UNKNOWN", filters: [] };
+    if (servletOrder.orderStatus === "CONFIRMED") {
+      servletOrder.filters.forEach((filter) => actualStep(steps, `servlet-filter-${filter.id}`, `확인된 Servlet Filter · ${filter.label}`, filter, positions, "Servlet 등록 관계와 filterOrder 확인"));
+    } else {
+      educationStep(steps, projection, positions, "education-servlet-filter-chain", "Servlet Filter 순서 확인 불가", "실제 등록은 확인되지만 순서가 확정되지 않아 실제 통과 순서로 재생하지 않음");
+    }
+    educationStep(steps, projection, positions, "education-delegating-filter-proxy", "DelegatingFilterProxy", "Servlet Filter에서 Spring Security로 위임하는 표준 구조");
+    educationStep(steps, projection, positions, "education-filter-chain-proxy", "FilterChainProxy", "등록된 SecurityFilterChain 목록 평가");
+    educationStep(steps, projection, positions, "education-request-matcher", "RequestMatcher 평가", "등록 순서에 따라 첫 매칭 Chain 하나를 선택하는 개념 단계");
 
     const match = selectedEndpointId && flowIndex && typeof flowIndex.firstMatchedChain === "function"
       ? flowIndex.firstMatchedChain(selectedEndpointId)
@@ -176,15 +182,20 @@
       appendStep(steps, {
         id: "security-chain-uncertain",
         label: "첫 SecurityFilterChain 확인 불가",
+        kind: "education",
+        anchorId: "education-request-matcher",
+        position: projection && projection.nodes.find((node) => node.id === "education-request-matcher")?.position,
         description: "MATCHED_BY가 없거나 불확실하여 실제 Chain을 선택하지 않음"
       });
     }
 
-    appendStep(steps, {
-      id: "dispatcher-servlet-mvc",
-      label: "DispatcherServlet·HandlerMapping·HandlerAdapter (교육 예시)",
-      description: "Servlet MVC가 Handler를 찾고 호출하는 개념 단계"
-    });
+    educationStep(steps, projection, positions, "education-servlet-chain-continue", "Servlet FilterChain 계속", "인증 실패·인가 거부 시 이후 단계에 도달하지 않을 수 있음");
+    const dispatcher = source.nodes.find((node) => node.type === "SERVLET");
+    if (dispatcher) actualStep(steps, "dispatcher-servlet", "확인된 DispatcherServlet", dispatcher, positions, "Servlet 등록 정보 확인");
+    educationStep(steps, projection, positions, "education-handler-mapping", "HandlerMapping", "요청과 Handler의 매핑 정보 조회");
+    const actualEndpoint = endpoint && nodes.get(endpoint.id);
+    if (actualEndpoint) actualStep(steps, "endpoint-mapping", `확인된 API Endpoint · ${actualEndpoint.label}`, actualEndpoint, positions, "Endpoint는 Servlet 실행 객체가 아닌 매핑 정보");
+    educationStep(steps, projection, positions, "education-handler-adapter", "HandlerAdapter", "확인된 Controller·Handler 호출 준비");
 
     const handler = selectedEndpointId && flowIndex && typeof flowIndex.handlerFor === "function"
       ? flowIndex.handlerFor(selectedEndpointId)
@@ -208,11 +219,7 @@
       });
     }
 
-    appendStep(steps, {
-      id: "response-return",
-      label: "응답 복귀(Response) (교육 예시)",
-      description: "FilterChain과 컨테이너를 거쳐 응답이 돌아가는 개념 단계"
-    });
+    educationStep(steps, projection, positions, "education-response-return", "응답 복귀", "호출 체인을 거쳐 응답이 반환되는 교육용 흐름");
     return steps;
   }
 

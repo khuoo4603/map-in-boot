@@ -91,10 +91,11 @@
                     <span class="sr-only">필터</span>
                   </button>
                   <div class="map-filter-panel" id="map-filter-panel" role="region" aria-label="Graph 필터" hidden>
-                    <label class="graph-search">Endpoint 검색
-                      <input id="endpoint-search" type="search" autocomplete="off" placeholder="Method·Path·Handler">
+                    <label class="graph-search" id="endpoint-filter-label"><span id="endpoint-filter-label-text">Endpoint 검색</span>
+                      <input id="endpoint-search" type="search" autocomplete="off" placeholder="Method·Path·Handler" aria-controls="endpoint-options" aria-expanded="false" aria-autocomplete="list">
+                      <div class="endpoint-options" id="endpoint-options" role="listbox" aria-label="API 선택" hidden></div>
                     </label>
-                    <label>NodeType
+                    <label id="node-filter-field">NodeType
                       <select id="node-filter">
                         <option value="">모든 NodeType</option>
                         <option value="APPLICATION">APPLICATION</option>
@@ -109,7 +110,7 @@
                         <option value="BUSINESS_SECURITY_STATE">BUSINESS_SECURITY_STATE</option>
                       </select>
                     </label>
-                    <label>EdgeType
+                    <label id="edge-filter-field">EdgeType
                       <select id="edge-filter">
                         <option value="">모든 EdgeType</option>
                         <option value="FLOWS_TO">FLOWS_TO</option>
@@ -130,9 +131,6 @@
               </div>
             </div>
             <div class="shell-notice" id="shell-notice" role="status" aria-live="polite" hidden></div>
-            <p class="flow-summary" id="flow-summary" role="status" aria-live="polite" hidden></p>
-            <div class="standard-filter-reference" id="standard-filter-reference" role="region" aria-label="Spring Security 7 표준 필터 참고" hidden></div>
-            <button class="detail-return-all" id="detail-return-all" type="button" hidden>전체 MAP으로 이동</button>
             <div class="canvas-empty" id="graph-empty">
             <p id="graph-state-message">Snapshot 조회 후 Graph를 표시합니다.</p>
             </div>
@@ -141,9 +139,14 @@
                 <marker id="graph-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
                   <path d="M 0 0 L 10 5 L 0 10 z" fill="#86efac"></path>
                 </marker>
+                <marker id="graph-guide-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+                  <path d="M 0 0 L 10 5 L 0 10 z" fill="#6f9479"></path>
+                </marker>
               </defs>
               <g id="graph-viewport">
                 <g id="graph-areas" class="graph-areas" aria-hidden="true"></g>
+            <g id="graph-flow-projection" class="graph-flow-projection" aria-hidden="true"></g>
+                <g id="graph-guides" class="graph-guides" aria-hidden="true"></g>
                 <g id="graph-edges"></g>
                 <g id="graph-nodes"></g>
                 <g id="request-flow-education" aria-hidden="true" hidden>
@@ -151,7 +154,7 @@
                 </g>
               </g>
             </svg>
-            <div class="request-flow-controls" id="request-flow-controls" role="region" aria-label="Request 처리 교육" hidden>
+            <div class="request-flow-controls" id="request-flow-controls" role="region" aria-label="내부 처리 과정" hidden>
               <p class="request-flow-note">교육용 예시 · 실제 요청 추적 아님</p>
               <p class="request-flow-status" id="request-flow-status" role="status" aria-live="polite">교육용 예시 · 실제 요청 추적 아님 · 시작 전</p>
               <div class="request-flow-buttons">
