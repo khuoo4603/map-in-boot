@@ -1039,10 +1039,11 @@
     const requestedView = state.view;
     const requestedEndpointId = state.selectedEndpointId;
     const requestedFindingId = state.selectedFindingId;
+    const showLayoutNotice = requestedView !== "security-flow";
     state.layoutState = "loading";
     state.layoutError = null;
     graphCanvas.dataset.layoutState = "loading";
-    showNotice("Graph 자동 배치 중", "loading");
+    if (showLayoutNotice) showNotice("Graph 자동 배치 중", "loading");
     if (!layoutClient) {
       state.layoutState = "unavailable";
       graphCanvas.dataset.layoutState = "unavailable";
@@ -1072,7 +1073,7 @@
           ? "필터 결과가 없습니다."
           : "필터 적용 · 조건에 맞는 Graph 요소만 표시합니다.";
       }
-      showNotice("Graph 자동 배치 완료", "success");
+      if (showLayoutNotice) showNotice("Graph 자동 배치 완료", "success");
       return layout;
     }).catch((error) => {
       if (requestId !== state.layoutRequestId
