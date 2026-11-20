@@ -46,6 +46,7 @@ class LocalSnapshotStoreIntegrationTest {
 
         assertTrue(saved.isPresent());
         assertEquals(source.snapshotId(), saved.get().snapshotId());
+        assertEquals(source.evidenceDisplayCodes(), saved.get().evidenceDisplayCodes());
         assertTrue(restored.isPresent());
         assertEquals(source, restored.get());
         assertTrue(new LocalSnapshotStore(tempDirectory, 7, codec).loadLatest("other-service").isEmpty());
@@ -73,8 +74,10 @@ class LocalSnapshotStoreIntegrationTest {
 
         assertEquals(first.snapshotId(), persisted.snapshotId());
         assertEquals(latest.capturedAt(), persisted.capturedAt());
+        assertEquals(latest.evidenceDisplayCodes(), persisted.evidenceDisplayCodes());
         assertEquals("latest-version", store.loadLatest("service").orElseThrow().applicationVersion());
         assertEquals("latest-evidence", store.loadLatest("service").orElseThrow().evidence().get(0).summary());
+        assertEquals(latest.evidenceDisplayCodes(), store.loadLatest("service").orElseThrow().evidenceDisplayCodes());
         assertEquals(1, managedFiles().size());
         assertEquals(latest.capturedAt(), store.loadLatest("service").orElseThrow().capturedAt());
     }
@@ -140,7 +143,8 @@ class LocalSnapshotStoreIntegrationTest {
         Snapshot schemaTwo = new Snapshot(unsupported.snapshotId(), unsupported.capturedAt(), "2",
                 unsupported.sdkVersion(), unsupported.serviceId(), unsupported.instanceId(),
                 unsupported.applicationVersion(), unsupported.graphFingerprint(), unsupported.nodes(), unsupported.edges(),
-                unsupported.evidence(), unsupported.findings(), unsupported.analysisStatus());
+                unsupported.evidence(), unsupported.findings(), unsupported.analysisStatus(),
+                unsupported.evidenceDisplayCodes());
         Files.createDirectories(tempDirectory);
         Files.writeString(tempDirectory.resolve("snapshot-11111111-1111-1111-1111-111111111111.json"),
                 new SnapshotJsonCodec().encode(schemaTwo));
@@ -156,7 +160,8 @@ class LocalSnapshotStoreIntegrationTest {
         Snapshot source = snapshot(Instant.now(), AnalysisStatus.READY, "/one");
         Snapshot unsupported = new Snapshot(source.snapshotId(), source.capturedAt(), "2", source.sdkVersion(),
                 source.serviceId(), source.instanceId(), source.applicationVersion(), source.graphFingerprint(),
-                source.nodes(), source.edges(), source.evidence(), source.findings(), source.analysisStatus());
+                source.nodes(), source.edges(), source.evidence(), source.findings(), source.analysisStatus(),
+                source.evidenceDisplayCodes());
 
         MapInBootException exception = assertThrows(MapInBootException.class,
                 () -> store(new SnapshotJsonCodec(), 7).save(unsupported, true));
@@ -169,7 +174,8 @@ class LocalSnapshotStoreIntegrationTest {
         Snapshot source = snapshot(Instant.now(), AnalysisStatus.READY, "/one");
         Snapshot withoutStatus = new Snapshot(source.snapshotId(), source.capturedAt(), source.schemaVersion(),
                 source.sdkVersion(), source.serviceId(), source.instanceId(), source.applicationVersion(),
-                source.graphFingerprint(), source.nodes(), source.edges(), source.evidence(), source.findings(), Map.of());
+                source.graphFingerprint(), source.nodes(), source.edges(), source.evidence(), source.findings(), Map.of(),
+                source.evidenceDisplayCodes());
 
         MapInBootException exception = assertThrows(MapInBootException.class,
                 () -> store(new SnapshotJsonCodec(), 7).save(withoutStatus, true));
@@ -242,13 +248,15 @@ class LocalSnapshotStoreIntegrationTest {
                 .assemble(analysis, "service", "instance", "test");
         return new Snapshot(assembled.snapshotId(), capturedAt, assembled.schemaVersion(), assembled.sdkVersion(),
                 assembled.serviceId(), assembled.instanceId(), assembled.applicationVersion(), assembled.graphFingerprint(),
-                assembled.nodes(), assembled.edges(), assembled.evidence(), assembled.findings(), assembled.analysisStatus());
+                assembled.nodes(), assembled.edges(), assembled.evidence(), assembled.findings(), assembled.analysisStatus(),
+                assembled.evidenceDisplayCodes());
     }
 
     private Snapshot withApplicationVersion(Snapshot snapshot, String applicationVersion) {
         return new Snapshot(snapshot.snapshotId(), snapshot.capturedAt(), snapshot.schemaVersion(), snapshot.sdkVersion(),
                 snapshot.serviceId(), snapshot.instanceId(), applicationVersion, snapshot.graphFingerprint(),
-                snapshot.nodes(), snapshot.edges(), snapshot.evidence(), snapshot.findings(), snapshot.analysisStatus());
+                snapshot.nodes(), snapshot.edges(), snapshot.evidence(), snapshot.findings(), snapshot.analysisStatus(),
+                snapshot.evidenceDisplayCodes());
     }
 
     private Snapshot withEvidenceSummary(Snapshot snapshot, String summary) {
@@ -256,6 +264,7 @@ class LocalSnapshotStoreIntegrationTest {
         Evidence updated = new Evidence(existing.id(), existing.source(), existing.location(), summary);
         return new Snapshot(snapshot.snapshotId(), snapshot.capturedAt(), snapshot.schemaVersion(), snapshot.sdkVersion(),
                 snapshot.serviceId(), snapshot.instanceId(), snapshot.applicationVersion(), snapshot.graphFingerprint(),
-                snapshot.nodes(), snapshot.edges(), List.of(updated), snapshot.findings(), snapshot.analysisStatus());
+                snapshot.nodes(), snapshot.edges(), List.of(updated), snapshot.findings(), snapshot.analysisStatus(),
+                snapshot.evidenceDisplayCodes());
     }
 }

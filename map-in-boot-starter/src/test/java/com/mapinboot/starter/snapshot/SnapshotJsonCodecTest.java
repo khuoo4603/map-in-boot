@@ -19,19 +19,92 @@ import com.mapinboot.core.graph.model.GraphEdge;
 import com.mapinboot.core.graph.model.GraphNode;
 import com.mapinboot.core.graph.model.SecurityGraph;
 import com.mapinboot.core.snapshot.Snapshot;
-import java.time.Instant;
 import java.io.InputStream;
-import java.util.Properties;
+import java.time.Instant;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Properties;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class SnapshotJsonCodecTest {
+
+    @Test
+    void assemblerPersistsDisplayCodesForFinalEvidence() {
+        Snapshot snapshot = new SnapshotAssembler(List.of(), "1", sdkVersion())
+                .assemble(report(), "service", "instance", "1.2.3");
+
+        String encoded = new SnapshotJsonCodec().encode(snapshot);
+
+        assertTrue(encoded.contains("\"evidenceDisplayCodes\":{\"evidence-1\":\"EP-MAPPING-001\"}"));
+    }
+
+    @Test
+    void codecRejectsNewSnapshotWithoutDisplayCodeMapping() {
+        MapInBootException exception = assertThrows(MapInBootException.class,
+                () -> new SnapshotJsonCodec().encode(withoutDisplayCodes(validSnapshot())));
+
+        assertEquals(ErrorCode.INVALID_SNAPSHOT, exception.getErrorCode());
+    }
+
+    @Test
+    void codecRejectsDuplicateDisplayCodesForDifferentEvidence() {
+        Snapshot source = validSnapshot();
+        Evidence second = new Evidence("evidence-2", EvidenceSource.RUNTIME, "runtime-2", "Handler");
+        Snapshot invalid = new Snapshot(source.snapshotId(), source.capturedAt(), source.schemaVersion(),
+                source.sdkVersion(), source.serviceId(), source.instanceId(), source.applicationVersion(),
+                source.graphFingerprint(), source.nodes(), source.edges(), List.of(source.evidence().get(0), second),
+                source.findings(), source.analysisStatus(),
+                Map.of("evidence-1", "EP-MAPPING-001", second.id(), "EP-MAPPING-001"));
+
+        MapInBootException exception = assertThrows(MapInBootException.class,
+                () -> new SnapshotJsonCodec().encode(invalid));
+
+        assertEquals(ErrorCode.INVALID_SNAPSHOT, exception.getErrorCode());
+    }
+
+    @Test
+    void codecRejectsMissingUnknownNullBlankAndMalformedDisplayCodeEntries() {
+        Snapshot source = validSnapshot();
+        Map<String, String> nullKey = new LinkedHashMap<>();
+        nullKey.put(null, "EP-MAPPING-001");
+        Map<String, String> nullValue = new LinkedHashMap<>();
+        nullValue.put("evidence-1", null);
+        List<Map<String, String>> invalidMaps = List.of(
+                Map.of(),
+                Map.of("unknown-evidence", "EP-MAPPING-001"),
+                Map.of("evidence-1", " "),
+                Map.of("evidence-1", "E-001"),
+                nullKey,
+                nullValue);
+
+        for (Map<String, String> invalidMap : invalidMaps) {
+            MapInBootException exception = assertThrows(MapInBootException.class,
+                    () -> new SnapshotJsonCodec().encode(withDisplayCodes(source, invalidMap)));
+            assertEquals(ErrorCode.INVALID_SNAPSHOT, exception.getErrorCode());
+        }
+
+        MapInBootException nullMapException = assertThrows(MapInBootException.class,
+                () -> new SnapshotJsonCodec().encode(withDisplayCodes(source, null)));
+        assertEquals(ErrorCode.INVALID_SNAPSHOT, nullMapException.getErrorCode());
+    }
+
+    @Test
+    void snapshotCopiesEvidenceDisplayCodesImmutably() {
+        Snapshot source = validSnapshot();
+        Map<String, String> mutableCodes = new LinkedHashMap<>(source.evidenceDisplayCodes());
+        Snapshot snapshot = withDisplayCodes(source, mutableCodes);
+        mutableCodes.put("other-evidence", "EP-MAPPING-002");
+
+        assertEquals(source.evidenceDisplayCodes(), snapshot.evidenceDisplayCodes());
+        assertThrows(UnsupportedOperationException.class,
+                () -> snapshot.evidenceDisplayCodes().put("other-evidence", "EP-MAPPING-002"));
+    }
 
     @Test
     void assemblerUsesGradleVersionMetadataForSdkVersion() throws Exception {
@@ -163,14 +236,15 @@ class SnapshotJsonCodecTest {
         Snapshot snapshot = new Snapshot("snapshot-1", Instant.parse("2026-10-31T00:00:00Z"), "1",
                 sdkVersion(), "service", "instance", "1.2.3", fingerprint,
                 List.of(node, handler), List.of(edge), List.of(evidence), List.of(finding),
-                Map.of("collector", AnalysisStatus.READY));
+                Map.of("collector", AnalysisStatus.READY), Map.of(evidence.id(), "EP-MAPPING-001"));
         SnapshotJsonCodec codec = new SnapshotJsonCodec();
 
         String encoded = codec.encode(snapshot);
         Snapshot decoded = codec.decode(encoded);
 
-        assertFalse(encoded.contains("evidenceDisplayCodes"));
+        assertTrue(encoded.contains("\"evidenceDisplayCodes\":{\"evidence-1\":\"EP-MAPPING-001\"}"));
         assertEquals(snapshot, decoded);
+        assertEquals(Map.of(evidence.id(), "EP-MAPPING-001"), decoded.evidenceDisplayCodes());
         assertEquals(snapshot.schemaVersion(), decoded.schemaVersion());
         assertEquals(snapshot.evidence(), decoded.evidence());
         assertEquals(snapshot.nodes().get(0).evidenceIds(), decoded.nodes().get(0).evidenceIds());
@@ -179,6 +253,20 @@ class SnapshotJsonCodecTest {
         assertEquals(snapshot.graphFingerprint(), decoded.graphFingerprint());
         assertEquals(snapshot.capturedAt(), decoded.capturedAt());
         assertEquals(Confidence.UNKNOWN, decoded.edges().get(0).confidence());
+    }
+
+    @Test
+    void jackson3CodecReadsLegacySnapshotWithoutDisplayCodes() {
+        Snapshot snapshot = validSnapshot();
+        String encoded = new SnapshotJsonCodec().encode(snapshot);
+        int displayCodesField = encoded.indexOf(",\"evidenceDisplayCodes\":");
+        String legacyJson = encoded.substring(0, displayCodesField) + encoded.substring(encoded.lastIndexOf('}'));
+
+        Snapshot decoded = new SnapshotJsonCodec().decode(legacyJson);
+
+        assertEquals(Map.of(), decoded.evidenceDisplayCodes());
+        assertEquals(snapshot.evidence(), decoded.evidence());
+        assertEquals(snapshot.findings().get(0).evidenceIds(), decoded.findings().get(0).evidenceIds());
     }
 
     @Test
@@ -286,14 +374,27 @@ class SnapshotJsonCodecTest {
         return new Snapshot("snapshot-1", Instant.parse("2026-10-31T00:00:00Z"), "1",
                 sdkVersion(), "service", "instance", "1.2.3", fingerprint,
                 List.of(node, handler), List.of(edge), List.of(evidence), List.of(finding),
-                Map.of("collector", AnalysisStatus.READY));
+                Map.of("collector", AnalysisStatus.READY), Map.of(evidence.id(), "EP-MAPPING-001"));
     }
 
     private Snapshot withGraph(Snapshot source, List<GraphNode> nodes, List<GraphEdge> edges) {
         String fingerprint = new GraphFingerprintGenerator().generate(new SecurityGraph(nodes, edges));
         return new Snapshot(source.snapshotId(), source.capturedAt(), source.schemaVersion(), source.sdkVersion(),
                 source.serviceId(), source.instanceId(), source.applicationVersion(), fingerprint,
-                nodes, edges, source.evidence(), source.findings(), source.analysisStatus());
+                nodes, edges, source.evidence(), source.findings(), source.analysisStatus(),
+                source.evidenceDisplayCodes());
+    }
+
+    private Snapshot withoutDisplayCodes(Snapshot source) {
+        return new Snapshot(source.snapshotId(), source.capturedAt(), source.schemaVersion(), source.sdkVersion(),
+                source.serviceId(), source.instanceId(), source.applicationVersion(), source.graphFingerprint(),
+                source.nodes(), source.edges(), source.evidence(), source.findings(), source.analysisStatus());
+    }
+
+    private Snapshot withDisplayCodes(Snapshot source, Map<String, String> displayCodes) {
+        return new Snapshot(source.snapshotId(), source.capturedAt(), source.schemaVersion(), source.sdkVersion(),
+                source.serviceId(), source.instanceId(), source.applicationVersion(), source.graphFingerprint(),
+                source.nodes(), source.edges(), source.evidence(), source.findings(), source.analysisStatus(), displayCodes);
     }
 
     private String sdkVersion() {

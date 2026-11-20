@@ -303,7 +303,8 @@ public class LocalSnapshotStore {
     private Snapshot withSnapshotId(Snapshot snapshot, String snapshotId) {
         return new Snapshot(snapshotId, snapshot.capturedAt(), snapshot.schemaVersion(), snapshot.sdkVersion(),
                 snapshot.serviceId(), snapshot.instanceId(), snapshot.applicationVersion(), snapshot.graphFingerprint(),
-                snapshot.nodes(), snapshot.edges(), snapshot.evidence(), snapshot.findings(), snapshot.analysisStatus());
+                snapshot.nodes(), snapshot.edges(), snapshot.evidence(), snapshot.findings(), snapshot.analysisStatus(),
+                snapshot.evidenceDisplayCodes());
     }
 
     private MapInBootException snapshotReadFailed(Throwable cause) {

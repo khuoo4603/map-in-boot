@@ -541,7 +541,7 @@ class WebAccessSmokeIntegrationTest {
         return new Snapshot(assembled.snapshotId(), Instant.parse("2026-10-30T00:00:00Z"), assembled.schemaVersion(),
                 assembled.sdkVersion(), assembled.serviceId(), assembled.instanceId(), assembled.applicationVersion(),
                 assembled.graphFingerprint(), assembled.nodes(), assembled.edges(), assembled.evidence(), assembled.findings(),
-                assembled.analysisStatus());
+                assembled.analysisStatus(), assembled.evidenceDisplayCodes());
     }
 
     @FunctionalInterface

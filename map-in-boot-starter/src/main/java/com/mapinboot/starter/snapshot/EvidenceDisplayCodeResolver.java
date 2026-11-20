@@ -1,7 +1,9 @@
-package com.mapinboot.starter.web.ui;
+package com.mapinboot.starter.snapshot;
 
 import com.mapinboot.core.analysis.model.AnalysisReport;
 import com.mapinboot.core.collection.model.CollectionReport;
+import com.mapinboot.core.common.error.ErrorCode;
+import com.mapinboot.core.common.error.MapInBootException;
 import com.mapinboot.core.common.status.EvidenceSource;
 import com.mapinboot.core.common.type.EdgeType;
 import com.mapinboot.core.evidence.Evidence;
@@ -10,13 +12,14 @@ import com.mapinboot.core.evidence.EvidenceCodeGenerator;
 import com.mapinboot.core.evidence.Fact;
 import com.mapinboot.core.evidence.Relation;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
-// 보고서의 구조 근거를 표시 코드 분류로 변환
+// Snapshot Evidence 표시 코드 분류·생성
 public final class EvidenceDisplayCodeResolver {
     private static final Classification ENDPOINT_MAPPING = new Classification("EP", "MAPPING");
     private static final Classification SERVLET = new Classification("SV", "SERVLET");
@@ -40,9 +43,15 @@ public final class EvidenceDisplayCodeResolver {
         this.generator = generator;
     }
 
-    // Collection·Analysis 보고서 기반 원본 ID·표시 코드 매핑 생성
-    public Map<String, String> resolve(CollectionReport collection, AnalysisReport analysis) {
-        List<Evidence> evidence = evidence(collection, analysis);
+    // 최종 Snapshot Evidence와 분석 구조 기반 표시 코드 매핑 생성
+    public Map<String, String> resolve(
+            CollectionReport collection,
+            AnalysisReport analysis,
+            Collection<Evidence> evidence
+    ) {
+        if (evidence == null) {
+            throw new MapInBootException(ErrorCode.INVALID_CONFIG, "Snapshot Evidence가 없습니다.");
+        }
         Map<String, Evidence> evidenceById = indexEvidence(evidence);
         Map<String, Set<Classification>> classificationsByEvidenceId = new LinkedHashMap<>();
 
@@ -76,20 +85,8 @@ public final class EvidenceDisplayCodeResolver {
         return generator.generate(evidence, classifications);
     }
 
-    // Collection·Analysis Evidence 원본 목록 결합
-    private List<Evidence> evidence(CollectionReport collection, AnalysisReport analysis) {
-        List<Evidence> evidence = new ArrayList<>();
-        if (collection != null) {
-            evidence.addAll(collection.evidence());
-        }
-        if (analysis != null) {
-            evidence.addAll(analysis.evidence());
-        }
-        return evidence;
-    }
-
     // 표시 코드 분류 대상 Evidence ID 인덱스 생성
-    private Map<String, Evidence> indexEvidence(List<Evidence> evidence) {
+    private Map<String, Evidence> indexEvidence(Collection<Evidence> evidence) {
         Map<String, Evidence> evidenceById = new LinkedHashMap<>();
         for (Evidence item : evidence) {
             if (item != null) {
