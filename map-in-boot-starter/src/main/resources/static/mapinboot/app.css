@@ -217,7 +217,16 @@ button:focus-visible { outline: 2px solid var(--accent-strong); outline-offset: 
 .inspector-value { color: var(--text); overflow-wrap: anywhere; white-space: pre-wrap; }
 .inspector-empty, .inspector-help, .inspector-finding-state { margin: 7px 0; color: var(--muted); font-size: 13px; line-height: 1.5; }
 .inspector-finding-state { color: var(--accent-strong); }
-.inspector-evidence, .inspector-finding, .inspector-relation { margin-top: 8px; padding: 7px 8px; border: 1px solid var(--line); border-radius: 3px; background: var(--page); }
+.inspector-evidence { display: flex; flex-direction: column; gap: 10px; margin-top: 10px; padding: 14px 16px; border: 1px solid var(--line); border-radius: 8px; background: #141B17; }
+.inspector-evidence-code { color: var(--accent-strong); font-size: 16px; font-weight: 600; overflow-wrap: anywhere; }
+.inspector-evidence-state { margin: 0; color: var(--muted); font-size: 13px; line-height: 1.5; }
+.inspector-evidence .inspector-row { padding: 5px 0; border-bottom: 0; font-size: 14px; line-height: 1.5; }
+.inspector-evidence-original { display: flex; flex-direction: column; gap: 8px; }
+.inspector-evidence-original[hidden] { display: none; }
+.inspector-evidence-id { padding: 8px; border: 1px solid var(--line); border-radius: 4px; color: var(--text); font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 12px; overflow-wrap: anywhere; white-space: pre-wrap; }
+.inspector-evidence-toggle, .inspector-evidence-copy-code, .inspector-evidence-copy-id { align-self: flex-start; padding: 6px 9px; border: 1px solid var(--line); border-radius: 4px; color: var(--text); background: transparent; cursor: pointer; font: inherit; font-size: 12px; }
+.inspector-evidence-toggle:hover, .inspector-evidence-copy-code:hover, .inspector-evidence-copy-id:hover { border-color: var(--accent); color: var(--accent-strong); }
+.inspector-finding, .inspector-relation { margin-top: 8px; padding: 7px 8px; border: 1px solid var(--line); border-radius: 3px; background: var(--page); }
 @media (prefers-reduced-motion: reduce) { .request-flow-dot { transition: none; } }
 .inspector-link { display: block; width: 100%; margin: 5px 0; padding: 8px 9px; border: 1px solid var(--line); border-radius: 3px; color: var(--text); background: transparent; cursor: pointer; text-align: left; font-size: 13px; overflow-wrap: anywhere; }
 .inspector-link:hover { border-color: var(--accent); color: var(--accent-strong); }

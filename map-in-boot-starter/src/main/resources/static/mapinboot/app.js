@@ -175,7 +175,8 @@
       onClear: clearSelection,
       onSelect: selectGraphElement,
       onOpenDetail: openEndpointDetail,
-      onOpenFindingEndpoint: (endpointId) => openEndpointDetail(endpointId, state.selectedFindingId)
+      onOpenFindingEndpoint: (endpointId) => openEndpointDetail(endpointId, state.selectedFindingId),
+      onCopy: showNotice
     })
     : null;
 

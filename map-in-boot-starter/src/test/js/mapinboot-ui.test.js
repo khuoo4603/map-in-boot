@@ -112,7 +112,7 @@ function createElement(tagName = "div") {
   return element;
 }
 
-function loadUi({ fetchImpl, timers, animationClock } = {}) {
+function loadUi({ fetchImpl, timers, animationClock, clipboard } = {}) {
   const ids = [
     "view-title", "view-state", "shell-notice", "help-button", "settings-button", "refresh-button",
     "help-panel", "settings-panel", "setting-show-areas", "setting-show-edge-labels", "setting-show-minimap",
@@ -167,6 +167,7 @@ function loadUi({ fetchImpl, timers, animationClock } = {}) {
   });
   let activeFetch = fetchImpl || (() => new Promise(() => {}));
   const window = Object.assign(createEventTarget(), {});
+  window.navigator = { clipboard: clipboard || { writeText: async () => {} } };
   if (animationClock) {
     window.requestAnimationFrame = (callback) => animationClock.requestFrame(callback);
     window.cancelAnimationFrame = (id) => animationClock.cancelFrame(id);
@@ -443,7 +444,7 @@ test("Graph가 비어 있어도 위치 없는 Finding을 보안 MAP Modal에서 
   assert.equal(elements.get("inspector").hidden, true);
   assert.equal(elements.get("finding-modal").hidden, false);
   assert.match(textOf(elements.get("finding-modal")), /확인된 연결 위치 없음/);
-  assert.match(textOf(elements.get("finding-modal")), /Evidence 없음/);
+  assert.match(textOf(elements.get("finding-modal")), /연결된 근거가 없습니다\./);
   assert.match(textOf(elements.get("finding-modal")), /제공된 점검 가이드 없음/);
   ui.selectView("security-flow");
   elements.get("finding-confidence").value = "CONFIRMED";
@@ -469,7 +470,7 @@ test("위치 없는 Finding도 보안 MAP에서 상세 Modal로 확인함", () =
   assert.match(textOf(elements.get("finding-modal-content")), /UNKNOWN/);
   assert.match(textOf(elements.get("finding-modal-content")), /runtime evidence 2/);
   assert.match(textOf(elements.get("finding-modal-content")), /orders:\/\/node\/2/);
-  assert.match(textOf(elements.get("finding-modal-content")), /참조 확인 불가/);
+  assert.match(textOf(elements.get("finding-modal-content")), /근거 참조를 확인할 수 없습니다\./);
   assert.match(textOf(elements.get("finding-modal-content")), /설정 확인/);
   assert.equal(ui.state.viewGraph.nodes.length, 10);
 });
@@ -4835,4 +4836,95 @@ test("Node 선택은 기존 SVG Node와 Edge DOM을 재사용함", () => {
   assert.equal(findAllByClass(elements.get("graph-nodes"), "graph-node")[2], node);
   assert.equal(findAllByClass(elements.get("graph-edges"), "graph-edge")[2], edge);
   assert.equal(node.getAttribute("data-selected"), "true");
+});
+
+test("Node·Edge·Finding 근거가 저장 표시 코드를 공유하고 전체 원본 ID를 접어 복사함", async () => {
+  const copied = [];
+  const { ui, elements } = loadUi({ clipboard: { writeText: async (text) => copied.push(text) } });
+  const snapshot = graphFixture();
+  const originalId = "a".repeat(64);
+  snapshot.evidence = [{ id: originalId, source: "RUNTIME", location: "orders://handler/check", summary: "실제 확인 내용" }];
+  snapshot.evidenceDisplayCodes = { [originalId]: "EP-MAPPING-001" };
+  snapshot.nodes[2].evidenceIds = [originalId];
+  snapshot.edges[3].evidenceIds = [originalId];
+  snapshot.findings[0].evidenceIds = [originalId];
+
+  ui.renderGraph(snapshot);
+  await ui.layoutGraph();
+  ui.selectGraphElement("node", "node-2");
+
+  const inspector = elements.get("inspector");
+  const codeIn = (root) => findAllByClass(root, "inspector-evidence-code")[0].textContent;
+  const nodeCard = findAllByClass(inspector, "inspector-evidence")[0];
+  assert.equal(codeIn(nodeCard), "EP-MAPPING-001");
+  const originalPanel = findAllByClass(nodeCard, "inspector-evidence-original")[0];
+  const revealOriginal = findAllByClass(nodeCard, "inspector-evidence-toggle")[0];
+  assert.equal(originalPanel.hidden, true);
+  assert.equal(revealOriginal.attributes["aria-expanded"], "false");
+  findAllByClass(nodeCard, "inspector-evidence-copy-code")[0].dispatchEvent({ type: "click" });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.deepEqual(copied, ["EP-MAPPING-001"]);
+  assert.equal(elements.get("shell-notice").textContent, "표시 ID를 복사했습니다.");
+  revealOriginal.dispatchEvent({ type: "click" });
+  assert.equal(originalPanel.hidden, false);
+  assert.equal(revealOriginal.attributes["aria-expanded"], "true");
+  assert.equal(findAllByClass(originalPanel, "inspector-evidence-id")[0].textContent, originalId);
+  findAllByClass(nodeCard, "inspector-evidence-copy-id")[0].dispatchEvent({ type: "click" });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.deepEqual(copied, ["EP-MAPPING-001", originalId]);
+  assert.equal(elements.get("shell-notice").textContent, "원본 식별자를 복사했습니다.");
+
+  ui.selectGraphElement("edge", "edge-3");
+  assert.equal(codeIn(findAllByClass(inspector, "inspector-evidence")[0]), "EP-MAPPING-001");
+
+  const entry = { finding: snapshot.findings[0], nodeIds: ["node-2"], edgeIds: ["edge-3"], missing: false };
+  ui.inspector.renderFinding({ graph: ui.state.graph, snapshot, entry, onReturn: () => {}, onOpenEndpoint: () => {} });
+  assert.equal(codeIn(findAllByClass(inspector, "inspector-evidence")[0]), "EP-MAPPING-001");
+  ui.inspector.renderFindingModal({ graph: ui.state.graph, snapshot, entry, apiLabel: "GET /orders" });
+  assert.equal(codeIn(findAllByClass(elements.get("finding-modal-content"), "inspector-evidence")[0]), "EP-MAPPING-001");
+});
+
+test("Evidence 누락·구버전 매핑·위치 누락을 구분하고 가짜 표시 ID를 만들지 않음", async () => {
+  const copied = [];
+  const { ui, elements } = loadUi({ clipboard: { writeText: async (text) => copied.push(text) } });
+  const snapshot = graphFixture();
+  snapshot.evidence = [
+    { id: "mapped-evidence", source: "RUNTIME", location: "", summary: "저장된 근거" },
+    { id: "legacy-evidence", source: "RUNTIME", location: "legacy://source", summary: "구버전 근거" }
+  ];
+  snapshot.evidenceDisplayCodes = { "mapped-evidence": "EV-GENERAL-007" };
+  snapshot.nodes[2].evidenceIds = ["mapped-evidence", "missing-reference", "legacy-evidence"];
+
+  ui.renderGraph(snapshot);
+  ui.selectGraphElement("node", "node-2");
+
+  const cards = findAllByClass(elements.get("inspector"), "inspector-evidence");
+  assert.equal(cards.length, 3);
+  assert.match(textOf(cards[0]), /EV-GENERAL-007/);
+  assert.match(textOf(cards[0]), /확인 위치 정보 없음/);
+  assert.match(textOf(cards[1]), /근거 참조를 확인할 수 없습니다\./);
+  assert.match(textOf(cards[2]), /표시 ID가 저장되지 않은 근거입니다\./);
+  assert.doesNotMatch(textOf(cards[2]), /EV-[A-Z]+-[0-9]{3}/);
+  const originalPanel = findAllByClass(cards[2], "inspector-evidence-original")[0];
+  const revealOriginal = findAllByClass(cards[2], "inspector-evidence-toggle")[0];
+  assert.equal(originalPanel.hidden, true);
+  revealOriginal.dispatchEvent({ type: "click" });
+  assert.equal(findAllByClass(originalPanel, "inspector-evidence-id")[0].textContent, "legacy-evidence");
+  findAllByClass(originalPanel, "inspector-evidence-copy-id")[0].dispatchEvent({ type: "click" });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.deepEqual(copied, ["legacy-evidence"]);
+});
+
+test("Evidence 복사 권한 오류를 Inspector Toast로 알림", async () => {
+  const { ui, elements } = loadUi({ clipboard: { writeText: async () => { throw new Error("denied"); } } });
+  const snapshot = graphFixture();
+  snapshot.evidenceDisplayCodes = { "evidence-2": "EV-GENERAL-002" };
+  ui.renderGraph(snapshot);
+  ui.selectGraphElement("node", "node-2");
+
+  findAllByClass(elements.get("inspector"), "inspector-evidence-copy-code")[0].dispatchEvent({ type: "click" });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  assert.equal(elements.get("shell-notice").dataset.kind, "error");
+  assert.match(elements.get("shell-notice").textContent, /클립보드 권한/);
 });

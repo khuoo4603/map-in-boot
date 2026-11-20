@@ -209,7 +209,9 @@
     const onSelect = options.onSelect || (() => {});
     const onOpenDetail = options.onOpenDetail || (() => {});
     const onOpenFindingEndpoint = options.onOpenFindingEndpoint || (() => {});
+    const onCopy = options.onCopy || (() => {});
     let activeTab = "properties";
+    let originalEvidenceIndex = 0;
     let current = { graph: null, visibleGraph: null, snapshot: null, selection: null, controllerGroups: [] };
 
     function setHidden(element, hidden) {
@@ -251,25 +253,67 @@
     }
 
     function appendEvidence(parent, snapshot, ids) {
-      appendHeading(parent, "Evidence");
+      appendHeading(parent, "근거");
       const evidenceIds = copyIds(ids);
       if (evidenceIds.length === 0) {
-        appendEmpty(parent, "Evidence 없음");
+        appendEmpty(parent, "연결된 근거가 없습니다.");
         return;
       }
       const byId = evidenceMap(snapshot);
+      const displayCodes = snapshot && snapshot.evidenceDisplayCodes || {};
       evidenceIds.forEach((id) => {
         const evidence = byId.get(id);
         const block = appendElement(parent, "div", "inspector-evidence");
-        appendRow(block, "근거 ID", id);
-        if (!evidence) {
-          appendRow(block, "상태", "참조 확인 불가");
-          return;
+        const hasDisplayCode = Object.prototype.hasOwnProperty.call(displayCodes, id)
+          && valueOf(displayCodes[id], "") !== "";
+        if (hasDisplayCode) {
+          const code = valueOf(displayCodes[id], "");
+          appendElement(block, "strong", "inspector-evidence-code", code);
+          appendCopyButton(block, "표시 ID 복사", code, "inspector-evidence-copy-code", "표시 ID를 복사했습니다.");
+        } else {
+          appendElement(block, "p", "inspector-evidence-state", "표시 ID가 저장되지 않은 근거입니다.");
         }
-        appendRow(block, "출처 (Source)", evidence.source);
-        appendRow(block, "위치 (Location)", evidence.location);
-        appendRow(block, "요약 (Summary)", evidence.summary);
+        if (!evidence) {
+          appendElement(block, "p", "inspector-evidence-state", "근거 참조를 확인할 수 없습니다.");
+        } else {
+          appendRow(block, "근거 출처", evidence.source);
+          appendRow(block, "확인 내용", valueOf(evidence.summary, "확인 내용 정보 없음"));
+          appendRow(block, "확인 위치", valueOf(evidence.location, "확인 위치 정보 없음"));
+        }
+
+        const originalPanelId = `inspector-evidence-original-${++originalEvidenceIndex}`;
+        const toggle = appendElement(block, "button", "inspector-evidence-toggle", "원본 식별자 보기");
+        toggle.setAttribute("type", "button");
+        toggle.setAttribute("aria-expanded", "false");
+        toggle.setAttribute("aria-controls", originalPanelId);
+        const originalPanel = appendElement(block, "div", "inspector-evidence-original");
+        originalPanel.id = originalPanelId;
+        originalPanel.hidden = true;
+        appendElement(originalPanel, "code", "inspector-evidence-id", id);
+        appendCopyButton(originalPanel, "원본 ID 복사", id, "inspector-evidence-copy-id", "원본 식별자를 복사했습니다.");
+        toggle.addEventListener("click", () => {
+          originalPanel.hidden = !originalPanel.hidden;
+          const expanded = !originalPanel.hidden;
+          toggle.setAttribute("aria-expanded", String(expanded));
+          toggle.textContent = expanded ? "원본 식별자 숨기기" : "원본 식별자 보기";
+        });
       });
+    }
+
+    function appendCopyButton(parent, label, text, className, successMessage) {
+      const button = appendElement(parent, "button", className, label);
+      button.setAttribute("type", "button");
+      button.addEventListener("click", async () => {
+        try {
+          const clipboard = window.navigator && window.navigator.clipboard;
+          if (!clipboard || typeof clipboard.writeText !== "function") throw new Error("clipboard-unavailable");
+          await clipboard.writeText(text);
+          onCopy(successMessage, "success");
+        } catch (_error) {
+          onCopy("클립보드 권한이 없어 복사하지 못했습니다.", "error");
+        }
+      });
+      return button;
     }
 
     function appendFindings(parent, snapshot, selection, controllerGroups) {
