@@ -197,7 +197,13 @@
       <div class="finding-modal" id="finding-modal" role="dialog" aria-modal="true" aria-labelledby="finding-modal-title" hidden>
         <section class="finding-modal-panel">
           <header class="finding-modal-header">
-            <h2 id="finding-modal-title">Finding</h2>
+            <div class="finding-modal-heading">
+              <h2 id="finding-modal-title">Finding</h2>
+              <div class="finding-modal-meta">
+                <span class="finding-modal-confidence" id="finding-modal-confidence" data-confidence="UNKNOWN">판단 불가 (UNKNOWN)</span>
+                <span class="finding-modal-rule" id="finding-modal-rule">Rule ID 확인 불가</span>
+              </div>
+            </div>
             <button class="finding-modal-close" id="finding-modal-close" type="button" aria-label="Finding 상세 닫기">닫기</button>
           </header>
           <div class="finding-modal-content" id="finding-modal-content"></div>

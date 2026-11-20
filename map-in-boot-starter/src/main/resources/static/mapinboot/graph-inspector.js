@@ -215,6 +215,8 @@
   function create(options = {}) {
     const inspector = options.inspector;
     const findingModalTitle = options.findingModalTitle;
+    const findingModalConfidence = options.findingModalConfidence;
+    const findingModalRule = options.findingModalRule;
     const findingModalContent = options.findingModalContent;
     const popover = options.popover;
     const surface = options.surface;
@@ -520,8 +522,8 @@
     }
 
     // Snapshot의 원본 ID와 Finding 참조를 대조한 위치 목록
-    function appendFindingLocations(parent, graph, entry, onOpenEndpoint) {
-      appendHeading(parent, "확인된 Graph 위치");
+    function appendFindingLocations(parent, graph, entry, onOpenEndpoint, heading = "확인된 Graph 위치") {
+      appendHeading(parent, heading);
       if (!entry) {
         appendEmpty(parent, "Finding을 선택하면 실제 연결 위치를 확인할 수 있습니다.");
         return;
@@ -611,6 +613,11 @@
       if (findingModalTitle) findingModalTitle.textContent = entry
         ? valueOf(entry.finding.title, entry.finding.id)
         : "Finding 선택 필요";
+      if (findingModalConfidence) {
+        findingModalConfidence.textContent = "판단 불가 (UNKNOWN)";
+        findingModalConfidence.setAttribute("data-confidence", "UNKNOWN");
+      }
+      if (findingModalRule) findingModalRule.textContent = "Rule ID 확인 불가";
       if (!findingModalContent) return null;
       findingModalContent.replaceChildren();
       if (!entry) {
@@ -618,20 +625,29 @@
         return null;
       }
       const finding = entry.finding;
-      appendHeading(findingModalContent, "판단");
-      appendRow(findingModalContent, "Rule ID", finding.ruleId);
-      appendRow(findingModalContent, "Confidence", `${confidenceNames[finding.confidence] || "확인 불가"} (${finding.confidence || "UNKNOWN"})`);
-      appendRow(findingModalContent, "연결 API", apiLabel || "확인된 API 없음");
-      appendElement(findingModalContent, "p", "inspector-help", valueOf(finding.description, "판단 설명 없음"));
+      const confidenceCode = valueOf(finding.confidence, "UNKNOWN");
+      if (findingModalConfidence) {
+        findingModalConfidence.textContent = confidenceValue(finding.confidence);
+        findingModalConfidence.setAttribute("data-confidence", confidenceCode);
+      }
+      if (findingModalRule) {
+        findingModalRule.textContent = finding.ruleId
+          ? `Rule ID · ${finding.ruleId}`
+          : "Rule ID 확인 불가";
+      }
+      appendHeading(findingModalContent, "대상 API");
+      appendRow(findingModalContent, "API", apiLabel || "확인된 API 없음");
+      appendHeading(findingModalContent, "판단 내용");
+      appendElement(findingModalContent, "p", "finding-modal-description", valueOf(finding.description, "판단 설명 없음"));
       const scopedEntry = {
         ...entry,
         nodeIds: Array.from(new Set([...(entry.nodeIds || []), ...nodeIds])),
         edgeIds: Array.from(new Set([...(entry.edgeIds || []), ...edgeIds]))
       };
-      appendFindingLocations(findingModalContent, graph, scopedEntry, onOpenEndpoint);
       appendEvidence(findingModalContent, snapshot, finding.evidenceIds);
       appendHeading(findingModalContent, "점검 가이드");
-      appendElement(findingModalContent, "p", "inspector-help", valueOf(finding.guide, "제공된 점검 가이드 없음"));
+      appendElement(findingModalContent, "p", "finding-modal-guide", valueOf(finding.guide, "제공된 점검 가이드 없음"));
+      appendFindingLocations(findingModalContent, graph, scopedEntry, onOpenEndpoint, "관련 Graph");
       return finding;
     }
 

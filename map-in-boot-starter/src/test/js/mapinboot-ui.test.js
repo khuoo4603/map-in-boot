@@ -123,6 +123,7 @@ function loadUi({ fetchImpl, timers, animationClock, clipboard } = {}) {
     "endpoint-options", "node-filter-field", "node-filter", "edge-filter-field", "edge-filter", "unconnected-node-field", "include-unconnected-nodes", "finding-filter-fields", "finding-rule", "finding-confidence", "finding-list", "finding-api-fields", "finding-api-select", "finding-all-apis", "detail-finding-list", "search-reset", "filter-toggle", "map-filter-panel", "zoom-in", "zoom-out", "fit-graph",
     "reset-view", "screen-lock-toggle", "graph-filter-status", "graph-minimap", "graph-minimap-svg",
     "graph-minimap-nodes", "graph-minimap-viewport", "graph-finding-sections", "finding-modal", "finding-modal-title", "finding-modal-close", "finding-modal-content", "inspector", "graph-popover",
+    "finding-modal-confidence", "finding-modal-rule",
     "request-flow-controls", "request-flow-start", "request-flow-pause", "request-flow-reset",
     "request-flow-status", "request-flow-education", "request-flow-dot"
   ];
@@ -136,9 +137,17 @@ function loadUi({ fetchImpl, timers, animationClock, clipboard } = {}) {
   elements.get("finding-modal-title").tagName = "h2";
   elements.get("finding-modal-close").tagName = "button";
   elements.get("finding-modal-content").tagName = "div";
-  elements.get("finding-modal").append(
-    elements.get("finding-modal-title"), elements.get("finding-modal-close"), elements.get("finding-modal-content")
+  const findingModalHeader = createElement("header");
+  findingModalHeader.setAttribute("class", "finding-modal-header");
+  elements.get("finding-modal-confidence").tagName = "span";
+  elements.get("finding-modal-rule").tagName = "span";
+  findingModalHeader.append(
+    elements.get("finding-modal-title"),
+    elements.get("finding-modal-confidence"),
+    elements.get("finding-modal-rule"),
+    elements.get("finding-modal-close")
   );
+  elements.get("finding-modal").append(findingModalHeader, elements.get("finding-modal-content"));
   ["graph-svg", "request-flow-education", "request-flow-dot"].forEach((id) => {
     elements.get(id).setAttribute("hidden", "");
   });
@@ -335,7 +344,7 @@ test("동일 Finding ID의 새 Snapshot 참조와 근거를 갱신하고 PARTIAL
   assert.deepEqual(Array.from(ui.state.viewGraph.edges, (edge) => edge.id), Array.from(ui.state.graph.edges, (edge) => edge.id));
   assert.match(textOf(elements.get("view-state")), /부분 완료.*보존 Snapshot 있음/);
   const modalText = textOf(elements.get("finding-modal"));
-  ["갱신된 판단", "UNKNOWN", "확인 불가", "갱신된 설명", "evidence-7", "runtime evidence 7", "갱신된 가이드"]
+  ["갱신된 판단", "판단 불가 (UNKNOWN)", "갱신된 설명", "evidence-7", "runtime evidence 7", "갱신된 가이드"]
     .forEach((value) => assert.ok(modalText.includes(value), `${value} 표시`));
   ["이전 판단", "이전 설명", "이전 가이드", "runtime evidence 2"]
     .forEach((value) => assert.equal(modalText.includes(value), false, `${value} 잔존 금지`));
@@ -467,8 +476,8 @@ test("위치 없는 Finding도 보안 MAP에서 상세 Modal로 확인함", () =
   assert.equal(elements.get("finding-modal").hidden, false);
   assert.match(elements.get("finding-modal-title").textContent, /체인 점검/);
   assert.match(textOf(elements.get("finding-modal-content")), /판단 설명/);
-  assert.match(textOf(elements.get("finding-modal-content")), /CHAIN_MISSING/);
-  assert.match(textOf(elements.get("finding-modal-content")), /UNKNOWN/);
+  assert.equal(elements.get("finding-modal-rule").textContent, "Rule ID · CHAIN_MISSING");
+  assert.equal(elements.get("finding-modal-confidence").textContent, "판단 불가 (UNKNOWN)");
   assert.match(textOf(elements.get("finding-modal-content")), /runtime evidence 2/);
   assert.match(textOf(elements.get("finding-modal-content")), /orders:\/\/node\/2/);
   assert.match(textOf(elements.get("finding-modal-content")), /근거 참조를 확인할 수 없습니다\./);
@@ -5099,6 +5108,94 @@ test("Finding 영향 섹션은 실제 참조만 감싸고 별도 Modal을 키보
   assert.equal(section.focused, true);
   assert.equal(ui.state.view, "security-detail");
   assert.equal(ui.state.selectedFindingId, "endpoint-impact");
+});
+
+test("Finding 상세 Modal은 판단 상태·원문 Rule ID와 실제 정보 순서를 표시함", () => {
+  const { ui, elements } = loadUi();
+  const snapshot = detailGraphFixture();
+  const finding = {
+    id: "finding-modal-order",
+    ruleId: "OBJECT_BINDING",
+    title: "다른 계정 주문 조회 차단",
+    description: "요청 계정과 주문 소유자가 다르면 조회를 거부함.",
+    confidence: "CONFIRMED",
+    nodeIds: ["endpoint-a", "authorization-a"],
+    edgeIds: ["secured-a"],
+    evidenceIds: ["finding-evidence"],
+    guide: "요청자 ID와 주문 소유자 ID 비교 확인"
+  };
+  const entry = { finding, nodeIds: finding.nodeIds, edgeIds: finding.edgeIds, missing: false, unlocated: false };
+  snapshot.evidence = [{ id: "finding-evidence", source: "STATIC", location: "OrderController#list", summary: "인가 비교 확인" }];
+  snapshot.evidenceDisplayCodes = { "finding-evidence": "EP-FINDING-001" };
+
+  ui.inspector.renderFindingModal({
+    graph: snapshot,
+    snapshot,
+    entry,
+    apiLabel: "GET /orders/{orderId}",
+    nodeIds: [],
+    edgeIds: [],
+    onOpenEndpoint: () => {}
+  });
+
+  const modal = elements.get("finding-modal");
+  const confidence = elements.get("finding-modal-confidence");
+  const rule = elements.get("finding-modal-rule");
+  assert.ok(confidence);
+  assert.equal(confidence.textContent, "확인됨 (CONFIRMED)");
+  assert.equal(confidence.attributes["data-confidence"], "CONFIRMED");
+  assert.ok(rule);
+  assert.equal(rule.textContent, "Rule ID · OBJECT_BINDING");
+  assert.equal(elements.get("finding-modal-title").textContent, finding.title);
+  [
+    ["CONFIRMED", "확인됨 (CONFIRMED)"],
+    ["LIKELY", "검토 필요 (LIKELY)"],
+    ["UNKNOWN", "판단 불가 (UNKNOWN)"],
+    [undefined, "판단 불가 (UNKNOWN)"]
+  ].forEach(([value, expected]) => {
+    entry.finding.confidence = value;
+    ui.inspector.renderFindingModal({ graph: snapshot, snapshot, entry, apiLabel: "GET /orders/{orderId}" });
+    assert.equal(confidence.textContent, expected);
+  });
+  entry.finding.confidence = "CONFIRMED";
+  ui.inspector.renderFindingModal({ graph: snapshot, snapshot, entry, apiLabel: "GET /orders/{orderId}" });
+
+  const content = elements.get("finding-modal-content");
+  assert.deepEqual(findAllByClass(content, "inspector-section-title").map((item) => item.textContent), [
+    "대상 API", "판단 내용", "근거", "점검 가이드", "관련 Graph"
+  ]);
+  assert.match(textOf(content), /GET \/orders\/\{orderId\}/);
+  assert.match(textOf(content), /요청 계정과 주문 소유자가 다르면 조회를 거부함\./);
+  assert.match(textOf(content), /EP-FINDING-001/);
+  assert.match(textOf(content), /인가 비교 확인/);
+  assert.match(textOf(content), /요청자 ID와 주문 소유자 ID 비교 확인/);
+  finding.evidenceIds = ["finding-evidence", "finding-evidence-second"];
+  snapshot.evidence.push({ id: "finding-evidence-second", source: "RUNTIME", location: "OrderService#load", summary: "소유자 조건 적용" });
+  snapshot.evidenceDisplayCodes["finding-evidence-second"] = "EP-FINDING-002";
+  ui.inspector.renderFindingModal({ graph: snapshot, snapshot, entry, apiLabel: "GET /orders/{orderId}" });
+  assert.equal(findAllByClass(content, "inspector-evidence").length, 2);
+  assert.match(textOf(content), /EP-FINDING-002/);
+  finding.evidenceIds = [];
+  ui.inspector.renderFindingModal({ graph: snapshot, snapshot, entry, apiLabel: "GET /orders/{orderId}" });
+  assert.equal(findAllByClass(content, "inspector-evidence").length, 0);
+  assert.match(textOf(content), /연결된 근거가 없습니다\./);
+  finding.evidenceIds = ["finding-evidence"];
+  ui.inspector.renderFindingModal({ graph: snapshot, snapshot, entry, apiLabel: "GET /orders/{orderId}" });
+  const nodeRefs = findAllByClass(content, "inspector-link")
+    .map((item) => item.attributes["data-node-id"])
+    .filter(Boolean);
+  assert.ok(nodeRefs.includes("endpoint-a"));
+  assert.ok(nodeRefs.includes("authorization-a"));
+  const edgeRefs = findAllByClass(content, "inspector-link")
+    .map((item) => item.attributes["data-edge-id"])
+    .filter(Boolean);
+  assert.deepEqual(edgeRefs, ["secured-a"]);
+
+  ui.inspector.renderFindingModal({ graph: null, snapshot, entry: null, apiLabel: "" });
+  assert.equal(elements.get("finding-modal-title").textContent, "Finding 선택 필요");
+  assert.equal(confidence.textContent, "판단 불가 (UNKNOWN)");
+  assert.equal(confidence.attributes["data-confidence"], "UNKNOWN");
+  assert.equal(rule.textContent, "Rule ID 확인 불가");
 });
 
 test("HTMLCollection형 SVG 자식에서도 부분 Graph 갱신과 Node·Edge Inspector가 동작함", async () => {

@@ -170,6 +170,8 @@
     ? inspectorClientType.create({
       inspector,
       findingModalTitle,
+      findingModalConfidence: document.querySelector("#finding-modal-confidence"),
+      findingModalRule: document.querySelector("#finding-modal-rule"),
       findingModalContent: document.querySelector("#finding-modal-content"),
       popover: graphPopover,
       surface: graphCanvas,
