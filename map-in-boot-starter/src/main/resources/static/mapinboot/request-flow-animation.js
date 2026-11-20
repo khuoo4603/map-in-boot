@@ -37,7 +37,8 @@
       kind: definition.kind || "education",
       anchorId: definition.anchorId || null,
       description: definition.description || "",
-      position: copyPosition(definition.position)
+      position: copyPosition(definition.position),
+      transition: definition.transition || null
     });
   }
 
@@ -70,9 +71,39 @@
   function endpointFor(graph, endpointId) {
     const nodes = graph && Array.isArray(graph.nodes) ? graph.nodes : [];
     const candidateId = endpointId || graph && graph.endpointId;
-    return nodes.find((node) => node.id === candidateId && node.type === "ENDPOINT")
-      || nodes.find((node) => node.type === "ENDPOINT")
-      || null;
+    return candidateId ? nodes.find((node) => node.id === candidateId && node.type === "ENDPOINT") || null : null;
+  }
+
+  function transitionBetween(source, target, graph, projection) {
+    if (!source.anchorId || !target.anchorId || source.anchorId === target.anchorId) return null;
+    const projectionEdge = projection && Array.isArray(projection.edges)
+      ? projection.edges.find((edge) => edge.sourceId === source.anchorId && edge.targetId === target.anchorId)
+      : null;
+    if (projectionEdge) {
+      return {
+        kind: "projection",
+        edgeId: projectionEdge.id,
+        sourceId: source.anchorId,
+        targetId: target.anchorId,
+        length: null
+      };
+    }
+    const actualEdge = (graph && Array.isArray(graph.edges) ? graph.edges : [])
+      .find((edge) => edge.sourceId === source.anchorId && edge.targetId === target.anchorId);
+    return actualEdge ? {
+      kind: "actual",
+      edgeId: actualEdge.id,
+      sourceId: source.anchorId,
+      targetId: target.anchorId,
+      length: null
+    } : null;
+  }
+
+  function connectSteps(steps, graph, projection) {
+    for (let index = 0; index < steps.length - 1; index += 1) {
+      steps[index].transition = transitionBetween(steps[index], steps[index + 1], graph, projection);
+    }
+    return steps;
   }
 
   function confirmedFilterSet(index, graph, chainId) {
@@ -115,6 +146,7 @@
   // 실제 Snapshot 관계와 교육 전용 개념 단계를 분리한 Request 흐름 생성
   function buildSteps({ graph, index, endpointId, positions, projection } = {}) {
     const source = graph && typeof graph === "object" ? graph : { nodes: [], edges: [] };
+    const sourceNodes = Array.isArray(source.nodes) ? source.nodes : [];
     const nodes = nodeMap(source);
     const edges = edgeMap(source);
     const endpoint = endpointFor(source, endpointId);
@@ -129,7 +161,7 @@
     educationStep(steps, projection, positions, "education-thread-context", "동기 처리 스레드", "일반적인 처리 문맥이며 실제 Thread ID가 아님");
     educationStep(steps, projection, positions, "education-servlet-filter-chain", "FilterChain 전달", "Filter#doFilter·FilterChain.doFilter의 객체 참조 전달");
 
-    const servlet = source.nodes.find((node) => node.type === "SERVLET");
+    const servlet = sourceNodes.find((node) => node.type === "SERVLET");
     const servletOrder = servlet && flowIndex && typeof flowIndex.servletFiltersForServlet === "function"
       ? flowIndex.servletFiltersForServlet(servlet.id)
       : { orderStatus: "UNKNOWN", filters: [] };
@@ -184,13 +216,15 @@
         label: "첫 SecurityFilterChain 확인 불가",
         kind: "education",
         anchorId: "education-request-matcher",
-        position: projection && projection.nodes.find((node) => node.id === "education-request-matcher")?.position,
+        position: projection && Array.isArray(projection.nodes)
+          ? projection.nodes.find((node) => node.id === "education-request-matcher")?.position
+          : null,
         description: "MATCHED_BY가 없거나 불확실하여 실제 Chain을 선택하지 않음"
       });
     }
 
     educationStep(steps, projection, positions, "education-servlet-chain-continue", "Servlet FilterChain 계속", "인증 실패·인가 거부 시 이후 단계에 도달하지 않을 수 있음");
-    const dispatcher = source.nodes.find((node) => node.type === "SERVLET");
+    const dispatcher = sourceNodes.find((node) => node.type === "SERVLET");
     if (dispatcher) actualStep(steps, "dispatcher-servlet", "확인된 DispatcherServlet", dispatcher, positions, "Servlet 등록 정보 확인");
     educationStep(steps, projection, positions, "education-handler-mapping", "HandlerMapping", "요청과 Handler의 매핑 정보 조회");
     const actualEndpoint = endpoint && nodes.get(endpoint.id);
@@ -219,8 +253,22 @@
       });
     }
 
-    educationStep(steps, projection, positions, "education-response-return", "응답 복귀", "호출 체인을 거쳐 응답이 반환되는 교육용 흐름");
-    return steps;
+    return connectSteps(steps, source, projection);
+  }
+
+  function pathPointAt(path, progress, cachedLength) {
+    if (!path || typeof path.getTotalLength !== "function" || typeof path.getPointAtLength !== "function") return null;
+    try {
+      const length = Number.isFinite(cachedLength) && cachedLength > 0 ? cachedLength : path.getTotalLength();
+      if (!Number.isFinite(length) || length <= 0) return null;
+      const ratio = Math.max(0, Math.min(1, Number.isFinite(progress) ? progress : 0));
+      const point = path.getPointAtLength(length * ratio);
+      return point && Number.isFinite(point.x) && Number.isFinite(point.y)
+        ? { x: point.x, y: point.y }
+        : null;
+    } catch {
+      return null;
+    }
   }
 
   function defaultClock() {
@@ -238,17 +286,23 @@
 
   function createController(options = {}) {
     const clock = options.clock || defaultClock();
-    const stepDuration = Number.isFinite(options.stepDuration) && options.stepDuration > 0
-      ? options.stepDuration : 900;
+    const duration = (value, fallback) => Number.isFinite(value) && value > 0 ? value : fallback;
+    const nodeHoldDuration = duration(options.nodeHoldDuration, 280);
+    const minimumEdgeDuration = duration(options.minimumEdgeDuration, 450);
+    const maximumEdgeDuration = Math.max(minimumEdgeDuration, duration(options.maximumEdgeDuration, 1000));
+    const durationPerLength = duration(options.durationPerLength, 0.65);
+    const unavailablePathDuration = duration(options.unavailablePathDuration, 280);
+    const stepNoticeDuration = duration(options.stepNoticeDuration, 260);
     const reducedMotion = Boolean(options.reducedMotion);
     const onUpdate = typeof options.onUpdate === "function" ? options.onUpdate : () => {};
     const onStateChange = typeof options.onStateChange === "function" ? options.onStateChange : () => {};
     let steps = [];
     let status = "idle";
     let stepIndex = 0;
+    let phase = null;
     let progress = 0;
-    let elapsed = 0;
     let startedAt = 0;
+    let phaseElapsed = 0;
     let frameId = null;
     let destroyed = false;
 
@@ -256,8 +310,11 @@
       return {
         status,
         stepIndex,
+        phase,
         progress,
         step: steps[stepIndex] || null,
+        nextStep: steps[stepIndex + 1] || null,
+        transition: steps[stepIndex] && steps[stepIndex].transition || null,
         steps: steps.slice()
       };
     }
@@ -283,23 +340,92 @@
       frameId = clock.requestFrame(frame);
     }
 
-    function advance(timestamp) {
-      if (steps.length === 0) return false;
-      const currentTime = Number.isFinite(timestamp) ? timestamp : clock.now();
-      elapsed = Math.max(0, currentTime - startedAt);
-      const total = steps.length * stepDuration;
-      if (elapsed >= total) {
-        elapsed = total;
-        stepIndex = steps.length - 1;
-        progress = 1;
-        setStatus("complete");
-        emitUpdate();
-        return false;
-      }
-      stepIndex = Math.min(steps.length - 1, Math.floor(elapsed / stepDuration));
-      progress = (elapsed - stepIndex * stepDuration) / stepDuration;
+    function phaseForStep(step) {
+      return step && step.anchorId ? "NODE_HOLD" : "STEP_NOTICE";
+    }
+
+    function edgeDuration(step) {
+      const length = step && step.transition && step.transition.length;
+      if (!Number.isFinite(length) || length <= 0) return null;
+      return Math.min(maximumEdgeDuration, Math.max(minimumEdgeDuration, length * durationPerLength));
+    }
+
+    function phaseDuration() {
+      if (phase === "NODE_HOLD") return nodeHoldDuration;
+      if (phase === "EDGE_TRAVEL") return edgeDuration(steps[stepIndex]);
+      if (phase === "PATH_UNAVAILABLE") return unavailablePathDuration;
+      if (phase === "STEP_NOTICE") return stepNoticeDuration;
+      return null;
+    }
+
+    function complete() {
+      phase = "COMPLETE";
+      progress = 1;
+      phaseElapsed = 0;
+      setStatus("complete");
       emitUpdate();
-      return true;
+    }
+
+    function nextStep() {
+      if (stepIndex + 1 >= steps.length) {
+        complete();
+        return;
+      }
+      stepIndex += 1;
+      phase = phaseForStep(steps[stepIndex]);
+      phaseElapsed = 0;
+      progress = 0;
+    }
+
+    function advancePhase() {
+      const step = steps[stepIndex];
+      const target = steps[stepIndex + 1];
+      if (phase === "NODE_HOLD" && target) {
+        if (!target.anchorId) {
+          stepIndex += 1;
+          phase = "STEP_NOTICE";
+        }
+        else if (step.anchorId === target.anchorId || !edgeDuration(step)) phase = "PATH_UNAVAILABLE";
+        else phase = "EDGE_TRAVEL";
+        phaseElapsed = 0;
+        progress = 0;
+        return;
+      }
+      nextStep();
+    }
+
+    function advance(timestamp) {
+      if (steps.length === 0 || status !== "running") return false;
+      let elapsed = Math.max(0, (Number.isFinite(timestamp) ? timestamp : clock.now()) - startedAt);
+      while (status === "running") {
+        const currentDuration = phaseDuration();
+        if (!Number.isFinite(currentDuration) || currentDuration <= 0) {
+          if (phase === "NODE_HOLD" || phase === "EDGE_TRAVEL") {
+            phase = "PATH_UNAVAILABLE";
+            phaseElapsed = 0;
+            progress = 0;
+          } else advancePhase();
+          if (status !== "running") return false;
+          continue;
+        }
+        if (elapsed < currentDuration) {
+          phaseElapsed = elapsed;
+          progress = elapsed / currentDuration;
+          emitUpdate();
+          return true;
+        }
+        elapsed -= currentDuration;
+        startedAt += currentDuration;
+        phaseElapsed = 0;
+        progress = 0;
+        advancePhase();
+        if (status !== "running") return false;
+        if (elapsed === 0) {
+          emitUpdate();
+          return true;
+        }
+      }
+      return false;
     }
 
     function frame(timestamp) {
@@ -314,29 +440,36 @@
       steps = Array.isArray(nextSteps) ? nextSteps.slice() : [];
       status = "idle";
       stepIndex = 0;
+      phase = null;
       progress = 0;
-      elapsed = 0;
+      phaseElapsed = 0;
       onStateChange(snapshot());
       emitUpdate();
     }
 
     function play() {
-      if (destroyed || steps.length === 0) return;
+      if (destroyed || steps.length === 0 || status === "running") return;
       if (reducedMotion) {
         cancelFrame();
-        elapsed = steps.length * stepDuration;
-        stepIndex = steps.length - 1;
+        let lastAnchored = -1;
+        for (let index = 0; index < steps.length; index += 1) {
+          if (steps[index] && steps[index].anchorId) lastAnchored = index;
+        }
+        stepIndex = lastAnchored >= 0 ? lastAnchored : steps.length - 1;
+        phase = phaseForStep(steps[stepIndex]);
         progress = 1;
+        phaseElapsed = phaseDuration() || 0;
         setStatus("complete");
         emitUpdate();
         return;
       }
-      if (status === "complete") {
-        elapsed = 0;
+      if (status === "complete" || status === "idle") {
         stepIndex = 0;
+        phase = phaseForStep(steps[stepIndex]);
         progress = 0;
+        phaseElapsed = 0;
       }
-      startedAt = clock.now() - elapsed;
+      startedAt = clock.now() - phaseElapsed;
       setStatus("running");
       emitUpdate();
       scheduleFrame();
@@ -353,7 +486,9 @@
     function reset() {
       if (destroyed) return;
       cancelFrame();
-      elapsed = 0;
+      phase = null;
+      phaseElapsed = 0;
+      startedAt = 0;
       stepIndex = 0;
       progress = 0;
       setStatus("idle");
@@ -364,6 +499,7 @@
       cancelFrame();
       destroyed = true;
       status = "idle";
+      phase = null;
     }
 
     return {
@@ -377,5 +513,5 @@
     };
   }
 
-  window.MapInBootRequestFlow = { buildSteps, createController };
+  window.MapInBootRequestFlow = { buildSteps, createController, pathPointAt };
 })();

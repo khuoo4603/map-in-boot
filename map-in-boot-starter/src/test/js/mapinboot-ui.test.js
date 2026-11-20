@@ -1,4 +1,4 @@
-import assert from "node:assert/strict";
+﻿import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import vm from "node:vm";
@@ -53,10 +53,18 @@ function createElement(tagName = "div") {
     style: {},
     append(...items) { items.forEach((item) => { item.parentNode = this; children.push(item); }); },
     appendChild(item) { item.parentNode = this; children.push(item); return item; },
+    remove() {
+      if (!this.parentNode) return;
+      const siblings = this.parentNode.children;
+      const index = siblings.indexOf(this);
+      if (index >= 0) siblings.splice(index, 1);
+      this.parentNode = null;
+    },
     focus() { this.focused = true; },
     replaceChildren(...items) {
       children.forEach((child) => { child.parentNode = null; });
       children.length = 0;
+      this.textContent = "";
       items.forEach((item) => { item.parentNode = this; children.push(item); });
     },
     getAttribute(name) { return attributes[name] || null; },
@@ -85,6 +93,8 @@ function createElement(tagName = "div") {
         bottom: this.clientHeight
       };
     },
+    getTotalLength() { return 100; },
+    getPointAtLength() { return { x: 123, y: 45 }; },
     closest(selector) {
       let current = this;
       while (current) {
@@ -102,16 +112,16 @@ function createElement(tagName = "div") {
   return element;
 }
 
-function loadUi({ fetchImpl, timers } = {}) {
+function loadUi({ fetchImpl, timers, animationClock } = {}) {
   const ids = [
     "view-title", "view-state", "shell-notice", "help-button", "settings-button", "refresh-button",
     "help-panel", "settings-panel", "setting-show-areas", "setting-show-edge-labels", "setting-show-minimap",
     "graph-canvas",
     "graph-empty", "graph-state-message", "graph-svg", "graph-viewport", "graph-areas", "graph-flow-projection", "graph-guides",
-    "graph-edges", "graph-nodes", "service-name", "snapshot-time", "endpoint-search", "endpoint-filter-label",
-    "endpoint-options", "node-filter-field", "node-filter", "edge-filter-field", "edge-filter", "search-reset", "filter-toggle", "map-filter-panel", "zoom-in", "zoom-out", "fit-graph",
+    "graph-edges", "graph-nodes", "graph-finding-section-titles", "service-name", "snapshot-time", "endpoint-search", "endpoint-filter-label", "endpoint-filter-label-text",
+    "endpoint-options", "node-filter-field", "node-filter", "edge-filter-field", "edge-filter", "unconnected-node-field", "include-unconnected-nodes", "finding-filter-fields", "finding-rule", "finding-confidence", "finding-list", "finding-api-fields", "finding-api-select", "finding-all-apis", "detail-finding-list", "search-reset", "filter-toggle", "map-filter-panel", "zoom-in", "zoom-out", "fit-graph",
     "reset-view", "graph-filter-status", "graph-minimap", "graph-minimap-svg",
-    "graph-minimap-nodes", "graph-minimap-viewport", "inspector", "graph-popover",
+    "graph-minimap-nodes", "graph-minimap-viewport", "graph-finding-sections", "finding-modal", "finding-modal-title", "finding-modal-close", "finding-modal-content", "inspector", "graph-popover",
     "request-flow-controls", "request-flow-start", "request-flow-pause", "request-flow-reset",
     "request-flow-status", "request-flow-education", "request-flow-dot"
   ];
@@ -121,6 +131,13 @@ function loadUi({ fetchImpl, timers } = {}) {
   elements.get("map-filter-panel").hidden = true;
   elements.get("endpoint-options").hidden = true;
   elements.get("request-flow-controls").hidden = true;
+  elements.get("finding-modal").hidden = true;
+  elements.get("finding-modal-title").tagName = "h2";
+  elements.get("finding-modal-close").tagName = "button";
+  elements.get("finding-modal-content").tagName = "div";
+  elements.get("finding-modal").append(
+    elements.get("finding-modal-title"), elements.get("finding-modal-close"), elements.get("finding-modal-content")
+  );
   ["graph-svg", "request-flow-education", "request-flow-dot"].forEach((id) => {
     elements.get(id).setAttribute("hidden", "");
   });
@@ -150,6 +167,10 @@ function loadUi({ fetchImpl, timers } = {}) {
   });
   let activeFetch = fetchImpl || (() => new Promise(() => {}));
   const window = Object.assign(createEventTarget(), {});
+  if (animationClock) {
+    window.requestAnimationFrame = (callback) => animationClock.requestFrame(callback);
+    window.cancelAnimationFrame = (id) => animationClock.cancelFrame(id);
+  }
   const layoutCalls = [];
   class FakeElk {
     constructor(options) {
@@ -186,7 +207,8 @@ function loadUi({ fetchImpl, timers } = {}) {
     window,
     fetch: (...args) => activeFetch(...args),
     setTimeout: timers ? timers.setTimeout : setTimeout,
-    clearTimeout: timers ? timers.clearTimeout : clearTimeout
+    clearTimeout: timers ? timers.clearTimeout : clearTimeout,
+    performance: animationClock ? { now: () => animationClock.now() } : undefined
   });
   ["graph-flow.js", "request-flow-animation.js", "graph-standard-filters.js", "graph-renderer.js", "graph-inspector.js", "layout-client.js", "graph-navigation.js", "app.js"].forEach((file) => {
     vm.runInContext(
@@ -208,13 +230,624 @@ function loadUi({ fetchImpl, timers } = {}) {
 }
 
 function textOf(element) {
-  return [element.textContent || "", ...element.children.map(textOf)].join(" ");
+  return [element.textContent || "", ...Array.from(element.children || [], textOf)].join(" ");
 }
+
+test("Finding 위치는 정규화된 원본 참조만 사용하고 유실 참조를 구분함", () => {
+  const { window } = loadUi();
+  const snapshot = graphFixture();
+  const graph = window.MapInBootGraph.normalize(snapshot);
+  const nodeId = graph.nodes[0].id;
+  const edgeId = graph.edges[0].id;
+  const findings = [
+    { id: "f1", nodeIds: [nodeId, "missing-node"], edgeIds: [edgeId] },
+    { id: "f2", nodeIds: [], edgeIds: [] },
+    { id: "f3", nodeIds: [nodeId], edgeIds: [] },
+    { id: "f4", nodeIds: ["absent"], edgeIds: ["absent-edge"] }
+  ];
+  const original = JSON.stringify(findings);
+  const index = window.MapInBootGraph.indexFindings({ findings }, graph);
+  assert.deepEqual(Array.from(index[0].nodeIds), [nodeId]);
+  assert.deepEqual(Array.from(index[0].edgeIds), [edgeId]);
+  assert.equal(index[0].missing, true);
+  assert.equal(index[1].unlocated, true);
+  assert.equal(index[2].unlocated, false);
+  assert.equal(index[3].unlocated, true);
+  assert.equal(index[3].missing, true);
+  assert.equal(JSON.stringify(findings), original);
+});
+
+test("복합 Finding 참조와 공유 Evidence는 원본 Node·Edge ID에만 연결됨", async () => {
+  const { ui, elements, window } = loadUi();
+  const snapshot = graphFixture();
+  snapshot.evidence.push({ id: "evidence-shared", source: "CODE_PATTERN", location: "OrderPolicy#check", summary: "공유 근거" });
+  snapshot.findings = [
+    { id: "composite", ruleId: "CHAIN_ORDER", title: "복합 Finding", description: "첫 판단", confidence: "LIKELY", nodeIds: ["node-2", "node-2"], edgeIds: ["edge-3"], evidenceIds: ["evidence-shared"], guide: "첫 가이드" },
+    { id: "shared-only", ruleId: "STATE_BYPASS", title: "공유 Evidence만 같은 Finding", description: "다른 판단", confidence: "UNKNOWN", nodeIds: ["node-7"], edgeIds: ["edge-7"], evidenceIds: ["evidence-shared"], guide: "다른 가이드" }
+  ];
+  const original = JSON.stringify(snapshot);
+  ui.renderGraph(snapshot);
+  ui.selectView("security-flow");
+  await ui.layoutGraph();
+  assert.equal(findAllByClass(elements.get("graph-minimap-nodes"), "finding-marker").length, 0);
+
+  let nodeMarkers = findAllByClass(elements.get("graph-nodes"), "finding-marker");
+  let edgeMarkers = findAllByClass(elements.get("graph-edges"), "finding-marker");
+  assert.equal(nodeMarkers.filter((marker) => /복합 Finding/.test(marker.getAttribute("aria-label"))).length, 1);
+  assert.match(nodeMarkers[0].children.find((child) => child.tagName === "title").textContent, /복합 Finding.*CHAIN_ORDER.*검토 필요/);
+  assert.equal(edgeMarkers.filter((marker) => /복합 Finding/.test(marker.getAttribute("aria-label"))).length, 1);
+  assert.equal(edgeMarkers.find((marker) => /복합 Finding/.test(marker.getAttribute("aria-label"))).getAttribute("data-confidence"), "LIKELY");
+
+  ui.selectGraphElement("node", "node-2");
+  assert.match(textOf(elements.get("inspector")), /복합 Finding/);
+  assert.doesNotMatch(textOf(elements.get("inspector")), /공유 Evidence만 같은 Finding/);
+  edgeMarkers = findAllByClass(elements.get("graph-edges"), "finding-marker");
+  edgeMarkers.find((marker) => /복합 Finding/.test(marker.getAttribute("aria-label"))).dispatchEvent({ type: "click" });
+  await ui.layoutGraph();
+
+  assert.equal(ui.state.selectedFindingId, "composite");
+  assert.equal(ui.state.selection, null);
+  const endpointGraph = window.MapInBootFlow.deriveEndpointGraph(ui.state.graph, ui.state.detailApiId, ui.state.flowIndex);
+  assert.deepEqual(Array.from(ui.state.viewGraph.nodes, (node) => node.id), Array.from(endpointGraph.nodes, (node) => node.id));
+  assert.deepEqual(Array.from(ui.state.viewGraph.edges, (edge) => edge.id), Array.from(endpointGraph.edges, (edge) => edge.id));
+  assert.equal(elements.get("inspector").hidden, true);
+  assert.match(textOf(elements.get("finding-modal")), /공유 근거/);
+  assert.match(textOf(elements.get("finding-modal")), /첫 가이드/);
+  assert.doesNotMatch(textOf(elements.get("finding-modal")), /다른 판단|다른 가이드/);
+  assert.equal(JSON.stringify(snapshot), original);
+});
+
+test("동일 Finding ID의 새 Snapshot 참조와 근거를 갱신하고 PARTIAL·Confidence를 분리함", async () => {
+  const first = graphFixture();
+  first.findings = [{
+    id: "same-finding", ruleId: "CHAIN_ORDER", title: "이전 판단", description: "이전 설명",
+    confidence: "LIKELY", nodeIds: ["node-2"], edgeIds: ["edge-3"], evidenceIds: ["evidence-2"], guide: "이전 가이드"
+  }];
+  first.analysisStatus = { "security-chain": "READY" };
+  const latest = graphFixture();
+  latest.findings = [{
+    id: "same-finding", ruleId: "CHAIN_ORDER", title: "갱신된 판단", description: "갱신된 설명",
+    confidence: "UNKNOWN", nodeIds: ["node-7"], edgeIds: ["edge-7"], evidenceIds: ["evidence-7"], guide: "갱신된 가이드"
+  }];
+  latest.analysisStatus = { "security-chain": "PARTIAL" };
+  const responses = [
+    { ok: true, json: async () => ({ phase: "COMPLETED", persistedSnapshotPresent: true }) },
+    { ok: true, json: async () => first },
+    { ok: true, json: async () => ({ phase: "PARTIAL", persistedSnapshotPresent: true }) },
+    { ok: true, json: async () => latest }
+  ];
+  const { ui, elements } = loadUi({ fetchImpl: () => Promise.resolve(responses.shift()) });
+  await new Promise((resolve) => setImmediate(resolve));
+  await new Promise((resolve) => setImmediate(resolve));
+  ui.selectView("security-flow");
+  await ui.layoutGraph();
+  findAllByClass(elements.get("graph-nodes"), "finding-marker")[0].dispatchEvent({ type: "click" });
+  await ui.layoutGraph();
+  assert.equal(ui.state.selectedFindingId, "same-finding");
+
+  await ui.loadStatus();
+  assert.equal(ui.state.view, "security-flow");
+  assert.equal(ui.state.selectedFindingId, "same-finding");
+  assert.equal(ui.state.snapshot.analysisStatus["security-chain"], "PARTIAL");
+  assert.deepEqual(Array.from(ui.state.viewGraph.nodes, (node) => node.id), Array.from(ui.state.graph.nodes, (node) => node.id));
+  assert.deepEqual(Array.from(ui.state.viewGraph.edges, (edge) => edge.id), Array.from(ui.state.graph.edges, (edge) => edge.id));
+  assert.match(textOf(elements.get("view-state")), /부분 완료.*보존 Snapshot 있음/);
+  const modalText = textOf(elements.get("finding-modal"));
+  ["갱신된 판단", "UNKNOWN", "확인 불가", "갱신된 설명", "evidence-7", "runtime evidence 7", "갱신된 가이드"]
+    .forEach((value) => assert.ok(modalText.includes(value), `${value} 표시`));
+  ["이전 판단", "이전 설명", "이전 가이드", "runtime evidence 2"]
+    .forEach((value) => assert.equal(modalText.includes(value), false, `${value} 잔존 금지`));
+});
+
+test("Finding과 Evidence의 특수 문자열은 Modal의 텍스트 노드로 표시됨", async () => {
+  const { ui, elements } = loadUi();
+  const snapshot = graphFixture();
+  const payloads = ["<script>window.pwned=true</script>", "<img src=x onerror=alert(1)>"];
+  snapshot.findings = [{
+    id: "text-only", ruleId: "STATE_BYPASS", title: payloads[0], description: payloads[1],
+    confidence: "UNKNOWN", nodeIds: ["node-2"], edgeIds: [], evidenceIds: ["evidence-2"], guide: payloads[0]
+  }];
+  snapshot.evidence[2].location = payloads[1];
+  snapshot.evidence[2].summary = payloads[0];
+  ui.renderGraph(snapshot);
+  ui.selectView("security-flow");
+  await ui.layoutGraph();
+  findAllByClass(elements.get("graph-nodes"), "finding-marker")[0].dispatchEvent({ type: "click" });
+  await ui.layoutGraph();
+
+  const modalText = textOf(elements.get("finding-modal"));
+  assert.ok(payloads.every((payload) => modalText.includes(payload)));
+  assert.doesNotMatch(modalText, /Severity|Risk Score|Proof of Exploit|Trace/i);
+  const descendants = (element) => element.children.flatMap((child) => [child, ...descendants(child)]);
+  assert.equal(descendants(elements.get("finding-modal")).some((element) => ["script", "img"].includes(element.tagName)), false);
+});
+
+test("보안 MAP 필터는 Escape·외부 클릭으로 닫혀도 Rule·Confidence 선택을 보존함", () => {
+  const { ui, elements, document } = loadUi();
+  const snapshot = graphFixture();
+  snapshot.findings = [{ id: "filter-state", ruleId: "CHAIN_MISSING", title: "필터 상태", confidence: "UNKNOWN", nodeIds: ["node-2"], edgeIds: [] }];
+  ui.renderGraph(snapshot);
+  ui.selectView("security-flow");
+  elements.get("finding-rule").value = "CHAIN_MISSING";
+  elements.get("finding-confidence").value = "UNKNOWN";
+  elements.get("finding-rule").dispatchEvent({ type: "change" });
+  elements.get("finding-confidence").dispatchEvent({ type: "change" });
+  assert.equal(findAllByClass(elements.get("graph-nodes"), "finding-marker").length, 1);
+
+  const toggle = elements.get("filter-toggle");
+  const panel = elements.get("map-filter-panel");
+  toggle.dispatchEvent({ type: "click" });
+  document.dispatchEvent({ type: "keydown", key: "Escape" });
+  assert.equal(panel.hidden, true);
+  assert.equal(elements.get("finding-rule").value, "CHAIN_MISSING");
+  assert.equal(elements.get("finding-confidence").value, "UNKNOWN");
+
+  toggle.dispatchEvent({ type: "click" });
+  document.dispatchEvent({ type: "click", target: createElement() });
+  assert.equal(panel.hidden, true);
+  assert.equal(elements.get("finding-rule").value, "CHAIN_MISSING");
+  assert.equal(elements.get("finding-confidence").value, "UNKNOWN");
+  assert.equal(findAllByClass(elements.get("graph-nodes"), "finding-marker").length, 1);
+});
+
+test("PERMIT_ALL만으로 Finding을 합성하지 않고 보안 MAP 화면 전환 Toast를 억제함", async () => {
+  const { ui, elements } = loadUi();
+  const snapshot = graphFixture();
+  snapshot.findings = [];
+  snapshot.nodes.find((node) => node.type === "AUTHORIZATION").attributes = { policyKind: "PERMIT_ALL" };
+  ui.renderGraph(snapshot);
+  elements.get("shell-notice").textContent = "";
+  ui.selectView("security-flow");
+  await ui.layoutGraph();
+
+  assert.equal(findAllByClass(elements.get("graph-nodes"), "finding-marker").length, 0);
+  assert.match(textOf(elements.get("finding-list")), /보존된 Finding 없음/);
+  assert.equal(elements.get("shell-notice").textContent, "");
+  assert.equal(snapshot.findings.length, 0);
+});
+
+test("보안 MAP은 원본 위치와 위치 미확인 Finding을 필터와 함께 제공함", () => {
+  assert.match(indexHtml, /id="graph-svg"[^>]*role="group"/);
+  const { ui, elements } = loadUi();
+  const snapshot = graphFixture();
+  snapshot.findings.push({ id: "missing", ruleId: "PUBLIC_ENDPOINT", title: "위치 미확인", confidence: "LIKELY", nodeIds: [], edgeIds: [] });
+  ui.renderGraph(snapshot);
+  ui.selectView("security-flow");
+  assert.ok(findAllByClass(elements.get("graph-nodes"), "finding-marker").length > 0);
+  const edgeMarker = findAllByClass(elements.get("graph-edges"), "finding-marker")[0];
+  assert.equal(edgeMarker.getAttribute("transform"), "translate(123 45)");
+  assert.match(textOf(elements.get("finding-list")), /위치 미확인/);
+  edgeMarker.dispatchEvent({ type: "click" });
+  assert.equal(ui.state.selectedFindingId, "finding-1");
+  assert.equal(ui.state.view, "security-detail");
+  assert.equal(elements.get("inspector").hidden, true);
+  assert.match(elements.get("finding-modal-title").textContent, /실제 참조 Finding/);
+  ui.selectView("security-flow");
+  elements.get("finding-confidence").value = "LIKELY";
+  elements.get("finding-confidence").dispatchEvent({ type: "change" });
+  assert.equal(findAllByClass(elements.get("graph-nodes"), "finding-marker").filter((marker) => !marker.hidden).length, 0);
+  assert.match(textOf(elements.get("finding-list")), /위치 미확인/);
+  assert.equal(snapshot.nodes.length, 10);
+});
+
+test("Graph가 비어 있어도 위치 없는 Finding을 보안 MAP Modal에서 확인함", () => {
+  const { ui, elements } = loadUi();
+  ui.selectView("security-flow");
+  ui.renderGraph({ nodes: [], edges: [], findings: [
+    { id: "unlocated", ruleId: "CHAIN_MISSING", title: "체인 점검", confidence: "UNKNOWN", nodeIds: [], edgeIds: [] }
+  ] });
+  assert.match(textOf(elements.get("finding-list")), /체인 점검.*연결 위치 확인 불가/);
+  elements.get("finding-list").children[0].dispatchEvent({ type: "click" });
+  assert.equal(ui.state.selectedFindingId, "unlocated");
+  assert.equal(ui.state.view, "security-flow");
+  assert.equal(elements.get("inspector").hidden, true);
+  assert.equal(elements.get("finding-modal").hidden, false);
+  assert.match(textOf(elements.get("finding-modal")), /확인된 연결 위치 없음/);
+  assert.match(textOf(elements.get("finding-modal")), /Evidence 없음/);
+  assert.match(textOf(elements.get("finding-modal")), /제공된 점검 가이드 없음/);
+  ui.selectView("security-flow");
+  elements.get("finding-confidence").value = "CONFIRMED";
+  elements.get("finding-confidence").dispatchEvent({ type: "change" });
+  assert.doesNotMatch(textOf(elements.get("finding-list")), /체인 점검/);
+  elements.get("search-reset").dispatchEvent({ type: "click" });
+  assert.match(textOf(elements.get("finding-list")), /체인 점검/);
+});
+
+test("위치 없는 Finding도 보안 MAP에서 상세 Modal로 확인함", () => {
+  const { ui, elements } = loadUi();
+  const snapshot = graphFixture();
+  snapshot.findings = [{ id: "finding-empty", ruleId: "CHAIN_MISSING", title: "체인 점검", description: "판단 설명", confidence: "UNKNOWN", nodeIds: [], edgeIds: [], evidenceIds: ["evidence-2", "missing"], guide: "설정 확인" }];
+  ui.renderGraph(snapshot);
+  ui.selectView("security-flow");
+  elements.get("finding-list").children[0].dispatchEvent({ type: "click" });
+  assert.equal(ui.state.view, "security-flow");
+  assert.equal(elements.get("inspector").hidden, true);
+  assert.equal(elements.get("finding-modal").hidden, false);
+  assert.match(elements.get("finding-modal-title").textContent, /체인 점검/);
+  assert.match(textOf(elements.get("finding-modal-content")), /판단 설명/);
+  assert.match(textOf(elements.get("finding-modal-content")), /CHAIN_MISSING/);
+  assert.match(textOf(elements.get("finding-modal-content")), /UNKNOWN/);
+  assert.match(textOf(elements.get("finding-modal-content")), /runtime evidence 2/);
+  assert.match(textOf(elements.get("finding-modal-content")), /orders:\/\/node\/2/);
+  assert.match(textOf(elements.get("finding-modal-content")), /참조 확인 불가/);
+  assert.match(textOf(elements.get("finding-modal-content")), /설정 확인/);
+  assert.equal(ui.state.viewGraph.nodes.length, 10);
+});
+
+test("API를 확정할 수 없는 Finding은 보안 MAP을 유지하고 직접 근거만 Modal에 표시함", () => {
+  const { ui, elements } = loadUi();
+  const snapshot = graphFixture();
+  snapshot.findings = [
+    { id: "edge-only", ruleId: "CHAIN_ORDER", title: "Edge 판단", description: "Edge 설명", confidence: "LIKELY", nodeIds: [], edgeIds: ["edge-3"], evidenceIds: ["evidence-3"], guide: "Edge 가이드" },
+    { id: "node-only", ruleId: "OBJECT_BINDING", title: "Node 판단", description: "Node 설명", confidence: "CONFIRMED", nodeIds: ["node-7", "missing-node"], edgeIds: [], evidenceIds: ["evidence-7"], guide: "Node 가이드" }
+  ];
+  const original = JSON.stringify(snapshot);
+  ui.renderGraph(snapshot);
+  ui.selectView("security-flow");
+  let marker = findAllByClass(elements.get("graph-edges"), "finding-marker")
+    .find((item) => /Edge 판단/.test(item.getAttribute("aria-label")));
+  marker.dispatchEvent({ type: "click" });
+  assert.equal(ui.state.selectedFindingId, "edge-only");
+  assert.equal(ui.state.view, "security-flow");
+  assert.deepEqual(Array.from(ui.state.viewGraph.nodes, (node) => node.id), Array.from(ui.state.graph.nodes, (node) => node.id));
+  assert.deepEqual(Array.from(ui.state.viewGraph.edges, (edge) => edge.id), Array.from(ui.state.graph.edges, (edge) => edge.id));
+  assert.equal(elements.get("finding-modal").hidden, false);
+  assert.match(elements.get("finding-modal-title").textContent, /Edge 판단/);
+  assert.match(textOf(elements.get("finding-modal-content")), /Edge 설명/);
+  assert.match(textOf(elements.get("finding-modal-content")), /Edge 가이드/);
+  elements.get("finding-modal-close").dispatchEvent({ type: "click" });
+
+  assert.equal(ui.state.selectedFindingId, "edge-only");
+  marker = findAllByClass(elements.get("graph-nodes"), "finding-marker")
+    .find((item) => /Node 판단/.test(item.getAttribute("aria-label")));
+  marker.dispatchEvent({ type: "click" });
+  assert.equal(ui.state.selectedFindingId, "node-only");
+  assert.deepEqual(Array.from(ui.state.viewGraph.nodes, (node) => node.id), Array.from(ui.state.graph.nodes, (node) => node.id));
+  assert.deepEqual(Array.from(ui.state.viewGraph.edges, (edge) => edge.id), Array.from(ui.state.graph.edges, (edge) => edge.id));
+  assert.match(elements.get("finding-modal-title").textContent, /Node 판단/);
+  assert.match(textOf(elements.get("finding-modal-content")), /Node 설명/);
+  assert.match(textOf(elements.get("finding-modal-content")), /Node 가이드/);
+  assert.match(textOf(elements.get("finding-modal-content")), /evidence-7/);
+  assert.doesNotMatch(textOf(elements.get("finding-modal-content")), /Edge 판단|Edge 설명|Edge 가이드|evidence-3/);
+  assert.match(textOf(elements.get("finding-modal-content")), /일부 Graph 참조를 확인할 수 없습니다/);
+  assert.equal(JSON.stringify(snapshot), original);
+});
+
+test("상세 취약점 직접 진입과 Endpoint 이동은 전체 Endpoint Graph를 표시함", () => {
+  const { ui, elements, window } = loadUi();
+  const snapshot = detailGraphFixture();
+  snapshot.findings = [{ id: "endpoint-finding", ruleId: "PUBLIC_ENDPOINT", title: "API 판단", description: "실제 Endpoint 참조", confidence: "UNKNOWN", nodeIds: ["endpoint-a"], edgeIds: [], evidenceIds: [], guide: "실제 가이드" }];
+  ui.renderGraph(snapshot);
+  ui.state.snapshotState = "loaded";
+  ui.selectView("security-detail");
+  assert.equal(ui.state.selectedFindingId, "endpoint-finding");
+  assert.equal(elements.get("inspector").hidden, true);
+  assert.deepEqual(Array.from(ui.state.viewGraph.nodes, (node) => node.id), ["endpoint-a", "handler-a", "chain-a", "security-filter-1", "security-filter-2", "authorization-a", "security-data-a"]);
+  ui.selectView("security-flow");
+  const marker = findAllByClass(elements.get("graph-nodes"), "finding-marker")[0];
+  marker.dispatchEvent({ type: "click" });
+  assert.match(elements.get("finding-modal-title").textContent, /API 판단/);
+  elements.get("finding-modal-close").dispatchEvent({ type: "click" });
+  ui.selectGraphElement("node", "endpoint-a");
+  const endpointAction = findAllByClass(elements.get("inspector"), "inspector-detail-action")
+    .find((button) => button.textContent === "기능별 상세 보기");
+  assert.ok(endpointAction);
+  endpointAction.dispatchEvent({ type: "click" });
+  assert.equal(ui.state.view, "feature-flow");
+  assert.equal(ui.state.selectedEndpointId, "endpoint-a");
+  ui.selectView("security-flow");
+  assert.equal(ui.state.selectedFindingId, "endpoint-finding");
+  ui.selectView("security-detail");
+  const expected = window.MapInBootFlow.deriveEndpointGraph(ui.state.graph, "endpoint-a", ui.state.flowIndex);
+  assert.deepEqual(Array.from(ui.state.viewGraph.nodes, (node) => node.id), Array.from(expected.nodes, (node) => node.id));
+  ui.selectGraphElement("node", "endpoint-a");
+  const returnToFinding = findAllByClass(elements.get("inspector"), "inspector-detail-action")
+    .find((button) => button.textContent === "선택 Finding 다시 보기");
+  assert.ok(returnToFinding);
+  returnToFinding.dispatchEvent({ type: "click" });
+  assert.equal(ui.state.view, "security-detail");
+  assert.equal(ui.state.selectedFindingId, "endpoint-finding");
+  ui.renderGraph({ ...snapshot, findings: [] });
+  assert.equal(ui.state.selectedFindingId, null);
+  const refreshedEndpointGraph = window.MapInBootFlow.deriveEndpointGraph(ui.state.graph, "endpoint-a", ui.state.flowIndex);
+  assert.deepEqual(Array.from(ui.state.viewGraph.nodes, (node) => node.id), Array.from(refreshedEndpointGraph.nodes, (node) => node.id));
+  assert.equal(elements.get("finding-modal").hidden, true);
+});
+
+test("다른 View와 Finding의 늦은 ELK 응답은 선택 Finding의 Graph를 덮지 않음", async () => {
+  const { ui, layoutApi, elements } = loadUi();
+  ui.renderGraph(graphFixture());
+  const pending = [];
+  layoutApi.layout = (graph) => new Promise((resolve) => pending.push({ graph, resolve }));
+  ui.selectView("security-flow");
+  const marker = findAllByClass(elements.get("graph-edges"), "finding-marker")[0];
+  marker.dispatchEvent({ type: "click" });
+  const currentLayout = ui.layoutGraph();
+  assert.equal(pending.length, 3);
+
+  const resultFor = (graph, x) => ({
+    width: 960,
+    height: 720,
+    positions: Object.fromEntries(graph.nodes.map((node, index) => [node.id, { x: x + index, y: index * 40 }])),
+    edgeRoutes: Object.fromEntries(graph.edges.map((edge) => [edge.id, { sections: [] }]))
+  });
+  pending[2].resolve(resultFor(pending[2].graph, 300));
+  await currentLayout;
+  pending[0].resolve(resultFor(pending[0].graph, 10));
+  pending[1].resolve(resultFor(pending[1].graph, 100));
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(ui.state.view, "security-detail");
+  assert.deepEqual(Object.keys(ui.state.layout.positions).sort(), ["node-2"]);
+  assert.deepEqual(Array.from(ui.state.visibleGraph.edges, (edge) => edge.id), []);
+  assert.equal(ui.state.layout.positions["node-2"].x, 300);
+  assert.equal(elements.get("graph-minimap-nodes").children.length, ui.state.graphRender.displayNodes.length);
+  assert.equal(elements.get("graph-flow-projection").children.length, 0);
+  assert.equal(elements.get("graph-guides").children.length, 0);
+});
+
+test("API가 확인되지 않은 Finding의 Modal에서 실제 Node Inspector를 열 수 있음", async () => {
+  const { ui, elements } = loadUi();
+  const snapshot = detailGraphFixture();
+  snapshot.evidence = [
+    { id: "evidence-authorization-a", source: "SPRING_METADATA", location: "authorization-a", summary: "인가 노드 근거" },
+    { id: "e-auth-a", source: "CODE_PATTERN", location: "OrderPolicy#check", summary: "인가 조건 근거" }
+  ];
+  snapshot.findings = [{ id: "grouped-finding", ruleId: "OBJECT_BINDING", title: "인가 판단", description: "인가 정보 참조", confidence: "LIKELY", nodeIds: ["authorization-a"], edgeIds: ["secured-a"], evidenceIds: ["e-auth-a"], guide: "인가 조건 확인" }];
+  ui.renderGraph(snapshot);
+  ui.selectView("security-flow");
+  await ui.layoutGraph();
+  findAllByClass(elements.get("graph-nodes"), "finding-marker")[0].dispatchEvent({ type: "click" });
+  assert.equal(ui.state.view, "security-flow");
+  assert.equal(elements.get("finding-modal").hidden, false);
+  assert.match(textOf(elements.get("finding-modal")), /OrderPolicy#check/);
+  assert.match(textOf(elements.get("finding-modal")), /CODE_PATTERN/);
+  const originalNode = findAllByClass(elements.get("finding-modal"), "inspector-link")
+    .find((button) => button.attributes["data-node-id"] === "authorization-a");
+  assert.ok(originalNode);
+  originalNode.dispatchEvent({ type: "click" });
+  assert.equal(ui.state.selection.kind, "node");
+  assert.equal(ui.state.selection.id, "authorization-a");
+  assert.equal(elements.get("finding-modal").hidden, false);
+  assert.match(textOf(elements.get("inspector")), /Node ID authorization-a/);
+  assert.match(textOf(elements.get("inspector")), /authorizationKind ROLE/);
+});
+
+test("Snapshot 새로고침은 같은 Finding만 복원하고 사라진 ID는 폐기함", async () => {
+  const snapshot = graphFixture();
+  const replacement = { ...graphFixture(), findings: [] };
+  const responses = [
+    { ok: true, json: async () => ({ phase: "COMPLETED", persistedSnapshotPresent: true }) },
+    { ok: true, json: async () => snapshot },
+    { ok: true, json: async () => ({ phase: "COMPLETED", persistedSnapshotPresent: true }) },
+    { ok: true, json: async () => snapshot },
+    { ok: true, json: async () => ({ phase: "COMPLETED", persistedSnapshotPresent: true }) },
+    { ok: true, json: async () => replacement }
+  ];
+  const instance = loadUi({ fetchImpl: () => Promise.resolve(responses.shift()) });
+  await new Promise((resolve) => setImmediate(resolve));
+  await new Promise((resolve) => setImmediate(resolve));
+  instance.ui.selectView("security-flow");
+  findAllByClass(instance.elements.get("graph-nodes"), "finding-marker")[0].dispatchEvent({ type: "click" });
+  await instance.ui.loadStatus();
+  assert.equal(instance.ui.state.view, "security-detail");
+  assert.equal(instance.ui.state.selectedFindingId, "finding-1");
+  assert.equal(instance.elements.get("inspector").hidden, true);
+  assert.match(textOf(instance.elements.get("finding-modal")), /실제 참조 Finding/);
+
+  await instance.ui.loadStatus();
+  assert.equal(instance.ui.state.view, "security-detail");
+  assert.equal(instance.ui.state.selectedFindingId, null);
+  assert.equal(instance.ui.state.viewGraph, null);
+  assert.match(textOf(instance.elements.get("inspector")), /보존된 Finding 없음/);
+  assert.doesNotMatch(textOf(instance.elements.get("inspector")), /후속 단계/);
+});
+
+test("같은 Node의 다중 Finding과 신뢰도 필터가 원본을 보존함", () => {
+  const { ui, elements, layoutCalls } = loadUi();
+  const snapshot = graphFixture();
+  snapshot.findings = ["CONFIRMED", "LIKELY", "UNKNOWN"].map((confidence, index) => ({
+    id: `f${index}`, title: `판단 ${index}`, description: `설명 ${index}`, guide: `가이드 ${index}`,
+    ruleId: "CHAIN_MISSING", confidence, nodeIds: ["node-2"], edgeIds: [], evidenceIds: [`evidence-${index}`]
+  }));
+  const original = JSON.stringify(snapshot);
+  ui.renderGraph(snapshot);
+  ui.selectView("security-flow");
+  ui.selectGraphElement("node", "node-2");
+  assert.equal(ui.state.selection.id, "node-2");
+  let markers = findAllByClass(elements.get("graph-nodes"), "finding-marker");
+  assert.equal(markers.length, 3);
+  assert.equal(markers[1].getAttribute("tabindex"), "0");
+  assert.equal(markers[1].getAttribute("role"), "button");
+  assert.match(markers[1].getAttribute("aria-label"), /판단 1.*CHAIN_MISSING.*검토 필요/);
+  assert.match(appCss, /\.finding-marker:focus-visible/);
+  markers[1].dispatchEvent({ type: "keydown", key: " " });
+  assert.equal(ui.state.selectedFindingId, "f1");
+  assert.equal(ui.state.view, "security-detail");
+  assert.equal(ui.state.selection, null);
+  let modalText = textOf(elements.get("finding-modal"));
+  ["설명 1", "runtime evidence 1", "가이드 1"].forEach((value) => assert.ok(modalText.includes(value)));
+  ["설명 0", "runtime evidence 0", "가이드 0"].forEach((value) => assert.equal(modalText.includes(value), false));
+  ui.selectView("security-flow");
+  markers = findAllByClass(elements.get("graph-nodes"), "finding-marker");
+  assert.equal(markers[1].getAttribute("data-selected"), "true");
+  ui.clearSelection();
+  assert.equal(ui.state.selectedFindingId, "f1");
+  markers = findAllByClass(elements.get("graph-nodes"), "finding-marker");
+  markers[0].dispatchEvent({ type: "click" });
+  assert.equal(ui.state.selectedFindingId, "f0");
+  modalText = textOf(elements.get("finding-modal"));
+  ["설명 0", "runtime evidence 0", "가이드 0"].forEach((value) => assert.ok(modalText.includes(value)));
+  ["설명 1", "runtime evidence 1", "가이드 1"].forEach((value) => assert.equal(modalText.includes(value), false));
+  assert.equal(ui.state.view, "security-detail");
+  ui.selectView("security-flow");
+  ui.selectGraphElement("node", "node-2");
+  assert.equal(ui.state.selectedFindingId, "f0");
+  const beforeFilters = layoutCalls.length;
+  for (const confidence of ["CONFIRMED", "LIKELY", "UNKNOWN"]) {
+    elements.get("finding-confidence").value = confidence;
+    elements.get("finding-confidence").dispatchEvent({ type: "change" });
+    markers = findAllByClass(elements.get("graph-nodes"), "finding-marker").filter((marker) => !marker.hidden);
+    assert.equal(markers.length, 1);
+    assert.equal(markers[0].getAttribute("data-confidence"), confidence);
+  }
+  assert.equal(layoutCalls.length, beforeFilters);
+  assert.equal(JSON.stringify(snapshot), original);
+  markers[0].dispatchEvent({ type: "click" });
+  ui.selectView("all-flow");
+  assert.equal(ui.state.selectedFindingId, "f2");
+  assert.equal(findAllByClass(elements.get("graph-nodes"), "finding-marker").length, 0);
+});
+
+test("Finding 유형 필터는 원본 Rule ID를 구분하고 숨긴 위치를 알림", () => {
+  const { ui, elements } = loadUi();
+  const snapshot = graphFixture();
+  const rules = ["CHAIN_MISSING", "CHAIN_ORDER", "PUBLIC_ENDPOINT", "METHOD_MISMATCH", "FILTER_ORDER", "OBJECT_BINDING", "STATE_BYPASS", "EXTRA_RULE"];
+  snapshot.findings = rules.map((ruleId) => ({ id: ruleId, title: ruleId, ruleId, confidence: "UNKNOWN", nodeIds: ["node-2"], edgeIds: [] }));
+  const original = JSON.stringify(snapshot);
+  ui.renderGraph(snapshot);
+  ui.selectView("security-flow");
+  for (const ruleId of rules) {
+    elements.get("finding-rule").value = ruleId;
+    elements.get("finding-rule").dispatchEvent({ type: "change" });
+    const markers = findAllByClass(elements.get("graph-nodes"), "finding-marker").filter((marker) => !marker.hidden);
+    assert.equal(markers.length, 1);
+    assert.match(markers[0].getAttribute("aria-label"), new RegExp(ruleId));
+  }
+  assert.ok(elements.get("finding-rule").children.some((option) => option.value === "EXTRA_RULE"));
+  elements.get("node-filter").value = "FILTER";
+  elements.get("node-filter").dispatchEvent({ type: "change" });
+  elements.get("edge-filter").value = "FILTERED_BY";
+  elements.get("edge-filter").dispatchEvent({ type: "change" });
+  assert.doesNotMatch(textOf(elements.get("finding-list")), /필터로 숨겨진 항목/);
+  elements.get("search-reset").dispatchEvent({ type: "click" });
+  assert.equal(elements.get("finding-rule").value, "");
+  assert.equal(elements.get("node-filter").value, "");
+  assert.equal(elements.get("edge-filter").value, "");
+  assert.equal(JSON.stringify(snapshot), original);
+  rules.slice(0, 7).forEach((ruleId) => assert.ok(indexHtml.includes(`<option>${ruleId}</option>`)));
+});
+
+test("취약점 마커는 크게 표시되고 포인터 이동과 클릭 전파를 막음", () => {
+  const { ui, elements } = loadUi();
+  const snapshot = graphFixture();
+  snapshot.findings = ["f1", "f2"].map((id) => ({
+    id, ruleId: "CHAIN_ORDER", title: id, confidence: "CONFIRMED", nodeIds: ["node-2"], edgeIds: []
+  }));
+  ui.renderGraph(snapshot);
+  ui.selectView("security-flow");
+
+  const markers = findAllByClass(elements.get("graph-nodes"), "finding-marker");
+  assert.equal(markers.length, 2);
+  assert.deepEqual(markers.map((marker) => marker.children.find((child) => child.tagName === "circle").getAttribute("r")), ["14", "14"]);
+  assert.equal(markers[0].children.find((child) => child.tagName === "circle").getAttribute("vector-effect"), "non-scaling-stroke");
+  assert.deepEqual(markers.map((marker) => marker.getAttribute("tabindex")), ["0", "0"]);
+  assert.match(appCss, /\.finding-marker\[data-confidence="CONFIRMED"\] circle\s*\{[^}]*fill:\s*#b91c1c/s);
+  assert.match(appCss, /\.finding-marker:hover circle/);
+  assert.match(appCss, /\.finding-marker\[data-selected="true"\] circle/);
+  assert.match(appCss, /\.finding-marker:focus-visible circle/);
+
+  const beforePan = { x: ui.navigation.state.panX, y: ui.navigation.state.panY };
+  elements.get("graph-canvas").dispatchEvent({ type: "pointerdown", target: markers[0], clientX: 10, clientY: 20 });
+  elements.get("graph-canvas").dispatchEvent({ type: "pointermove", target: markers[0], clientX: 60, clientY: 70 });
+  elements.get("graph-canvas").dispatchEvent({ type: "pointerup", target: markers[0] });
+  assert.deepEqual({ x: ui.navigation.state.panX, y: ui.navigation.state.panY }, beforePan);
+
+  const click = { type: "click" };
+  markers[0].dispatchEvent(click);
+  assert.equal(click.cancelBubble, true);
+  assert.equal(ui.state.selectedFindingId, "f1");
+  assert.equal(ui.state.view, "security-detail");
+});
+
+test("상세 취약점 API 목록은 실제 Finding 연결만 보여줌", () => {
+  const { ui, elements } = loadUi();
+  const snapshot = graphFixture();
+  snapshot.nodes.push({
+    id: "endpoint-unlinked", type: "ENDPOINT", label: "POST /unlinked",
+    attributes: { httpMethod: "POST", path: "/unlinked", handler: "OtherController#save" }, evidenceIds: []
+  });
+  snapshot.findings = [
+    { id: "node-linked", ruleId: "PUBLIC_ENDPOINT", title: "Node 연결", confidence: "CONFIRMED", nodeIds: ["node-2"], edgeIds: [], evidenceIds: [], guide: "node 점검" },
+    { id: "edge-linked", ruleId: "CHAIN_ORDER", title: "Edge 연결", confidence: "LIKELY", nodeIds: [], edgeIds: ["edge-2"], evidenceIds: [], guide: "edge 점검" },
+    { id: "other-node", ruleId: "STATE_BYPASS", title: "다른 Node", confidence: "UNKNOWN", nodeIds: ["node-7"], edgeIds: [], evidenceIds: ["evidence-2"], guide: "상태 점검" },
+    { id: "missing-only", ruleId: "CHAIN_MISSING", title: "유실 참조", confidence: "UNKNOWN", nodeIds: ["missing-node"], edgeIds: ["missing-edge"], evidenceIds: [], guide: "참조 점검" }
+  ];
+  ui.state.snapshotState = "loaded";
+  ui.renderGraph(snapshot);
+  ui.selectView("security-detail");
+
+  const apiSelect = elements.get("finding-api-select");
+  const apiIds = () => apiSelect.children.filter((option) => option.value).map((option) => option.value);
+  assert.equal(elements.get("finding-api-fields").hidden, false);
+  assert.equal(elements.get("filter-toggle").hidden, false);
+  assert.deepEqual(apiIds(), ["node-2"]);
+
+  apiSelect.value = "node-2";
+  apiSelect.dispatchEvent({ type: "change" });
+  let choices = elements.get("detail-finding-list").children;
+  assert.equal(choices.length, 2);
+  assert.match(textOf(elements.get("detail-finding-list")), /Node 연결/);
+  assert.match(textOf(elements.get("detail-finding-list")), /Edge 연결/);
+  assert.match(textOf(elements.get("detail-finding-list")), /확정/);
+  assert.match(textOf(elements.get("detail-finding-list")), /검토 필요/);
+  assert.doesNotMatch(textOf(elements.get("detail-finding-list")), /다른 Node|유실 참조/);
+  choices[1].dispatchEvent({ type: "click" });
+  assert.equal(ui.state.selectedFindingId, "edge-linked");
+  assert.deepEqual(Array.from(ui.state.viewGraph.nodes, (node) => node.id), ["node-2"]);
+  assert.deepEqual(Array.from(ui.state.viewGraph.edges, (edge) => edge.id), []);
+  assert.equal(elements.get("inspector").hidden, true);
+  assert.match(elements.get("finding-modal-title").textContent, /Edge 연결/);
+  assert.match(textOf(elements.get("finding-modal")), /edge-2/);
+  elements.get("search-reset").dispatchEvent({ type: "click" });
+  assert.equal(ui.state.selectedFindingId, "edge-linked");
+  assert.equal(apiSelect.value, "node-2");
+  assert.deepEqual(apiIds(), ["node-2"]);
+  assert.doesNotMatch(indexHtml, /전체 API 보기/);
+});
+
+test("네 화면의 필터 문구와 입력 구성이 화면 목적에 맞게 분리됨", () => {
+  const { ui, elements } = loadUi();
+  const label = elements.get("endpoint-filter-label-text");
+
+  ui.selectView("all-flow");
+  assert.equal(label.textContent, "Endpoint 검색");
+  assert.equal(elements.get("map-filter-panel").getAttribute("aria-label"), "전체 Flow Map 필터");
+  assert.equal(elements.get("search-reset").textContent, "검색 초기화");
+  assert.equal(elements.get("node-filter-field").hidden, false);
+  assert.equal(elements.get("finding-filter-fields").hidden, true);
+  assert.equal(elements.get("finding-api-fields").hidden, true);
+
+  ui.selectView("feature-flow");
+  assert.equal(label.textContent, "API 선택");
+  assert.equal(elements.get("map-filter-panel").getAttribute("aria-label"), "기능별 상세 API 선택");
+  assert.equal(elements.get("search-reset").textContent, "API 검색 초기화");
+  assert.equal(elements.get("endpoint-search").getAttribute("role"), "combobox");
+  assert.equal(elements.get("node-filter-field").hidden, true);
+  assert.equal(elements.get("finding-filter-fields").hidden, true);
+
+  ui.selectView("security-flow");
+  assert.equal(label.textContent, "Endpoint 검색");
+  assert.equal(elements.get("map-filter-panel").getAttribute("aria-label"), "취약점 MAP 필터");
+  assert.equal(elements.get("search-reset").textContent, "취약점 필터 초기화");
+  assert.equal(elements.get("finding-filter-fields").hidden, false);
+  assert.equal(elements.get("node-filter-field").hidden, false);
+  assert.equal(elements.get("finding-api-fields").hidden, true);
+
+  ui.selectView("security-detail");
+  assert.equal(elements.get("map-filter-panel").getAttribute("aria-label"), "상세 취약점 API 선택");
+  assert.equal(elements.get("search-reset").textContent, "API 선택 초기화");
+  assert.equal(elements.get("endpoint-filter-label").hidden, true);
+  assert.equal(elements.get("finding-filter-fields").hidden, true);
+  assert.equal(elements.get("finding-api-fields").hidden, false);
+  assert.equal(elements.get("node-filter-field").hidden, true);
+  assert.equal(elements.get("filter-toggle").hidden, false);
+});
 
 function findAllByClass(element, className) {
   const matches = [];
   if (element.getAttribute && (element.getAttribute("class") || "").split(/\s+/).includes(className)) matches.push(element);
-  element.children.forEach((child) => matches.push(...findAllByClass(child, className)));
+  Array.from(element.children || []).forEach((child) => matches.push(...findAllByClass(child, className)));
   return matches;
 }
 
@@ -242,6 +875,33 @@ function createFakeClock() {
       return frames.size;
     }
   };
+}
+
+function useHtmlCollectionChildren(element) {
+  const children = element.children;
+  const collection = new Proxy({
+    item(index) { return children[index] || null; },
+    [Symbol.iterator]() { return children[Symbol.iterator](); }
+  }, {
+    get(target, property, receiver) {
+      if (property === "length") return children.length;
+      if (typeof property === "string" && /^(0|[1-9]\d*)$/.test(property)) return children[Number(property)];
+      return Reflect.get(target, property, receiver);
+    },
+    has(target, property) {
+      if (typeof property === "string" && /^(0|[1-9]\d*)$/.test(property)) return Number(property) < children.length;
+      return Reflect.has(target, property);
+    }
+  });
+  Object.defineProperty(element, "children", { configurable: true, get: () => collection });
+  return collection;
+}
+
+function useHtmlCollectionChildrenTree(element) {
+  if (!element) return;
+  const children = Array.from(element.children || []);
+  children.forEach(useHtmlCollectionChildrenTree);
+  if (Array.isArray(element.children)) useHtmlCollectionChildren(element);
 }
 
 test("Header에 로고·네비게이션·구분선·원형 액션이 정해진 순서로 존재하고 Sidebar가 없음", () => {
@@ -471,6 +1131,17 @@ test("MAP 오버레이 툴바 조작은 Graph Pan 상태를 시작하지 않음"
   assert.equal(ui.state.selection.id, "node-2");
   toolbar.dispatchEvent({ type: "click" });
   assert.equal(ui.state.selection.id, "node-2");
+});
+
+test("Finding 마커 포인터 입력은 Graph Pan을 시작하지 않음", () => {
+  const { ui, elements } = loadUi();
+  const marker = createElement("g");
+  marker.setAttribute("class", "finding-marker");
+  const circle = createElement("circle");
+  marker.appendChild(circle);
+  elements.get("graph-canvas").appendChild(marker);
+  circle.dispatchEvent({ type: "pointerdown", pointerId: 1, clientX: 20, clientY: 20 });
+  assert.equal(ui.navigation.state.dragging, false);
 });
 
 test("도움말·설정 패널과 실제 Graph 표시 설정이 동작하고 새로고침 중복 요청을 막음", () => {
@@ -766,6 +1437,76 @@ function endpointCountGraph(count) {
   return { nodes, edges };
 }
 
+function controllerGroupGraph(firstCount = 1, secondCount = 1) {
+  const nodes = [{ id: "shared-chain", type: "SECURITY_CHAIN", serviceId: "orders", label: "공통 Chain",
+    attributes: { chainOrder: "1" }, evidenceIds: ["e-shared-chain"] }];
+  const edges = [];
+  const controllers = [
+    { fqcn: "com.example.SampleController", count: firstCount, prefix: "first" },
+    { fqcn: "org.other.SampleController", count: secondCount, prefix: "second" }
+  ];
+  controllers.forEach(({ fqcn, count, prefix }) => {
+    for (let index = 0; index < count; index += 1) {
+      const handler = `${fqcn}#method${index}(java.lang.String)`;
+      const endpointId = `${prefix}-endpoint-${index}`;
+      const handlerId = `${prefix}-handler-${index}`;
+      nodes.push(
+        { id: endpointId, type: "ENDPOINT", serviceId: "orders", label: `GET /${prefix}/${index}`,
+          attributes: { httpMethod: "GET", path: `/${prefix}/${index}`, handler }, evidenceIds: [`e-${endpointId}`] },
+        { id: handlerId, type: "HANDLER", serviceId: "orders", label: handler,
+          attributes: { handler }, evidenceIds: [`e-${handlerId}`] }
+      );
+      edges.push({ id: `${prefix}-match-${index}`, sourceId: endpointId, targetId: "shared-chain", type: "MATCHED_BY",
+        attributes: { chainOrder: "1" }, confidence: "CONFIRMED", evidenceIds: [`e-${prefix}-match-${index}`] });
+    }
+  });
+  return { nodes, edges };
+}
+
+function supportApiGraph(count) {
+  const graph = controllerGroupGraph(count, 0);
+  for (let index = 0; index < count; index += 1) {
+    const authorizationId = `authorization-${index}`;
+    graph.nodes.push({ id: authorizationId, type: "AUTHORIZATION", serviceId: "orders", label: `Policy ${index}`,
+      attributes: { policySource: `METHOD-${index}` }, evidenceIds: [`e-${authorizationId}`] });
+    graph.edges.push({ id: `secured-${index}`, sourceId: `first-handler-${index}`, targetId: authorizationId, type: "SECURED_BY",
+      attributes: { policySource: `METHOD-${index}` }, confidence: "CONFIRMED", evidenceIds: [`e-secured-${index}`] });
+  }
+  return graph;
+}
+
+function routePoints(route) {
+  const section = route && route.sections && route.sections[0];
+  return section ? [section.startPoint, ...(section.bendPoints || []), section.endPoint] : [];
+}
+
+function routeLength(route) {
+  const points = routePoints(route);
+  return points.slice(1).reduce((length, point, index) => length
+    + Math.abs(point.x - points[index].x) + Math.abs(point.y - points[index].y), 0);
+}
+
+function routeIntersectsPosition(route, position, width = 260, height = 96) {
+  const points = routePoints(route);
+  return points.slice(1).some((point, index) => {
+    const start = points[index];
+    const left = position.x;
+    const right = left + (Number.isFinite(position.width) ? position.width : width);
+    const top = position.y;
+    const bottom = top + (Number.isFinite(position.height) ? position.height : height);
+    if (start.x === point.x) {
+      return start.x > left && start.x < right
+        && Math.max(Math.min(start.y, point.y), top) < Math.min(Math.max(start.y, point.y), bottom);
+    }
+    if (start.y === point.y) {
+      return start.y > top && start.y < bottom
+        && Math.max(Math.min(start.x, point.x), left) < Math.min(Math.max(start.x, point.x), right);
+    }
+    return Math.min(start.x, point.x) < right && Math.max(start.x, point.x) > left
+      && Math.min(start.y, point.y) < bottom && Math.max(start.y, point.y) > top;
+  });
+}
+
 function wrappedFilterGraph(servletCount, securityCount) {
   const node = (id, type, label, attributes = {}) => ({
     id, type, serviceId: "orders", label, attributes, evidenceIds: [`evidence-${id}`]
@@ -828,6 +1569,7 @@ test("Spring Security 7 표준 Filter 판정이 FQCN·보존 Snapshot 상태·Ch
 test("표준 Filter 판정이 실제 Graph·ELK·MiniMap 배열에 편입되지 않음", async () => {
   const { ui, elements, layoutCalls, window } = loadUi();
   const snapshot = standardFilterGraphFixture();
+  ui.state.includeUnconnectedNodes = true;
   ui.renderGraph(snapshot);
   await ui.layoutGraph();
 
@@ -864,6 +1606,31 @@ test("Endpoint 상세 파생 Graph가 실제 Chain·Filter·보안 관계만 보
   assert.equal(nodeIds.includes("security-filter-3"), false);
   assert.equal(detail.edges.every((edge) => nodeIds.includes(edge.sourceId) && nodeIds.includes(edge.targetId)), true);
   assert.equal(JSON.stringify(normalized), before);
+});
+
+test("Endpoint 상세 Graph는 실제 FLOW 경로와 Servlet Filter 등록을 끝까지 포함함", () => {
+  const { window } = loadUi();
+  const graph = detailGraphFixture();
+  graph.nodes.push(
+    { id: "application-a", type: "APPLICATION", serviceId: "orders", label: "주문 앱", attributes: {}, evidenceIds: [] },
+    { id: "servlet-a", type: "SERVLET", serviceId: "orders", label: "DispatcherServlet", attributes: {}, evidenceIds: [] },
+    { id: "servlet-filter-a", type: "FILTER", serviceId: "orders", label: "RequestFilter", attributes: { registrationKind: "SERVLET", filterOrder: "1" }, evidenceIds: [] }
+  );
+  graph.edges.push(
+    { id: "app-flow", sourceId: "application-a", targetId: "servlet-a", type: "FLOWS_TO", attributes: {}, confidence: "CONFIRMED", evidenceIds: [] },
+    { id: "servlet-flow", sourceId: "servlet-a", targetId: "endpoint-a", type: "FLOWS_TO", attributes: {}, confidence: "CONFIRMED", evidenceIds: [] },
+    { id: "endpoint-handler-flow", sourceId: "endpoint-a", targetId: "handler-a", type: "FLOWS_TO", attributes: {}, confidence: "CONFIRMED", evidenceIds: [] },
+    { id: "servlet-filter-registration", sourceId: "servlet-a", targetId: "servlet-filter-a", type: "FILTERED_BY", attributes: { registrationKind: "SERVLET", filterOrder: "1" }, confidence: "CONFIRMED", evidenceIds: [] }
+  );
+  const detail = window.MapInBootFlow.deriveEndpointGraph(window.MapInBootGraph.normalize(graph), "endpoint-a");
+  const nodeIds = new Set(detail.nodes.map((node) => node.id));
+  const edgeIds = new Set(detail.edges.map((edge) => edge.id));
+  assert.deepEqual(["application-a", "servlet-a", "servlet-filter-a", "endpoint-a", "handler-a"].filter((id) => nodeIds.has(id)),
+    ["application-a", "servlet-a", "servlet-filter-a", "endpoint-a", "handler-a"]);
+  assert.deepEqual(["app-flow", "servlet-flow", "endpoint-handler-flow", "servlet-filter-registration"].filter((id) => edgeIds.has(id)),
+    ["app-flow", "servlet-flow", "endpoint-handler-flow", "servlet-filter-registration"]);
+  assert.equal(nodeIds.has("endpoint-b"), false);
+  assert.equal(edgeIds.has("synthetic-endpoint-handler"), false);
 });
 
 test("Endpoint 상세 Graph는 고정 깊이를 넘는 확인된 보안정보를 포함하되 다른 Endpoint·Chain으로 확산하지 않음", () => {
@@ -1041,7 +1808,7 @@ test("상세 MAP의 실제 READS·USES 관계와 표준 Filter 판정을 분리 
 
   ui.selectGraphElement("edge", "reads-a");
   assert.match(textOf(elements.get("inspector")), /reads-a/);
-  assert.match(textOf(elements.get("inspector")), /보안정보 읽음/);
+  assert.match(textOf(elements.get("inspector")), /보안정보 읽기/);
   ui.selectGraphElement("edge", "uses-a");
   assert.match(textOf(elements.get("inspector")), /uses-a/);
   assert.match(textOf(elements.get("inspector")), /인가 사용/);
@@ -1136,6 +1903,7 @@ test("Request 교육 단계가 확정 Chain·Filter 순서·Handler만 실제 An
   const steps = window.MapInBootRequestFlow.buildSteps({
     graph: normalized,
     index,
+    endpointId: "endpoint-a",
     positions: {
       "chain-a": { x: 100, y: 100 },
       "security-filter-1": { x: 200, y: 100 },
@@ -1149,7 +1917,8 @@ test("Request 교육 단계가 확정 Chain·Filter 순서·Handler만 실제 An
   assert.deepEqual(actualAnchors, ["servlet-filter-1", "chain-a", "security-filter-1", "security-filter-2", "security-filter-3", "servlet-1", "endpoint-a", "handler-a"]);
   assert.equal(steps.some((step) => step.label.includes("HTTP 요청 수신")), true);
   assert.equal(steps.some((step) => step.label.includes("동기 처리 스레드")), true);
-  assert.equal(steps.some((step) => step.label.includes("응답 복귀")), true);
+  assert.equal(steps.some((step) => step.label.includes("응답 복귀")), false);
+  assert.equal(steps.some((step) => step.id === "education-response-return"), false);
   assert.equal(steps.some((step) => step.anchorId === "chain-b"), false);
   assert.equal(steps.some((step) => step.anchorId === "other-chain-filter"), false);
   assert.equal(steps.some((step) => step.label.includes("Thread ID")), false);
@@ -1177,35 +1946,73 @@ test("Request 교육 단계가 확정 Chain·Filter 순서·Handler만 실제 An
   const uncertainSteps = window.MapInBootRequestFlow.buildSteps({
     graph: uncertainGraph,
     index: window.MapInBootFlow.createIndex(uncertainGraph),
+    endpointId: "endpoint-a",
     positions: {}
   });
   assert.equal(Array.from(uncertainSteps, (step) => step.anchorId).includes("security-filter-1"), false);
   assert.equal(uncertainSteps.some((step) => step.label.includes("순서 확인 불가")), true);
+
+  const unselectedSteps = window.MapInBootRequestFlow.buildSteps({
+    graph: uncertainGraph,
+    index: window.MapInBootFlow.createIndex(uncertainGraph),
+    endpointId: "missing-endpoint",
+    positions: {}
+  });
+  assert.equal(unselectedSteps.some((step) => step.id === "endpoint-mapping"), false);
 });
 
-test("Request 교육 Controller가 Fake Clock에서 단일 RAF·일시정지·재시작·초기화·완료를 보장함", () => {
+test("Request 교육은 Endpoint가 없거나 여러 개여도 선택 Endpoint 하나만 사용함", () => {
+  const { window } = loadUi();
+  [0, 1, 5, 16, 50, 60].forEach((count) => {
+    const graph = window.MapInBootGraph.normalize(endpointCountGraph(count));
+    const endpointId = count > 0 ? `count-endpoint-${count - 1}` : null;
+    const steps = window.MapInBootRequestFlow.buildSteps({
+      graph,
+      index: window.MapInBootFlow.createIndex(graph),
+      endpointId,
+      positions: {}
+    });
+    const endpointSteps = steps.filter((step) => step.id === "endpoint-mapping");
+    assert.equal(endpointSteps.length, count === 0 ? 0 : 1, `Endpoint ${count}개`);
+    if (count > 0) assert.equal(endpointSteps[0].anchorId, endpointId);
+    const handlerSteps = steps.filter((step) => step.id === "handler");
+    assert.ok(handlerSteps.length <= 1, `Endpoint ${count}개 Handler 단계 수`);
+    if (count > 0 && handlerSteps.length > 0) assert.equal(handlerSteps[0].anchorId, `count-handler-${count - 1}`);
+  });
+});
+
+test("Request 교육 Controller가 Node 점등·Edge 이동·경로 불가·일시정지·재개·완료를 보장함", () => {
   const { window } = loadUi();
   const clock = createFakeClock();
   const updates = [];
   const controller = window.MapInBootRequestFlow.createController({
     clock,
-    stepDuration: 100,
+    nodeHoldDuration: 100,
+    minimumEdgeDuration: 200,
+    maximumEdgeDuration: 200,
+    durationPerLength: 1,
+    unavailablePathDuration: 50,
     onUpdate: (state) => updates.push(state)
   });
   controller.setSteps([
-    { id: "step-a", label: "A", kind: "education" },
+    { id: "step-a", label: "A", anchorId: "node-a", transition: { kind: "projection", edgeId: "edge-a", length: 100 } },
     { id: "step-b", label: "B", kind: "actual", anchorId: "node-b" },
-    { id: "step-c", label: "C", kind: "education" }
+    { id: "step-c", label: "C", kind: "education", anchorId: "node-c" }
   ]);
 
   assert.equal(controller.state().status, "idle");
+  assert.equal(controller.state().phase, null);
   assert.equal(controller.activeFrameCount(), 0);
   controller.play();
   assert.equal(controller.state().status, "running");
+  assert.equal(controller.state().phase, "NODE_HOLD");
+  assert.equal(controller.state().step.anchorId, "node-a");
   assert.equal(clock.activeCount(), 1);
   controller.play();
   assert.equal(clock.activeCount(), 1);
   clock.tick(50);
+  assert.equal(controller.state().phase, "NODE_HOLD");
+  assert.equal(controller.state().progress, 0.5);
   controller.pause();
   assert.equal(controller.state().status, "paused");
   assert.equal(clock.activeCount(), 0);
@@ -1214,15 +2021,59 @@ test("Request 교육 Controller가 Fake Clock에서 단일 RAF·일시정지·�
   assert.equal(controller.state().progress, pausedProgress);
   controller.play();
   assert.equal(clock.activeCount(), 1);
+  clock.tick(50);
+  assert.equal(controller.state().phase, "EDGE_TRAVEL");
+  assert.equal(controller.state().progress, 0);
+  clock.tick(100);
+  assert.equal(controller.state().phase, "EDGE_TRAVEL");
+  assert.equal(controller.state().progress, 0.5);
+  controller.pause();
+  assert.equal(clock.activeCount(), 0);
+  clock.tick(500);
+  assert.equal(controller.state().progress, 0.5);
+  controller.play();
+  clock.tick(100);
+  assert.equal(controller.state().phase, "NODE_HOLD");
+  assert.equal(controller.state().step.anchorId, "node-b");
+  clock.tick(100);
+  assert.equal(controller.state().phase, "PATH_UNAVAILABLE");
+  assert.equal(controller.state().nextStep.anchorId, "node-c");
+  clock.tick(50);
+  assert.equal(controller.state().phase, "NODE_HOLD");
+  assert.equal(controller.state().step.anchorId, "node-c");
+  clock.tick(100);
+  assert.equal(controller.state().status, "complete");
+  assert.equal(controller.state().phase, "COMPLETE");
+  assert.equal(clock.activeCount(), 0);
+
+  controller.play();
+  assert.equal(controller.state().status, "running");
+  assert.equal(controller.state().phase, "NODE_HOLD");
+  assert.equal(controller.state().step.anchorId, "node-a");
   controller.reset();
   assert.equal(controller.state().status, "idle");
   assert.equal(controller.state().stepIndex, 0);
+  assert.equal(controller.state().phase, null);
   assert.equal(clock.activeCount(), 0);
-  controller.play();
-  clock.tick(400);
-  assert.equal(controller.state().status, "complete");
-  assert.equal(controller.activeFrameCount(), 0);
   assert.equal(updates.some((state) => state.status === "complete"), true);
+});
+
+test("Request 교육 빛 점은 꺾인 SVG 경로의 실제 좌표를 사용함", () => {
+  const { window } = loadUi();
+  const path = {
+    getTotalLength: () => 100,
+    getPointAtLength(distance) {
+      return distance <= 50
+        ? { x: distance, y: 0 }
+        : { x: 50, y: distance - 50 };
+    }
+  };
+  const point = window.MapInBootRequestFlow.pathPointAt(path, 0.75);
+
+  assert.deepEqual({ ...point }, { x: 50, y: 25 });
+  assert.deepEqual({ ...window.MapInBootRequestFlow.pathPointAt(path, 0) }, { x: 0, y: 0 });
+  assert.deepEqual({ ...window.MapInBootRequestFlow.pathPointAt(path, 1) }, { x: 50, y: 50 });
+  assert.equal(window.MapInBootRequestFlow.pathPointAt({}, 0.5), null);
 });
 
 test("Request 교육 reduced-motion은 RAF 없이 마지막 단계와 키보드 가능한 상태를 제공함", () => {
@@ -1231,7 +2082,7 @@ test("Request 교육 reduced-motion은 RAF 없이 마지막 단계와 키보드 
   const controller = window.MapInBootRequestFlow.createController({
     clock,
     reducedMotion: true,
-    stepDuration: 100
+    nodeHoldDuration: 100
   });
   controller.setSteps([
     { id: "step-a", label: "A", kind: "education" },
@@ -1241,6 +2092,9 @@ test("Request 교육 reduced-motion은 RAF 없이 마지막 단계와 키보드 
 
   assert.equal(controller.state().status, "complete");
   assert.equal(controller.state().stepIndex, 1);
+  assert.equal(controller.state().step.anchorId, "node-b");
+  assert.equal(controller.state().phase, "NODE_HOLD");
+  assert.equal(controller.state().progress, 1);
   assert.equal(controller.activeFrameCount(), 0);
   assert.equal(clock.activeCount(), 0);
 });
@@ -1258,10 +2112,17 @@ test("Request 교육은 상세 MAP에서만 표시되고 View 복귀·문서 숨
   assert.equal(ui.requestFlow.state().status, "idle");
 
   ui.requestFlow.setSteps([{ id: "visible-dot", kind: "actual", anchorId: "endpoint-a", position: { x: 10, y: 20 } }]);
+  assert.equal(elements.get("request-flow-dot").hasAttribute("hidden"), true);
   ui.requestFlow.play();
-  assert.equal(elements.get("request-flow-dot").hasAttribute("hidden"), false);
+  assert.equal(elements.get("request-flow-dot").hasAttribute("hidden"), true);
+  assert.equal(findAllByClass(elements.get("graph-nodes"), "graph-node")
+    .find((node) => node.getAttribute("data-node-id") === "endpoint-a")
+    .getAttribute("data-request-flow-active"), "true");
   ui.requestFlow.setSteps([]);
   assert.equal(elements.get("request-flow-dot").hasAttribute("hidden"), true);
+  assert.equal(findAllByClass(elements.get("graph-nodes"), "graph-node")
+    .find((node) => node.getAttribute("data-node-id") === "endpoint-a")
+    .getAttribute("data-request-flow-active"), null);
   ui.requestFlow.setSteps([{ id: "visible-dot", kind: "actual", anchorId: "endpoint-a", position: { x: 10, y: 20 } }]);
 
   const sourceNodeIds = Array.from(ui.state.graph.nodes, (node) => node.id);
@@ -1287,6 +2148,245 @@ test("Request 교육은 상세 MAP에서만 표시되고 View 복귀·문서 숨
   assert.equal(elements.get("request-flow-controls").hidden, true);
   assert.equal(elements.get("request-flow-education").hasAttribute("hidden"), true);
   assert.equal(ui.requestFlow.activeFrameCount(), 0);
+});
+
+test("Request 교육은 SVG Edge 경로를 따라 점을 이동하고 실제·교육 Node를 짧게 점등함", async () => {
+  const animationClock = createFakeClock();
+  const { ui, elements } = loadUi({ animationClock });
+  ui.renderGraph(detailGraphFixture());
+  ui.openEndpointDetail("endpoint-a");
+  await ui.layoutGraph();
+
+  const steps = ui.state.requestFlowSteps;
+  const first = steps[0];
+  const target = steps[1];
+  assert.equal(first.anchorId, "education-http-request");
+  assert.equal(first.transition.kind, "projection");
+  assert.equal(first.transition.sourceId, first.anchorId);
+  assert.equal(first.transition.targetId, target.anchorId);
+  const path = elements.get("graph-flow-projection").children.find((element) =>
+    element.tagName === "path" && element.getAttribute("data-projection-edge-id") === first.transition.edgeId);
+  assert.ok(path);
+  path.getTotalLength = () => 100;
+  path.getPointAtLength = (distance) => distance <= 50
+    ? { x: distance, y: 0 }
+    : { x: 50, y: distance - 50 };
+  const source = findAllByClass(elements.get("graph-flow-projection"), "graph-projection-node")
+    .find((node) => node.getAttribute("data-projection-id") === first.anchorId);
+  const destination = findAllByClass(elements.get("graph-flow-projection"), "graph-projection-node")
+    .find((node) => node.getAttribute("data-projection-id") === target.anchorId);
+  assert.ok(source && destination);
+
+  ui.requestFlow.play();
+  assert.equal(source.getAttribute("data-request-flow-active"), "true");
+  assert.equal(elements.get("request-flow-dot").hasAttribute("hidden"), true);
+  animationClock.tick(280);
+  assert.equal(ui.requestFlow.state().phase, "EDGE_TRAVEL");
+  assert.equal(source.getAttribute("data-request-flow-active"), null);
+  assert.equal(elements.get("request-flow-dot").hasAttribute("hidden"), false);
+  assert.equal(elements.get("request-flow-dot").getAttribute("cx"), "0");
+  assert.equal(elements.get("request-flow-dot").getAttribute("cy"), "0");
+  animationClock.tick(225);
+  assert.equal(elements.get("request-flow-dot").getAttribute("cx"), "50");
+  assert.equal(elements.get("request-flow-dot").getAttribute("cy"), "0");
+  ui.requestFlow.pause();
+  const paused = {
+    progress: ui.requestFlow.state().progress,
+    x: elements.get("request-flow-dot").getAttribute("cx"),
+    y: elements.get("request-flow-dot").getAttribute("cy")
+  };
+  animationClock.tick(300);
+  assert.equal(ui.requestFlow.state().progress, paused.progress);
+  assert.equal(elements.get("request-flow-dot").getAttribute("cx"), paused.x);
+  assert.equal(elements.get("request-flow-dot").getAttribute("cy"), paused.y);
+  ui.requestFlow.play();
+  animationClock.tick(225);
+  assert.equal(ui.requestFlow.state().phase, "NODE_HOLD");
+  assert.equal(ui.requestFlow.state().step.anchorId, target.anchorId);
+  assert.equal(elements.get("request-flow-dot").hasAttribute("hidden"), true);
+  assert.equal(destination.getAttribute("data-request-flow-active"), "true");
+
+  ui.requestFlow.reset();
+  assert.equal(destination.getAttribute("data-request-flow-active"), null);
+  assert.equal(elements.get("request-flow-dot").hasAttribute("hidden"), true);
+  ui.requestFlow.setSteps([{ id: "actual-endpoint", label: "Endpoint", kind: "actual", anchorId: "endpoint-a" }]);
+  ui.requestFlow.play();
+  const actualNode = findAllByClass(elements.get("graph-nodes"), "graph-node")
+    .find((node) => node.getAttribute("data-node-id") === "endpoint-a");
+  assert.equal(actualNode.getAttribute("data-request-flow-active"), "true");
+  ui.requestFlow.reset();
+  assert.equal(actualNode.getAttribute("data-request-flow-active"), null);
+  assert.equal(animationClock.activeCount(), 0);
+});
+
+test("Request Flow는 HTMLCollection형 SVG Projection children에서 실제 경로를 찾음", async () => {
+  const animationClock = createFakeClock();
+  const { ui, elements } = loadUi({ animationClock });
+  ui.renderGraph(detailGraphFixture());
+  ui.openEndpointDetail("endpoint-a");
+  await ui.layoutGraph();
+
+  const first = ui.state.requestFlowSteps[0];
+  assert.equal(first.transition.kind, "projection");
+  const projectionLayer = elements.get("graph-flow-projection");
+  const path = projectionLayer.children.find((element) =>
+    element.getAttribute("data-projection-edge-id") === first.transition.edgeId);
+  assert.ok(path);
+  path.getTotalLength = () => 100;
+  path.getPointAtLength = (distance) => ({ x: distance, y: 31 });
+
+  const children = useHtmlCollectionChildren(projectionLayer);
+  assert.equal(children.length > 0, true);
+  assert.equal(children.item(0), projectionLayer.children[0]);
+  assert.equal(Array.from(children).length, children.length);
+  assert.equal(typeof children.forEach, "undefined");
+  assert.equal(typeof children.find, "undefined");
+  assert.equal(typeof children.map, "undefined");
+  assert.equal(typeof children.filter, "undefined");
+
+  ui.requestFlow.play();
+  assert.doesNotThrow(() => animationClock.tick(280));
+  assert.equal(ui.requestFlow.state().phase, "EDGE_TRAVEL");
+  assert.equal(elements.get("request-flow-dot").hidden, false);
+  assert.equal(elements.get("request-flow-dot").getAttribute("cx"), "0");
+  assert.equal(elements.get("request-flow-dot").getAttribute("cy"), "31");
+});
+
+test("Request Flow는 HTMLCollection형 Graph Edge의 묶인 원본 ID를 찾고 없는 경로를 건너뜀", async () => {
+  const animationClock = createFakeClock();
+  const { ui, elements } = loadUi({ animationClock });
+  ui.renderGraph(detailGraphFixture());
+  ui.openEndpointDetail("endpoint-a");
+  await ui.layoutGraph();
+
+  const edgeLayer = elements.get("graph-edges");
+  const edgePath = edgeLayer.children.find((element) =>
+    element.getAttribute("data-edge-id") === "match-a");
+  assert.ok(edgePath);
+  edgePath.setAttribute("data-edge-ids", "match-a,match-a-bundle");
+  edgePath.getTotalLength = () => 100;
+  edgePath.getPointAtLength = (distance) => ({ x: 70, y: distance });
+  useHtmlCollectionChildren(edgeLayer);
+
+  ui.requestFlow.setSteps([
+    { id: "endpoint", label: "API", kind: "actual", anchorId: "endpoint-a", transition: {
+      kind: "actual", edgeId: "match-a-bundle", sourceId: "endpoint-a", targetId: "chain-a", length: 100
+    } },
+    { id: "chain", label: "Chain", kind: "actual", anchorId: "chain-a" }
+  ]);
+  ui.requestFlow.play();
+  assert.doesNotThrow(() => animationClock.tick(280));
+  assert.equal(elements.get("request-flow-dot").getAttribute("cx"), "70");
+  assert.equal(elements.get("request-flow-dot").getAttribute("cy"), "0");
+
+  ui.requestFlow.setSteps([
+    { id: "endpoint", label: "API", kind: "actual", anchorId: "endpoint-a", transition: {
+      kind: "actual", edgeId: "missing-edge", sourceId: "endpoint-a", targetId: "chain-a", length: 100
+    } },
+    { id: "chain", label: "Chain", kind: "actual", anchorId: "chain-a" }
+  ]);
+  ui.requestFlow.play();
+  assert.doesNotThrow(() => animationClock.tick(280));
+  assert.match(elements.get("request-flow-status").textContent, /경로 확인 불가/);
+});
+
+test("ELK 성공 후 Request Flow 준비 실패는 Graph 배치 성공을 유지함", async () => {
+  const { ui, elements, window } = loadUi();
+  ui.renderGraph(detailGraphFixture());
+  window.MapInBootRequestFlow.buildSteps = () => { throw new Error("flow prepare failed"); };
+  ui.openEndpointDetail("endpoint-a");
+  await ui.layoutGraph();
+
+  assert.equal(ui.state.layoutState, "loaded");
+  assert.equal(elements.get("graph-canvas").dataset.layoutState, "loaded");
+  assert.ok(ui.state.layout);
+  assert.ok(ui.state.visibleGraph.nodes.length > 0);
+  assert.match(elements.get("shell-notice").textContent, /교육용 흐름 준비 실패/);
+  assert.doesNotMatch(elements.get("shell-notice").textContent, /Graph 자동 배치 실패/);
+});
+
+test("Graph 렌더 실패는 ELK 배치 실패로 분류하지 않고 성공 Layout을 보존함", async () => {
+  const { ui, elements, window } = loadUi();
+  ui.renderGraph(detailGraphFixture());
+  window.MapInBootGraph.render = () => { throw new Error("svg render failed"); };
+
+  await ui.layoutGraph();
+
+  assert.equal(ui.state.layoutState, "loaded");
+  assert.equal(elements.get("graph-canvas").dataset.layoutState, "loaded");
+  assert.ok(ui.state.layout);
+  assert.match(elements.get("shell-notice").textContent, /Graph 표시 실패/);
+  assert.doesNotMatch(elements.get("shell-notice").textContent, /Graph 자동 배치 실패/);
+});
+
+test("ELK Layout Cache Hit 뒤 Request Flow 준비 실패도 Layout 성공을 유지함", async () => {
+  const { ui, elements, window } = loadUi();
+  ui.renderGraph(detailGraphFixture());
+  ui.openEndpointDetail("endpoint-a");
+  await ui.layoutGraph();
+  const cachedLayout = ui.state.layout;
+  assert.ok(cachedLayout);
+  assert.ok(ui.state.layoutCache.size > 0);
+
+  window.MapInBootRequestFlow.buildSteps = () => { throw new Error("cached flow prepare failed"); };
+  await assert.doesNotReject(() => ui.layoutGraph());
+
+  assert.strictEqual(ui.state.layout, cachedLayout);
+  assert.equal(ui.state.layoutState, "loaded");
+  assert.match(elements.get("shell-notice").textContent, /교육용 흐름 준비 실패/);
+  assert.doesNotMatch(elements.get("shell-notice").textContent, /Graph 자동 배치 실패/);
+});
+
+test("Request Flow Edge 이동 중 Inspector를 닫아도 재생과 경로 이동을 유지함", async () => {
+  const animationClock = createFakeClock();
+  const { ui, elements } = loadUi({ animationClock });
+  ui.renderGraph(detailGraphFixture());
+  ui.openEndpointDetail("endpoint-a");
+  await ui.layoutGraph();
+
+  const transition = ui.state.requestFlowSteps[0].transition;
+  assert.equal(transition.kind, "projection");
+  const path = elements.get("graph-flow-projection").children.find((element) =>
+    element.tagName === "path" && element.getAttribute("data-projection-edge-id") === transition.edgeId);
+  assert.ok(path);
+  path.getTotalLength = () => 100;
+  path.getPointAtLength = (distance) => ({ x: distance, y: 12 });
+  transition.length = 100;
+
+  ui.requestFlow.play();
+  animationClock.tick(280);
+  animationClock.tick(100);
+  assert.equal(ui.requestFlow.state().phase, "EDGE_TRAVEL");
+  assert.equal(ui.requestFlow.state().status, "running");
+  const previousProgress = ui.requestFlow.state().progress;
+  const previousX = elements.get("request-flow-dot").getAttribute("cx");
+
+  ui.selectGraphElement("node", "endpoint-a");
+  const close = findAllByClass(elements.get("inspector"), "inspector-close")[0];
+  assert.doesNotThrow(() => close.dispatchEvent({ type: "click" }));
+  assert.equal(elements.get("inspector").hidden, true);
+  assert.equal(elements.get("inspector").attributes["aria-hidden"], "true");
+  assert.equal(ui.requestFlow.state().phase, "EDGE_TRAVEL");
+  assert.equal(ui.requestFlow.state().status, "running");
+
+  animationClock.tick(100);
+  assert.equal(ui.requestFlow.state().status, "running");
+  assert.ok(ui.requestFlow.state().progress > previousProgress);
+  assert.notEqual(elements.get("request-flow-dot").getAttribute("cx"), previousX);
+  assert.equal(ui.state.layoutState, "loaded");
+});
+
+test("실제 ELK Layout 거부는 자동 배치 실패로 표시함", async () => {
+  const { ui, layoutApi, elements } = loadUi();
+  ui.renderGraph(detailGraphFixture());
+  layoutApi.layout = () => Promise.reject(new Error("ELK worker failed"));
+
+  await ui.layoutGraph();
+
+  assert.equal(ui.state.layoutState, "failed");
+  assert.equal(elements.get("graph-canvas").dataset.layoutState, "failed");
+  assert.equal(ui.state.layoutError, "ELK worker failed");
+  assert.match(elements.get("shell-notice").textContent, /Graph 자동 배치 실패: ELK worker failed/);
 });
 
 test("View·Endpoint 전환 중 늦게 도착한 ELK 결과가 최신 Graph·Inspector·MiniMap을 덮지 않음", async () => {
@@ -1351,7 +2451,7 @@ test("Flow 인덱스가 실제 관계·등록 종류·순서 불확실성을 분
   assert.equal(index.firstMatchedChain("endpoint-a").status, "UNCERTAIN");
   assert.equal(index.firstMatchedChain("endpoint-a").chain, null);
   assert.equal(index.securityFiltersForChain("chain-a").orderStatus, "CONFIRMED");
-  assert.deepEqual(index.securityFiltersForChain("chain-a").filters.map((item) => item.id), [
+  assert.deepEqual(Array.from(index.securityFiltersForChain("chain-a").filters, (item) => item.id), [
     "security-filter-1", "security-filter-2"
   ]);
   assert.equal(index.servletFiltersForServlet("servlet-1").filters[0].id, "servlet-filter-1");
@@ -1421,6 +2521,7 @@ test("[T13] Filter 없는 부분 완료 Snapshot은 구조 Node를 유지하고 
 test("[T14] Identity형 103 Node·83 Edge·61 FILTERED_BY Graph를 ELK·MiniMap에 한 번만 전달함", async () => {
   const { ui, elements, layoutCalls } = loadUi();
   const graph = detailGraphFixture();
+  ui.state.includeUnconnectedNodes = true;
   for (let index = 0; index < 58; index += 1) {
     graph.nodes.push({
       id: `identity-filter-${index}`,
@@ -1469,6 +2570,7 @@ test("[T14] Identity형 103 Node·83 Edge·61 FILTERED_BY Graph를 ELK·MiniMap�
   assert.equal(graph.nodes.length, 103);
   assert.equal(graph.edges.length, 83);
   assert.equal(graph.edges.filter((edge) => edge.type === "FILTERED_BY").length, 61);
+  graph.findings = [{ id: "identity-finding", ruleId: "CHAIN_ORDER", title: "Identity 판단", confidence: "UNKNOWN", nodeIds: ["endpoint-a"], edgeIds: [], evidenceIds: [] }];
 
   ui.renderGraph(graph);
   await ui.layoutGraph();
@@ -1478,6 +2580,16 @@ test("[T14] Identity형 103 Node·83 Edge·61 FILTERED_BY Graph를 ELK·MiniMap�
   assert.equal(layoutCalls.length, 1);
   assert.equal(layoutCalls[0].children.length, 103);
   assert.equal(layoutCalls[0].edges.length, 83);
+
+  ui.selectView("security-flow");
+  await ui.layoutGraph();
+  assert.equal(layoutCalls.length, 1);
+  const mapLayoutCalls = layoutCalls.length;
+  elements.get("finding-confidence").value = "CONFIRMED";
+  elements.get("finding-confidence").dispatchEvent({ type: "change" });
+  assert.equal(layoutCalls.length, mapLayoutCalls);
+  assert.equal(ui.state.visibleGraph.nodes.length, 103);
+  assert.equal(ui.state.visibleGraph.edges.length, 83);
 });
 
 test("전체 MAP이 실제 구조 Edge를 보존하고 통계 문구를 표시하지 않음", () => {
@@ -1626,6 +2738,7 @@ test("고아 Edge는 제외하고 Node 텍스트는 안전한 textContent로 유
 test("ELK 결과를 의미 기반 Lane으로 재배치하고 실제 관계와 안내선을 분리함", async () => {
   const { ui, elements, layoutApi, layoutCalls } = loadUi();
   const snapshot = graphFixture();
+  ui.state.includeUnconnectedNodes = true;
   snapshot.nodes.push({
     id: "node-security-filter",
     type: "FILTER",
@@ -1674,6 +2787,7 @@ test("17개 API를 두 Endpoint 열에 보존하고 확인된 Chain·Handler만 
   const { ui, layoutApi, elements } = loadUi();
   const snapshot = laneGraphFixture();
   const originalEdgeCount = snapshot.edges.length;
+  ui.state.includeUnconnectedNodes = true;
   ui.renderGraph(snapshot);
   await ui.layoutGraph();
 
@@ -1755,14 +2869,27 @@ test("요청 흐름 투영은 HTTP·Servlet·Chain 선택·MVC 단계를 실제 
       "education-request-matcher",
       "education-servlet-chain-continue",
       "education-handler-mapping",
-      "education-handler-adapter",
-      "education-response-return"
+      "education-handler-adapter"
     ].join("|")
   );
+  assert.equal(projection.nodes.some((node) => node.id === "education-response-return"), false);
+  assert.equal(projection.edges.some((edge) => edge.id.startsWith("handler-to-response-")), false);
+  const graphNodeIds = new Set([
+    ...ui.state.graph.nodes.map((node) => node.id),
+    ...projection.nodes.map((node) => node.id)
+  ]);
+  assert.equal(projection.edges.every((edge) => graphNodeIds.has(edge.sourceId) && graphNodeIds.has(edge.targetId)), true);
+  const projectionBounds = projection.nodes.map((node) => node.bounds);
+  assert.equal(ui.state.layout.plan.educationArea.left, Math.min(...projectionBounds.map((bounds) => bounds.left)) - 24);
+  assert.equal(ui.state.layout.plan.educationArea.top, Math.min(...projectionBounds.map((bounds) => bounds.top)) - 48);
+  assert.equal(ui.state.layout.plan.educationArea.right, Math.max(...projectionBounds.map((bounds) => bounds.right)) + 24);
+  assert.equal(ui.state.layout.plan.educationArea.bottom, Math.max(...projectionBounds.map((bounds) => bounds.bottom)) + 32);
   assert.match(projection.nodes.find((node) => node.id === "education-request-matcher").detail, /체인 1.*체인 2.*체인 3/);
   assert.ok(projection.edges.length > 0);
   assert.equal(projection.edges.some((edge) => edge.dataEdgeId), false);
   assert.equal(elements.get("graph-flow-projection").children.length > 0, true);
+  assert.equal(findAllByClass(elements.get("graph-minimap-nodes"), "graph-minimap-node")
+    .some((node) => node.getAttribute("data-node-id") === "education-response-return"), false);
   assert.equal(JSON.stringify(snapshot), originalGraph);
   assert.equal(ui.state.graph.nodes.length, 17 + 17 + 3 + 46, "실제 Snapshot Node 수 보존");
   assert.equal(ui.state.graph.edges.some((edge) => edge.type === "FLOWS_TO"), false);
@@ -1912,6 +3039,7 @@ test("Filter 행과 상세 보조 Node 사이에 확장된 세로 간격을 유�
 test("Security Data 원본 구조 키를 의미 이름으로 축약하고 원문 속성을 Inspector에 보존함", () => {
   const { ui, elements, window } = loadUi();
   const snapshot = detailGraphFixture();
+  ui.state.includeUnconnectedNodes = true;
   snapshot.nodes.push({
     id: "security-data-jwt",
     type: "SECURITY_DATA",
@@ -2011,7 +3139,153 @@ test("후처리 Worker의 결과는 동기 배치와 같고 오류 시 복구됨
   fallback.terminate();
 });
 
-test("새 배치 요청은 진행 중인 후처리를 중단하고 오래된 결과를 무시함", async () => {
+test("Graph 전처리 Worker는 Snapshot별 Graph를 한 번 보내고 작업 식별자를 유지함", async () => {
+  const { ui, layoutApi, window } = loadUi();
+  const snapshot = detailGraphFixture();
+  const threshold = layoutApi.preprocessThreshold;
+  snapshot.nodes.push(...Array.from({ length: threshold - snapshot.nodes.length }, (_value, index) => ({
+    id: `unconnected-${index}`, type: "APPLICATION", serviceId: "orders", label: `Application ${index}`, attributes: {}, evidenceIds: []
+  })));
+  const graph = ui.normalizeGraph(snapshot);
+  const messages = [];
+  const snapshots = new Map();
+  class Worker {
+    postMessage(message) {
+      messages.push(message);
+      if (message.type === "snapshot") {
+        snapshots.set(message.generation, message.graph);
+        return;
+      }
+      if (message.type !== "prepare") return;
+      const result = layoutApi.prepareGraphData(snapshots.get(message.generation), message.task, message.endpointId);
+      queueMicrotask(() => this.onmessage({ data: {
+        type: "prepared", requestId: message.requestId, generation: message.generation,
+        viewKey: message.viewKey, task: message.task, result
+      } }));
+    }
+    terminate() {}
+  }
+  window.Worker = Worker;
+  const client = layoutApi.createClient();
+  const connectedRequest = client.prepareGraph(graph, 11, "11|all-flow||false", "connectedGraph");
+  const endpointRequest = client.prepareGraph(graph, 11, "11|security-detail|endpoint-a|false", "endpointGraph", "endpoint-a");
+  const [connected, endpoint] = await Promise.all([connectedRequest, endpointRequest]);
+
+  assert.equal(messages.filter((message) => message.type === "snapshot").length, 1);
+  assert.deepEqual(messages.filter((message) => message.type === "prepare").map(({ generation, viewKey, task }) => ({ generation, viewKey, task })), [
+    { generation: 11, viewKey: "11|all-flow||false", task: "connectedGraph" },
+    { generation: 11, viewKey: "11|security-detail|endpoint-a|false", task: "endpointGraph" }
+  ]);
+  assert.deepEqual(Array.from(connected.nodeIds), Array.from(layoutApi.prepareGraphData(graph, "connectedGraph").nodeIds));
+  assert.deepEqual(Array.from(endpoint.nodeIds), Array.from(layoutApi.prepareGraphData(graph, "endpointGraph", "endpoint-a").nodeIds));
+  assert.equal(connected.fallback, false);
+  assert.equal(endpoint.fallback, false);
+  client.terminate();
+});
+
+test("Graph 전처리 Worker 오류는 동기 계산으로 복구하고 재시작하지 않음", async () => {
+  const { ui, layoutApi, window } = loadUi();
+  const snapshot = detailGraphFixture();
+  snapshot.nodes.push(...Array.from({ length: layoutApi.preprocessThreshold - snapshot.nodes.length }, (_value, index) => ({
+    id: `unconnected-${index}`, type: "APPLICATION", serviceId: "orders", label: `Application ${index}`, attributes: {}, evidenceIds: []
+  })));
+  const graph = ui.normalizeGraph(snapshot);
+  let workerCount = 0;
+  let worker;
+  class Worker {
+    constructor() { workerCount += 1; worker = this; }
+    postMessage(message) {
+      if (message.type !== "prepare") return;
+      queueMicrotask(() => this.onmessage({ data: {
+        type: "prepared", requestId: message.requestId, generation: message.generation,
+        viewKey: message.viewKey, task: message.task, error: "preprocess failed"
+      } }));
+    }
+    terminate() { this.terminated = true; }
+  }
+  window.Worker = Worker;
+  const client = layoutApi.createClient();
+  const result = await client.prepareGraph(graph, 12, "12|all-flow||false", "connectedGraph");
+  const expected = layoutApi.prepareGraphData(graph, "connectedGraph");
+  assert.equal(result.fallback, true);
+  assert.deepEqual(Array.from(result.nodeIds), Array.from(expected.nodeIds));
+  assert.equal(worker.terminated, true);
+  const second = await client.prepareGraph(graph, 12, "12|all-flow||true", "connectedGraph");
+  assert.equal(second.fallback, true);
+  assert.equal(workerCount, 1);
+  client.terminate();
+});
+
+test("큰 Graph 전처리의 늦은 응답은 전환한 View를 덮지 않음", async () => {
+  const { ui, layoutApi, window } = loadUi();
+  const snapshot = detailGraphFixture();
+  snapshot.nodes.push(...Array.from({ length: layoutApi.preprocessThreshold - snapshot.nodes.length }, (_value, index) => ({
+    id: `unconnected-${index}`, type: "APPLICATION", serviceId: "orders", label: `Application ${index}`, attributes: {}, evidenceIds: []
+  })));
+  const messages = [];
+  let worker;
+  class Worker {
+    constructor() { worker = this; }
+    postMessage(message) { messages.push(message); }
+    terminate() {}
+  }
+  window.Worker = Worker;
+  ui.renderGraph(snapshot);
+  const pending = messages.find((message) => message.type === "prepare");
+  assert.ok(pending, JSON.stringify({ nodeCount: ui.state.graph.nodes.length, threshold: layoutApi.preprocessThreshold,
+    view: ui.state.view, messages: messages.map((message) => message.type || "layout") }));
+  assert.equal(ui.state.viewGraph, null);
+  ui.selectView("security-detail");
+  const savedSnapshot = messages.find((message) => message.type === "snapshot").graph;
+  const result = layoutApi.prepareGraphData(savedSnapshot, pending.task, pending.endpointId);
+  worker.onmessage({ data: {
+    type: "prepared", requestId: pending.requestId, generation: pending.generation,
+    viewKey: pending.viewKey, task: pending.task, result
+  } });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(ui.state.view, "security-detail");
+  assert.equal(ui.state.viewGraph, null);
+  assert.equal(ui.state.preparingViewKey, null);
+});
+
+test("같은 Snapshot 식별자의 재수신은 새 세대로 취급하고 이전 배치 캐시를 비움", () => {
+  const { ui } = loadUi();
+  const snapshot = { ...detailGraphFixture(), snapshotId: "same-snapshot" };
+  ui.renderGraph(snapshot);
+  const previousViewGraph = ui.state.viewGraph;
+  const previousGeneration = ui.state.snapshotGeneration;
+  ui.state.layoutCache.set("stale-layout", {});
+  ui.renderGraph({ ...snapshot });
+
+  assert.equal(ui.state.snapshotGeneration, previousGeneration + 1);
+  assert.notEqual(ui.state.viewGraph, previousViewGraph);
+  assert.equal(ui.state.viewGraphCache.size, 1);
+  assert.equal(ui.state.layoutCache.size, 0);
+});
+
+test("View Graph와 ELK 배치 캐시의 최대 보관량을 지킴", async () => {
+  const { ui } = loadUi();
+  const base = graphFixture();
+  const snapshot = { ...base, nodes: base.nodes.slice(), edges: base.edges.slice(), findings: [] };
+  for (let index = 0; index < 14; index += 1) {
+    const endpointId = `cache-endpoint-${index}`;
+    snapshot.nodes.push({ id: endpointId, type: "ENDPOINT", serviceId: "orders", label: `GET /cache/${index}`,
+      attributes: { httpMethod: "GET", path: `/cache/${index}` }, evidenceIds: [] });
+    snapshot.findings.push({ id: `cache-finding-${index}`, ruleId: "PUBLIC_ENDPOINT", title: `Finding ${index}`,
+      confidence: "CONFIRMED", nodeIds: [endpointId], edgeIds: [], evidenceIds: [] });
+  }
+  ui.renderGraph(snapshot);
+  for (let index = 0; index < 14; index += 1) {
+    ui.state.selectedFindingId = `cache-finding-${index}`;
+    ui.selectView("security-detail");
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+
+  assert.equal(ui.state.viewGraphCache.size, 12);
+  assert.equal(ui.state.layoutCache.size, 8);
+});
+
+test("새 배치 요청은 이전 결과를 stale로 무시하고 같은 Worker를 재사용함", async () => {
   const { ui, layoutApi, window } = loadUi();
   const graph = ui.normalizeGraph(detailGraphFixture());
   const workers = [];
@@ -2020,8 +3294,8 @@ test("새 배치 요청은 진행 중인 후처리를 중단하고 오래된 결
       edges: graph.edges.map((edge) => ({ id: edge.id, sections: [] })) }); }
   }
   window.Worker = class {
-    constructor() { workers.push(this); }
-    postMessage(message) { this.message = message; }
+    constructor() { this.messages = []; workers.push(this); }
+    postMessage(message) { this.messages.push(message); }
     terminate() { this.terminated = true; }
   };
   const client = layoutApi.createClient(Elk);
@@ -2029,13 +3303,13 @@ test("새 배치 요청은 진행 중인 후처리를 중단하고 오래된 결
   await Promise.resolve();
   const second = client.layout(graph);
   await Promise.resolve();
-  assert.equal(workers[0].terminated, true);
-  workers[0].onmessage({ data: { requestId: workers[0].message.requestId, layout: { obsolete: true } } });
-  const current = workers[1];
-  workers[0].onerror({ preventDefault() {} });
-  assert.notEqual(current.terminated, true);
-  current.onmessage({ data: { requestId: current.message.requestId,
-    layout: layoutApi.semanticLayout(current.message.graph, current.message.elkLayout) } });
+  assert.equal(workers.length, 1);
+  assert.equal(workers[0].terminated, undefined);
+  assert.equal(workers[0].messages.length, 2);
+  workers[0].onmessage({ data: { requestId: workers[0].messages[0].requestId, layout: { obsolete: true } } });
+  const current = workers[0];
+  current.onmessage({ data: { requestId: current.messages[1].requestId,
+    layout: layoutApi.semanticLayout(current.messages[1].graph, current.messages[1].elkLayout) } });
   assert.equal((await first).stale, true);
   assert.equal((await second).stale, false);
   client.terminate();
@@ -2265,7 +3539,138 @@ test("Snapshot 오류를 인증·권한·보존 없음·서버·연결 상태로
   assert.equal(networkError.elements.get("graph-state-message").textContent, "연결 오류");
 });
 
-test("상세 MAP에서 새로고침 후 선택 Endpoint Graph를 다시 표시함", async () => {
+test("기능별 상세 Inspector는 중복 이동 버튼 없이 닫히고 선택 Endpoint와 Navigation을 유지함", async () => {
+  const { ui, elements } = loadUi();
+  ui.renderGraph(detailGraphFixture());
+  ui.openEndpointDetail("endpoint-a");
+  await ui.layoutGraph();
+  ui.selectGraphElement("node", "endpoint-a");
+  assert.equal(findAllByClass(elements.get("inspector"), "inspector-detail-action")
+    .some((button) => button.textContent === "기능별 상세 보기"), false);
+
+  ui.state.navigation.panBy(31, -17);
+  ui.state.navigation.zoomBy(1.1, 400, 260);
+  const viewGraph = ui.state.viewGraph;
+  const layout = ui.state.layout;
+  const navigation = { zoom: ui.state.navigation.state.zoom, panX: ui.state.navigation.state.panX,
+    panY: ui.state.navigation.state.panY };
+  const requestId = ui.state.layoutRequestId;
+  findAllByClass(elements.get("inspector"), "inspector-close")[0].dispatchEvent({ type: "click" });
+
+  assert.equal(elements.get("inspector").hidden, true);
+  assert.equal(elements.get("inspector").attributes["aria-hidden"], "true");
+  assert.equal(elements.get("inspector").children.length, 0);
+  assert.equal(ui.state.selection, null);
+  assert.equal(ui.state.selectedEndpointId, "endpoint-a");
+  assert.equal(ui.state.view, "feature-flow");
+  assert.equal(ui.state.viewGraph, viewGraph);
+  assert.equal(ui.state.layout, layout);
+  assert.equal(ui.state.layoutRequestId, requestId);
+  assert.deepEqual({ zoom: ui.state.navigation.state.zoom, panX: ui.state.navigation.state.panX,
+    panY: ui.state.navigation.state.panY }, navigation);
+
+  ui.applyGraphFilter();
+  assert.equal(elements.get("inspector").hidden, true);
+  ui.selectGraphElement("node", "handler-a");
+  assert.equal(elements.get("inspector").hidden, false);
+  assert.equal(elements.get("inspector").attributes["data-selection-id"], "handler-a");
+  ui.selectGraphElement("node", "endpoint-a");
+  assert.equal(elements.get("inspector").hidden, false);
+  assert.equal(findAllByClass(elements.get("inspector"), "inspector-detail-action")
+    .some((button) => button.textContent === "기능별 상세 보기"), false);
+});
+
+test("Inspector 닫기는 후속 Graph 선택 갱신 실패와 독립적으로 완료됨", async () => {
+  const { ui, elements, window } = loadUi();
+  ui.renderGraph(detailGraphFixture());
+  ui.openEndpointDetail("endpoint-a");
+  await ui.layoutGraph();
+  ui.selectGraphElement("node", "endpoint-a");
+  window.MapInBootGraph.updateState = () => { throw new Error("svg selection update failed"); };
+
+  const close = findAllByClass(elements.get("inspector"), "inspector-close")[0];
+  assert.doesNotThrow(() => close.dispatchEvent({ type: "click" }));
+  assert.equal(elements.get("inspector").hidden, true);
+  assert.equal(elements.get("inspector").attributes["aria-hidden"], "true");
+  assert.equal(elements.get("inspector").children.length, 0);
+  assert.equal(ui.state.selection, null);
+  assert.equal(ui.state.selectedEndpointId, "endpoint-a");
+  assert.match(elements.get("shell-notice").textContent, /Graph 표시 갱신 실패/);
+});
+
+test("API 자동 선택은 Inspector를 열지 않고 Graph 선택만 Inspector를 엶", () => {
+  const { ui, elements } = loadUi();
+  ui.renderGraph(detailGraphFixture());
+  ui.selectView("feature-flow");
+
+  assert.ok(ui.state.graph.nodes.some((node) => node.id === ui.state.selectedEndpointId && node.type === "ENDPOINT"));
+  assert.equal(ui.state.selection, null);
+  assert.equal(elements.get("inspector").hidden, true);
+
+  ui.selectGraphElement("node", ui.state.selectedEndpointId);
+  assert.equal(ui.state.selection.id, ui.state.selectedEndpointId);
+  assert.equal(elements.get("inspector").hidden, false);
+});
+
+test("빈 Finding Graph의 Inspector 닫힘은 같은 화면 재렌더와 Snapshot 새로고침 후에도 유지됨", async () => {
+  const snapshot = detailGraphFixture();
+  snapshot.findings = [{
+    id: "finding-without-anchor",
+    ruleId: "CHAIN_MISSING",
+    title: "연결 위치 확인 불가",
+    description: "확인된 Graph 참조 없음",
+    nodeIds: [],
+    edgeIds: [],
+    evidenceIds: [],
+    guide: "제공된 점검 가이드 없음"
+  }];
+  const responses = [
+    { ok: true, json: async () => ({ phase: "COMPLETED", persistedSnapshotPresent: true }) },
+    { ok: true, json: async () => snapshot },
+    { ok: true, json: async () => ({ phase: "COMPLETED", persistedSnapshotPresent: true }) },
+    { ok: true, json: async () => snapshot }
+  ];
+  const { ui, elements } = loadUi({ fetchImpl: () => Promise.resolve(responses.shift()) });
+  await new Promise((resolve) => setImmediate(resolve));
+  await new Promise((resolve) => setImmediate(resolve));
+  ui.selectView("security-detail");
+  assert.equal(ui.state.selectedFindingId, "finding-without-anchor");
+  assert.equal(ui.state.visibleGraph.nodes.length, 0);
+  assert.equal(elements.get("inspector").hidden, false);
+
+  findAllByClass(elements.get("inspector"), "inspector-close")[0].dispatchEvent({ type: "click" });
+  assert.equal(elements.get("inspector").hidden, true);
+  assert.equal(elements.get("inspector").attributes["aria-hidden"], "true");
+  assert.equal(ui.state.selectedFindingId, "finding-without-anchor");
+
+  ui.selectView("security-detail");
+  assert.equal(elements.get("inspector").hidden, true);
+  await ui.loadStatus();
+  assert.equal(ui.state.selectedFindingId, "finding-without-anchor");
+  assert.equal(elements.get("inspector").hidden, true);
+  assert.equal(elements.get("inspector").attributes["aria-hidden"], "true");
+});
+
+test("닫은 Inspector는 늦은 레이아웃 응답 이후에도 자동으로 다시 열리지 않음", async () => {
+  const { ui, layoutApi, elements } = loadUi();
+  ui.renderGraph(detailGraphFixture());
+  const pending = [];
+  layoutApi.layout = (graph) => new Promise((resolve) => pending.push({ graph, resolve }));
+  ui.openEndpointDetail("endpoint-a");
+  assert.equal(pending.length, 1);
+  ui.selectGraphElement("node", "endpoint-a");
+  findAllByClass(elements.get("inspector"), "inspector-close")[0].dispatchEvent({ type: "click" });
+  assert.equal(elements.get("inspector").hidden, true);
+
+  pending[0].resolve(layoutApi.semanticLayout(pending[0].graph, { positions: {} }));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(ui.state.selectedEndpointId, "endpoint-a");
+  assert.equal(ui.state.selection, null);
+  assert.equal(elements.get("inspector").hidden, true);
+  assert.equal(elements.get("inspector").attributes["aria-hidden"], "true");
+});
+
+test("상세 MAP에서 새로고침 후 선택 Endpoint Graph와 닫힌 Inspector를 유지함", async () => {
   const snapshot = detailGraphFixture();
   const responses = [
     { ok: true, json: async () => ({ phase: "COMPLETED", persistedSnapshotPresent: true }) },
@@ -2281,10 +3686,16 @@ test("상세 MAP에서 새로고침 후 선택 Endpoint Graph를 다시 표시�
   await instance.ui.layoutGraph();
   assert.equal(instance.ui.state.selectedEndpointId, "endpoint-a");
   assert.ok(instance.ui.state.visibleGraph.nodes.length > 0);
+  instance.ui.selectGraphElement("node", "endpoint-a");
+  instance.elements.get("inspector").children.find((child) => child.attributes.class === "inspector-header")
+    .children.find((child) => child.attributes.class === "inspector-close").dispatchEvent({ type: "click" });
 
   await instance.ui.loadStatus();
   assert.equal(instance.ui.state.view, "feature-flow");
   assert.equal(instance.ui.state.selectedEndpointId, "endpoint-a");
+  assert.equal(instance.ui.state.selection, null);
+  assert.equal(instance.elements.get("inspector").hidden, true);
+  assert.equal(instance.elements.get("inspector").attributes["aria-hidden"], "true");
   assert.equal(instance.elements.get("endpoint-search").value, "GET /orders");
   assert.equal(instance.elements.get("graph-svg").hasAttribute("hidden"), false);
   assert.ok(instance.ui.state.visibleGraph.nodes.length > 0);
@@ -2328,7 +3739,11 @@ test("내부 처리 단계는 중앙 대역에서 실제 Node와 겹치지 않�
       || node.position.y + 96 <= position.y || position.y + 96 <= node.position.y);
   }));
   assert.ok(layout.height >= projectionTop + 96);
-  assert.equal(new Set(projection.nodes.map((node) => node.position.y)).size, 1);
+  projection.nodes.forEach((node) => {
+    assert.ok(layout.height >= node.position.y + 96);
+    assert.ok(layout.width >= node.position.x + node.width,
+      `${node.id}: layout.width=${layout.width}, node.x=${node.position.x}, node.width=${node.width}`);
+  });
   assert.ok(projection.edges.length > 0);
   assert.equal(layout.plan.educationArea.top, projectionTop - layout.plan.educationArea.topPadding);
 });
@@ -2357,6 +3772,7 @@ test("Endpoint 16개 이상은 정렬 목록을 두 열로 분할하고 둘째 �
 test("전체 MAP은 동일 FQCN Controller Handler를 표시 그룹으로 묶고 원본 Handler는 보존함", async () => {
   const { ui, window, elements } = loadUi();
   const graph = detailGraphFixture();
+  ui.state.includeUnconnectedNodes = true;
   const originalHandlerIds = graph.nodes.filter((node) => node.type === "HANDLER").map((node) => node.id);
   graph.nodes.push(
     {
@@ -2414,6 +3830,144 @@ test("전체 MAP은 동일 FQCN Controller Handler를 표시 그룹으로 묶고
   assert.equal(elements.get("inspector").attributes["data-selection-kind"], "controller-group");
   assert.match(textOf(elements.get("inspector")), /com\.example\.ReportController/);
   assert.equal(typeof window.MapInBootFlow.deriveEndpointGraph, "function");
+});
+
+test("Controller Group 소속 API 수는 공통 Chain과 FQCN이 다른 같은 이름 Controller를 구분함", () => {
+  const { ui, layoutApi } = loadUi();
+  [1, 2, 10].forEach((count) => {
+    const graph = ui.normalizeGraph(controllerGroupGraph(count, 1));
+    const groups = layoutApi.semanticLayout(graph, { positions: {} }).plan.controllerGroups;
+    const first = groups.find((group) => group.controllerFqcn === "com.example.SampleController");
+    const second = groups.find((group) => group.controllerFqcn === "org.other.SampleController");
+    assert.ok(first);
+    assert.ok(second);
+    assert.equal(first.handlerIds.length, count);
+    assert.equal(first.endpointIds.length, count);
+    assert.equal(second.handlerIds.length, 1);
+    assert.equal(second.endpointIds.length, 1);
+    assert.notEqual(first.id, second.id);
+    assert.equal(first.controllerName, second.controllerName);
+  });
+});
+
+test("Controller Group 선택은 소속과 직접 관계만 강조하고 공유 Chain을 통해 확장하지 않음", () => {
+  const { ui, layoutApi, window } = loadUi();
+  const graph = ui.normalizeGraph(controllerGroupGraph(1, 1));
+  const groups = layoutApi.semanticLayout(graph, { positions: {} }).plan.controllerGroups;
+  const first = groups.find((group) => group.controllerFqcn === "com.example.SampleController");
+  const related = window.MapInBootInspector.related(graph, { kind: "controller-group", id: first.id }, groups);
+
+  assert.equal(related.nodeIds.has(first.id), true);
+  assert.equal(related.nodeIds.has("first-handler-0"), true);
+  assert.equal(related.nodeIds.has("first-endpoint-0"), true);
+  assert.equal(related.nodeIds.has("shared-chain"), true);
+  assert.equal(related.nodeIds.has("second-handler-0"), false);
+  assert.equal(related.nodeIds.has("second-endpoint-0"), false);
+  assert.equal(related.edgeIds.has("first-match-0"), true);
+  assert.equal(related.edgeIds.has("second-match-0"), false);
+});
+
+test("Controller Group 선택은 해당 Controller의 안내선과 전용 Projection만 강조함", async () => {
+  const { ui, elements } = loadUi();
+  ui.state.includeUnconnectedNodes = true;
+  ui.renderGraph(controllerGroupGraph(1, 1));
+  await ui.layoutGraph();
+  const group = ui.state.layout.plan.controllerGroups.find((item) => item.controllerFqcn === "com.example.SampleController");
+  ui.selectGraphElement("controller-group", group.id);
+
+  const guideFor = (endpointId) => elements.get("graph-guides").children
+    .find((item) => item.attributes["data-endpoint-id"] === endpointId);
+  const projectionFor = (id) => findAllByClass(elements.get("graph-flow-projection"), "graph-projection-edge")
+    .find((item) => item.attributes["data-projection-edge-id"] === id);
+  assert.equal(guideFor("first-endpoint-0").attributes["data-related"], "true");
+  assert.equal(guideFor("second-endpoint-0").attributes["data-related"], "false");
+  assert.equal(projectionFor("adapter-to-first-handler-0").attributes["data-related"], "true");
+  assert.equal(projectionFor("adapter-to-second-handler-0").attributes["data-related"], "false");
+  assert.equal(findAllByClass(elements.get("graph-flow-projection"), "graph-projection-edge")
+    .some((edge) => (edge.attributes["data-projection-edge-id"] || "").startsWith("handler-to-response-")), false);
+  assert.equal(projectionFor("mapping-to-adapter-shared").attributes["data-related"], "false");
+  assert.equal(projectionFor("education-education-http-request-education-request-prepare").attributes["data-related"], "false");
+});
+
+test("보안 관계선은 Graph 하단을 우회하지 않고 목표 입력 Port까지 짧게 연결함", () => {
+  const { ui, layoutApi } = loadUi();
+  const graph = ui.normalizeGraph(supportApiGraph(1));
+  const layout = layoutApi.semanticLayout(graph, { positions: {} });
+  const model = layout.plan.displayModel;
+  const sourceDisplayId = model.nodeToDisplay["first-handler-0"];
+  const targetDisplayId = model.nodeToDisplay["authorization-0"];
+  const groupPositions = layout.plan.controllerGroups.concat(model.groups)
+    .map((group) => [group.id, group.position]);
+  const displayedPosition = (id) => {
+    const displayId = model.nodeToDisplay[id];
+    const grouped = groupPositions.find(([groupId]) => groupId === displayId);
+    return grouped ? grouped[1] : layout.positions[id];
+  };
+  const route = layout.plan.displayEdgeRoutes["secured-0"];
+  const points = routePoints(route);
+  const actualRoute = layout.edgeRoutes["secured-0"];
+  const source = displayedPosition("first-handler-0");
+  const target = displayedPosition("authorization-0");
+  const start = { x: source.x + 260, y: source.y + 48 };
+  const end = { x: target.x, y: target.y + 48 };
+  assert.equal(points[0].x, start.x);
+  assert.equal(points[0].y, start.y);
+  assert.equal(points[points.length - 1].x, end.x);
+  assert.equal(points[points.length - 1].y, end.y);
+  assert.ok(points.length - 2 <= 2, `굽힘 수 ${points.length - 2}`);
+  assert.ok(routeLength(route) <= Math.abs(end.x - start.x) + Math.abs(end.y - start.y) + 32,
+    `경로 길이 ${routeLength(route)}`);
+
+  const positions = Object.fromEntries(layout.plan.projection.nodes.map((node) => [node.id, node.position]));
+  graph.nodes.forEach((node) => { positions[model.nodeToDisplay[node.id]] = displayedPosition(node.id); });
+  Object.entries(positions).forEach(([nodeId, position]) => {
+    if (nodeId === sourceDisplayId || nodeId === targetDisplayId) return;
+    assert.equal(routeIntersectsPosition(route, position), false, `${nodeId} 관통`);
+  });
+  const actualBottom = Math.max(...Object.values(layout.positions).map((position) => position.y + 96));
+  assert.ok(Math.max(...points.map((point) => point.y)) < actualBottom,
+    `경로가 실제 Node 하단 ${actualBottom} 아래로 내려감`);
+  assert.ok(Math.max(...routePoints(actualRoute).map((point) => point.y)) < actualBottom);
+  assert.equal(layout.plan.routeDiagnostics.edgeNodeIntersections, 0);
+});
+
+test("Controller 50·60 API 규모에서도 보안 관계 Route를 유지하고 하단 공통 우회를 만들지 않음", () => {
+  const { ui, layoutApi } = loadUi();
+  [50, 60].forEach((count) => {
+    const graph = ui.normalizeGraph(supportApiGraph(count));
+    const layout = layoutApi.semanticLayout(graph, { positions: {} });
+    const model = layout.plan.displayModel;
+    const firstRoute = layout.plan.displayEdgeRoutes["secured-0"];
+    const displayPositions = Object.fromEntries(layout.plan.projection.nodes.map((node) => [node.id, node.position]));
+    const displayGroups = layout.plan.controllerGroups.concat(model.groups);
+    graph.nodes.forEach((node) => {
+      const displayId = model.nodeToDisplay[node.id];
+      const group = displayGroups.find((item) => item.id === displayId);
+      displayPositions[displayId] = group ? group.position : layout.positions[node.id];
+    });
+    const sourceDisplayId = model.nodeToDisplay["first-handler-0"];
+    const targetDisplayId = model.nodeToDisplay["authorization-0"];
+    const groupPositions = layout.plan.controllerGroups.concat(model.groups)
+      .map((group) => [group.id, group.position]);
+    const source = groupPositions.find(([id]) => id === sourceDisplayId)[1];
+    const target = groupPositions.find(([id]) => id === targetDisplayId)[1];
+    const points = routePoints(firstRoute);
+    assert.equal(Object.keys(layout.plan.displayEdgeRoutes).filter((id) => id.startsWith("secured-")).length, count);
+    assert.ok(points.length > 0, `${count}개 API의 첫 관계선 Route 없음`);
+    assert.ok(Math.max(...points.map((point) => point.y)) <= Math.max(source.y + 48, target.y + 48) + 48,
+      `${count}개 API의 첫 관계선이 목표 주변을 벗어남`);
+    assert.equal(layout.plan.routeDiagnostics.nodeOverlaps, 0, `${count}개 API Node 겹침`);
+    assert.equal(layout.plan.routeDiagnostics.edgeNodeIntersections, 0, `${count}개 API 실제 Edge 충돌`);
+    graph.edges.filter((edge) => edge.type === "SECURED_BY").forEach((edge) => {
+      const sourceId = model.nodeToDisplay[edge.sourceId];
+      const targetId = model.nodeToDisplay[edge.targetId];
+      const route = layout.plan.displayEdgeRoutes[edge.id];
+      Object.entries(displayPositions).forEach(([nodeId, position]) => {
+        if (nodeId === sourceId || nodeId === targetId) return;
+        assert.equal(routeIntersectsPosition(route, position), false, `${count}개 API ${edge.id}의 ${nodeId} 충돌`);
+      });
+    });
+  });
 });
 
 test("표시 그룹은 실제 관계로 소속을 확인하고 원본 Fact와 Edge를 역추적함", () => {
@@ -2501,6 +4055,53 @@ test("묶인 표시 관계에서 개별 Edge와 Evidence를 선택할 수 있음
   assert.match(textOf(elements.get("inspector")), /e-edge2/);
 });
 
+test("묶인 Edge의 Finding은 원본 Edge별로 따로 선택됨", async () => {
+  const { ui, elements } = loadUi();
+  const snapshot = detailGraphFixture();
+  snapshot.nodes.push({ id: "authorization-a2", type: "AUTHORIZATION", serviceId: "orders", label: "other", attributes: {}, evidenceIds: [] });
+  snapshot.edges.push({ id: "secured-a2", sourceId: "handler-a", targetId: "authorization-a2", type: "SECURED_BY", attributes: {}, confidence: "CONFIRMED", evidenceIds: [] });
+  snapshot.findings = [
+    { id: "first", title: "첫 판단", ruleId: "CHAIN_ORDER", confidence: "CONFIRMED", nodeIds: [], edgeIds: ["secured-a"] },
+    { id: "second", title: "둘째 판단", ruleId: "FILTER_ORDER", confidence: "LIKELY", nodeIds: [], edgeIds: ["secured-a2"] }
+  ];
+  ui.renderGraph(snapshot);
+  ui.selectView("security-flow");
+  await ui.layoutGraph();
+  const markers = findAllByClass(elements.get("graph-edges"), "finding-marker");
+  assert.equal(markers.length, 2);
+  assert.match(markers[0].getAttribute("aria-label"), /첫 판단/);
+  assert.match(markers[1].getAttribute("aria-label"), /둘째 판단/);
+  markers[1].dispatchEvent({ type: "keydown", key: "Enter" });
+  assert.equal(ui.state.selectedFindingId, "second");
+});
+
+test("표시 그룹의 원본 Node 참조와 Snapshot 교체가 마커를 정확히 갱신함", async () => {
+  const { ui, elements } = loadUi();
+  const snapshot = detailGraphFixture();
+  snapshot.findings = [
+    { id: "grouped", title: "인가 판단", ruleId: "OBJECT_BINDING", confidence: "LIKELY", nodeIds: ["authorization-a", "missing"], edgeIds: [] }
+  ];
+  ui.renderGraph(snapshot);
+  ui.selectView("security-flow");
+  await ui.layoutGraph();
+  const group = ui.state.layout.plan.displayModel.groups.find((item) => item.nodeIds.includes("authorization-a"));
+  const marker = findAllByClass(elements.get("graph-nodes"), "finding-marker")[0];
+  assert.equal(marker.getAttribute("transform"), `translate(${group.position.x + 246} ${group.position.y + 14})`);
+  marker.dispatchEvent({ type: "click" });
+  assert.equal(ui.state.selectedFindingId, "grouped");
+  assert.equal(ui.state.view, "security-flow");
+  assert.equal(elements.get("finding-modal").hidden, false);
+  assert.match(textOf(elements.get("finding-modal")), /authorization-a/);
+  ui.selectView("security-flow");
+  assert.match(textOf(elements.get("finding-list")), /인가 판단/);
+  const replacement = detailGraphFixture();
+  replacement.findings = [];
+  ui.renderGraph(replacement);
+  assert.equal(findAllByClass(elements.get("graph-nodes"), "finding-marker").length, 0);
+  assert.match(textOf(elements.get("finding-list")), /보존된 Finding 없음/);
+  assert.equal(ui.state.selectedFindingId, null);
+});
+
 test("표시 그룹 관계 경로는 최종 카드 포트에서 시작하고 끝남", () => {
   const { ui, layoutApi } = loadUi();
   const graph = ui.normalizeGraph(detailGraphFixture());
@@ -2562,10 +4163,9 @@ test("같은 Controller의 두 번째 API 선택도 공유 처리 경로를 강�
   const paths = findAllByClass(elements.get("graph-flow-projection"), "graph-projection-edge");
   const adapter = paths.find((path) => (path.attributes["data-projection-edge-id"] || "") === "adapter-to-handler-a");
   const shared = paths.find((path) => path.attributes["data-projection-edge-id"] === "mapping-to-adapter-shared");
-  const response = paths.find((path) => path.attributes["data-projection-edge-id"] === "handler-to-response-handler-a");
   assert.equal(adapter.attributes["data-related"], "true");
   assert.equal(shared.attributes["data-related"], "true");
-  assert.equal(response.attributes["data-related"], "true");
+  assert.equal(paths.some((path) => (path.attributes["data-projection-edge-id"] || "").startsWith("handler-to-response-")), false);
 });
 
 test("기능별 상세에서는 같은 방향과 유형의 원본 Edge도 개별 표시함", async () => {
@@ -2611,4 +4211,628 @@ test("Mini Map은 실제 표시 Node와 교육용 Projection Node를 함께 갱�
   await ui.layoutGraph();
   assert.equal(elements.get("graph-minimap-nodes").children.some((node) =>
     node.attributes["data-node-kind"] === "education"), true);
+});
+
+test("업무 상태 구조 식별자는 카드 이름이 아닌 의미 있는 상태로 표시됨", () => {
+  const { window } = loadUi();
+  const display = window.MapInBootGraph.nodeDisplay({ type: "BUSINESS_SECURITY_STATE", label: "state-evaluation|org.example.AccountController#submit(Ljava/lang/String;)V|BYPASS_PATH", attributes: { factType: "BUSINESS_STATE_EVALUATION", stateName: "verified", pathOutcome: "BYPASS_PATH" } });
+  assert.match(display.primary, /업무 상태 검증/);
+  assert.match(display.primary, /verified/);
+  assert.doesNotMatch(display.primary + display.detail, /state-evaluation\||Ljava/);
+});
+
+test("화면 전환 후 상세 취약점 선택을 유지함", () => {
+  const { ui, elements } = loadUi();
+  const snapshot = graphFixture();
+  snapshot.findings = [{ id: "saved-finding", ruleId: "PUBLIC_ENDPOINT", title: "판단", confidence: "LIKELY", nodeIds: ["node-2"], edgeIds: [], evidenceIds: [], guide: "점검" }];
+  ui.renderGraph(snapshot);
+  ui.selectView("security-flow");
+  findAllByClass(elements.get("graph-nodes"), "finding-marker")[0].dispatchEvent({ type: "click" });
+  for (const view of ["all-flow", "feature-flow", "security-flow"]) {
+    ui.selectView(view);
+    ui.selectView("security-detail");
+    assert.equal(ui.state.selectedFindingId, "saved-finding");
+    assert.equal(ui.state.detailApiId, "node-2");
+  }
+});
+
+test("Snapshot 시간은 단일 버전 문구로 표시함", async () => {
+  const snapshot = graphFixture();
+  snapshot.capturedAt = "2026-11-19T03:00:00Z";
+  const responses = [
+    { ok: true, json: async () => ({ phase: "PARTIAL", persistedSnapshotPresent: true }) },
+    { ok: true, json: async () => snapshot }
+  ];
+  const { elements } = loadUi({ fetchImpl: () => Promise.resolve(responses.shift()) });
+  await new Promise((resolve) => setImmediate(resolve));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.match(textOf(elements.get("snapshot-time")), /^Snapshot 버전: /);
+  assert.doesNotMatch(indexHtml.match(/<span class="view-state"[^>]*>/)?.[0] || "", /class="view-state"/);
+});
+
+test("유형 필터는 원본 Enum을 값으로 유지하고 한국어를 표시함", () => {
+  const { window, elements } = loadUi();
+  for (const [value, label] of Object.entries(window.MapInBootGraph.nodeTypeNames)) {
+    assert.ok(elements.get("node-filter").children.some((option) => option.value === value && option.textContent === label));
+  }
+  for (const [value, label] of Object.entries(window.MapInBootGraph.edgeTypeNames)) {
+    assert.ok(elements.get("edge-filter").children.some((option) => option.value === value && option.textContent === label));
+  }
+});
+
+test("보안 MAP에서 직접 참조된 노드만 Finding 테두리 상태를 가짐", () => {
+  const { ui, elements } = loadUi();
+  const snapshot = graphFixture();
+  snapshot.findings = [{ id: "border-finding", ruleId: "PUBLIC_ENDPOINT", title: "판단", confidence: "LIKELY", nodeIds: ["node-2"], edgeIds: [], evidenceIds: [], guide: "점검" }];
+  ui.renderGraph(snapshot);
+  ui.selectView("security-flow");
+  const nodes = findAllByClass(elements.get("graph-nodes"), "graph-node");
+  assert.equal(nodes.find((node) => node.getAttribute("data-node-id") === "node-2").getAttribute("data-has-finding"), "true");
+  assert.equal(nodes.find((node) => node.getAttribute("data-node-id") === "node-1").getAttribute("data-has-finding"), "false");
+  elements.get("finding-confidence").value = "CONFIRMED";
+  elements.get("finding-confidence").dispatchEvent({ type: "change" });
+  const filtered = findAllByClass(elements.get("graph-nodes"), "graph-node");
+  assert.equal(filtered.find((node) => node.getAttribute("data-node-id") === "node-2").getAttribute("data-has-finding"), "false");
+});
+
+test("Finding 근거는 유일한 Endpoint 등록 근거 또는 구조 Handler로만 연결함", () => {
+  const { ui, elements } = loadUi();
+  const snapshot = graphFixture();
+  const endpoint = snapshot.nodes.find((node) => node.id === "node-2");
+  endpoint.attributes.handler = "org.example.Controller#one()";
+  endpoint.evidenceIds = ["endpoint-evidence"];
+  snapshot.nodes.push({ id: "other-endpoint", type: "ENDPOINT", label: "GET /other", attributes: { httpMethod: "GET", path: "/other", handler: "org.example.Controller#other()" }, evidenceIds: ["shared-evidence"] });
+  snapshot.nodes.push({ id: "state-node", type: "BUSINESS_SECURITY_STATE", label: "state", attributes: { factType: "BUSINESS_STATE_EVALUATION", handler: "org.example.Controller#one()" }, evidenceIds: ["state-evidence"] });
+  snapshot.evidence = [
+    { id: "endpoint-evidence", source: "RUNTIME", location: `mapping:${endpoint.attributes.handler}`, summary: `등록 Endpoint: ${endpoint.attributes.httpMethod} ${endpoint.attributes.path}` },
+    { id: "shared-evidence" }, { id: "state-evidence" }
+  ];
+  snapshot.findings = [
+    { id: "evidence-finding", ruleId: "FILTER_ORDER", title: "순서", nodeIds: [], edgeIds: [], evidenceIds: ["endpoint-evidence"], guide: "점검" },
+    { id: "state-finding", ruleId: "STATE_BYPASS", title: "상태", nodeIds: [], edgeIds: [], evidenceIds: ["state-evidence"], guide: "점검" }
+  ];
+  ui.renderGraph(snapshot);
+  ui.selectView("security-detail");
+  const options = elements.get("finding-api-select").children.filter((option) => option.value).map((option) => option.value);
+  assert.deepEqual(options, ["node-2"]);
+  elements.get("finding-api-select").value = "node-2";
+  elements.get("finding-api-select").dispatchEvent({ type: "change" });
+  assert.match(textOf(elements.get("detail-finding-list")), /순서/);
+  assert.match(textOf(elements.get("detail-finding-list")), /상태/);
+});
+
+test("다수 보안정보 표시 카드와 교육 노드는 충돌하지 않음", () => {
+  const { layoutApi, ui } = loadUi();
+  const snapshot = laneGraphFixture();
+  for (let index = 0; index < 30; index += 1) {
+    snapshot.nodes.push({ id: `extra-state-${index}`, type: "BUSINESS_SECURITY_STATE", label: `state-${index}`, attributes: {}, evidenceIds: [] });
+  }
+  const layout = layoutApi.semanticLayout(ui.normalizeGraph(snapshot), { positions: {} });
+  const groups = (layout.plan.controllerGroups || []).concat(layout.plan.displayModel.groups || []);
+  const cards = Object.values(layout.positions).concat(groups.map((group) => group.position));
+  const education = layout.plan.projection.nodes.map((node) => node.position);
+  const overlap = (a, b) => a.x < b.x + 260 && a.x + 260 > b.x && a.y < b.y + 96 && a.y + 96 > b.y;
+  for (const [index, position] of education.entries()) {
+    assert.equal(cards.some((card) => overlap(position, card)), false, `실제 카드와 충돌: ${index}`);
+    assert.equal(education.slice(index + 1).some((card) => overlap(position, card)), false, `교육 카드와 충돌: ${index}`);
+  }
+});
+
+test("빈 Graph부터 다수 Endpoint까지 교육 카드의 실제 표시 Bounds가 겹치지 않음", () => {
+  const { layoutApi, ui } = loadUi();
+  const toRect = (position, width = 260, height = 96) => ({
+    left: position.x, top: position.y, right: position.x + width, bottom: position.y + height
+  });
+  const overlaps = (left, right, gap = 0) => left.left - gap < right.right && left.right + gap > right.left
+    && left.top - gap < right.bottom && left.bottom + gap > right.top;
+  for (const count of [0, 1, 5, 16, 32, 50, 60]) {
+    const graph = ui.normalizeGraph(endpointCountGraph(count));
+    if (count >= 50) {
+      const endpointIds = graph.nodes.filter((node) => node.type === "ENDPOINT").map((node) => node.id);
+      graph.findingSections = ["first", "second"].map((suffix) => ({
+        finding: { id: `bulk-finding-${count}-${suffix}`, title: `API ${count}개 영향 ${suffix}` },
+        nodeIds: endpointIds,
+        edgeIds: []
+      }));
+    }
+    const original = JSON.stringify({ nodes: graph.nodes, edges: graph.edges });
+    const layout = layoutApi.semanticLayout(graph, { positions: {} });
+    const groups = (layout.plan.controllerGroups || []).concat(layout.plan.displayModel.groups || []);
+    const groupedIds = new Set(groups.flatMap((group) => (group.handlerIds || []).concat(group.nodeIds || [])));
+    const cards = graph.nodes.filter((node) => !groupedIds.has(node.id))
+      .map((node) => toRect(layout.positions[node.id]))
+      .concat(groups.filter((group) => group.position).map((group) => toRect(group.position)));
+    const nodes = layout.plan.projection.nodes;
+    const projectionById = new Map(nodes.map((node) => [node.id, node]));
+    const projectionIds = nodes.map((node) => node.presentationId);
+    assert.equal(new Set(projectionIds).size, nodes.length, `${count}: Presentation ID 중복`);
+    assert.equal(projectionIds.some((id) => graph.nodes.some((node) => node.id === id)), false,
+      `${count}: Presentation ID가 원본 Node와 겹침`);
+    assert.deepEqual(JSON.stringify({ nodes: graph.nodes, edges: graph.edges }), original, `${count}: 원본 Graph 변경`);
+
+    for (const [index, node] of nodes.entries()) {
+      assert.ok(node.width > 0 && node.height > 0, `${count}: ${node.id} 크기`);
+      assert.deepEqual([node.bounds.left, node.bounds.top, node.bounds.right, node.bounds.bottom], [
+        node.position.x, node.position.y,
+        node.position.x + node.width, node.position.y + node.height
+      ], `${count}: ${node.id} Bounds`);
+      assert.equal(cards.some((card) => overlaps(node.bounds, card, 24)), false,
+        `${count}: 실제 Node·Group과 24px 여백 충돌 ${index}`);
+      assert.equal(nodes.slice(index + 1).some((other) => overlaps(node.bounds, other.bounds, 24)), false,
+        `${count}: 교육 Node 간 24px 여백 충돌 ${index}`);
+      assert.ok(layout.width >= node.bounds.right, `${count}: ${node.id}가 layout 폭을 벗어남`);
+      assert.ok(layout.height >= node.bounds.bottom, `${count}: ${node.id}가 layout 높이를 벗어남`);
+      assert.ok(layout.plan.educationArea.left <= node.bounds.left
+        && layout.plan.educationArea.right >= node.bounds.right
+        && layout.plan.educationArea.top <= node.bounds.top
+        && layout.plan.educationArea.bottom >= node.bounds.bottom, `${count}: ${node.id}가 교육 영역을 벗어남`);
+      const edgeBounds = [...(layout.plan.lanes || []).map((lane) => lane.headerBounds),
+        ...(layout.plan.chainGroups || []).map((group) => group.headerBounds)].filter(Boolean);
+      assert.equal(edgeBounds.some((bounds) => overlaps(node.bounds, bounds, 24)), false,
+        `${count}: 기술 제목과 24px 여백 충돌 ${index}`);
+      assert.equal((layout.plan.findingSectionLayouts || []).some((section) =>
+        overlaps(node.bounds, section.bounds, 24) || overlaps(node.bounds, section.titleBounds, 24)), false,
+      `${count}: Finding 섹션과 24px 여백 충돌 ${index}`);
+    }
+
+    for (const edge of layout.plan.projection.edges) {
+      const route = layout.plan.projectionRoutes[edge.id];
+      if (!route) continue;
+      const source = projectionById.get(edge.sourceId);
+      const target = projectionById.get(edge.targetId);
+      const sourcePosition = source ? source.position : layout.positions[edge.sourceId];
+      const targetPosition = target ? target.position : layout.positions[edge.targetId];
+      if (!sourcePosition || !targetPosition) continue;
+      const sourceHeight = source ? source.height : 96;
+      const targetHeight = target ? target.height : 96;
+      const points = [];
+      for (const [, command, first, second] of route.d.matchAll(/([MLHV])\s*(-?[\d.]+)(?:\s+(-?[\d.]+))?/g)) {
+        const previous = points.at(-1);
+        points.push(command === "H" ? { x: Number(first), y: previous.y }
+          : command === "V" ? { x: previous.x, y: Number(first) }
+            : { x: Number(first), y: Number(second) });
+      }
+      assert.ok(points.length > 1, `${count}: ${edge.id} Route`);
+      const sourceWidth = source ? source.width : 260;
+      const targetWidth = target ? target.width : 260;
+      assert.ok([[sourcePosition.x, sourcePosition.y + sourceHeight / 2],
+        [sourcePosition.x + sourceWidth, sourcePosition.y + sourceHeight / 2]]
+        .some(([x, y]) => points[0].x === x && points[0].y === y), `${count}: ${edge.id} 시작 포트`);
+      assert.ok([[targetPosition.x, targetPosition.y + targetHeight / 2],
+        [targetPosition.x + targetWidth, targetPosition.y + targetHeight / 2]]
+        .some(([x, y]) => points.at(-1).x === x && points.at(-1).y === y), `${count}: ${edge.id} 종료 포트`);
+    }
+
+    for (const section of layout.plan.findingSectionLayouts || []) {
+      const related = section.nodeIds.map((id) => layout.positions[id]);
+      assert.ok(related.length > 0, `${count}: 영향 Node 없음`);
+      assert.ok(section.bounds.left <= Math.min(...related.map((position) => position.x)) - 28);
+      assert.ok(section.bounds.right >= Math.max(...related.map((position) => position.x + 260)) + 28);
+      assert.ok(section.bounds.top <= Math.min(...related.map((position) => position.y)) - 48);
+      assert.ok(section.bounds.bottom >= Math.max(...related.map((position) => position.y + 96)) + 24);
+      assert.equal(cards.some((card) => overlaps(section.titleBounds, card, 4)), false,
+        `${count}: Finding 제목과 실제 카드 충돌`);
+      const technicalTitles = [...(layout.plan.lanes || []).map((lane) => lane.headerBounds),
+        ...(layout.plan.chainGroups || []).map((group) => group.headerBounds)].filter(Boolean);
+      assert.equal(technicalTitles.some((title) => overlaps(section.titleBounds, title, 4)), false,
+        `${count}: Finding 제목과 기술 제목 충돌`);
+    }
+    const sectionTitles = (layout.plan.findingSectionLayouts || []).map((section) => section.titleBounds);
+    for (let index = 0; index < sectionTitles.length; index += 1) {
+      assert.equal(sectionTitles.slice(index + 1).some((title) => overlaps(sectionTitles[index], title, 4)), false,
+        `${count}: Finding 제목 간 충돌 ${index}`);
+    }
+  }
+});
+
+test("Finding 섹션 배경과 제목은 Modal을 열고 Node·Edge Inspector와 Pan 상태를 보존함", async () => {
+  const { ui, elements, layoutCalls } = loadUi();
+  const snapshot = detailGraphFixture();
+  snapshot.evidence = [{ id: "finding-evidence", source: "STATIC", location: "OrderController#list", summary: "인가 관계 확인" }];
+  snapshot.findings = [{
+    id: "section-modal", ruleId: "OBJECT_BINDING", title: "객체 인가 확인", description: "인가 대상 확인",
+    confidence: "LIKELY", nodeIds: ["endpoint-a", "authorization-a"], edgeIds: ["secured-a"],
+    evidenceIds: ["finding-evidence"], guide: "객체 소유자 검증"
+  }];
+  ui.renderGraph(snapshot);
+  ui.selectView("security-flow");
+  findAllByClass(elements.get("graph-nodes"), "finding-marker")[0].dispatchEvent({ type: "click" });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  let section = findAllByClass(elements.get("graph-finding-sections"), "graph-finding-section")[0];
+  let outline = findAllByClass(section, "graph-finding-section-outline")[0];
+  let titleHit = findAllByClass(elements.get("graph-finding-section-titles"), "graph-finding-section-title-hit")[0];
+  assert.ok(section && outline && titleHit);
+  assert.equal(section.getAttribute("role"), "button");
+  assert.match(section.getAttribute("aria-label"), /객체 인가 확인/);
+  assert.equal(titleHit.parentNode.getAttribute("data-finding-id"), section.getAttribute("data-finding-id"));
+  assert.match(appCss, /\.graph-finding-section-outline\s*\{[^}]*fill:\s*#7f1d1d[^}]*stroke-dasharray:\s*5 4/s);
+  assert.match(appCss, /\.graph-finding-section\[data-hovered="true"\]/);
+  assert.match(appCss, /\.graph-finding-section-title-target\[data-hovered="true"\]/);
+  assert.match(appCss, /\.graph-finding-section:focus-visible/);
+  assert.match(outline.getAttribute("class"), /graph-area-box/);
+  assert.ok(indexHtml.indexOf('id="graph-finding-sections"') < indexHtml.indexOf('id="graph-edges"'));
+  assert.ok(indexHtml.indexOf('id="graph-edges"') < indexHtml.indexOf('id="graph-nodes"'));
+
+  const titleGroup = titleHit.parentNode;
+  outline.dispatchEvent({ type: "pointerover" });
+  assert.equal(section.getAttribute("data-hovered"), "true");
+  assert.equal(titleGroup.getAttribute("data-hovered"), "true");
+  titleGroup.dispatchEvent({ type: "pointerout", relatedTarget: outline });
+  assert.equal(section.getAttribute("data-hovered"), "true");
+  titleHit.dispatchEvent({ type: "pointerover" });
+  assert.equal(section.getAttribute("data-hovered"), "true");
+  titleGroup.dispatchEvent({ type: "pointerout", relatedTarget: elements.get("graph-svg") });
+  assert.equal(section.getAttribute("data-hovered"), "false");
+  assert.equal(titleGroup.getAttribute("data-hovered"), "false");
+  assert.equal(section.getAttribute("data-selected"), "true");
+
+  const node = findAllByClass(elements.get("graph-nodes"), "graph-node")
+    .find((item) => item.getAttribute("data-node-id") === "authorization-a");
+  node.dispatchEvent({ type: "click" });
+  assert.equal(ui.state.selection.kind, "node");
+  assert.equal(elements.get("inspector").hidden, false);
+  const edge = findAllByClass(elements.get("graph-edges"), "graph-edge")
+    .find((item) => item.getAttribute("data-edge-id") === "secured-a");
+  edge.dispatchEvent({ type: "click" });
+  assert.equal(ui.state.selection.kind, "edge");
+  assert.equal(ui.state.selection.id, "secured-a");
+  section = findAllByClass(elements.get("graph-finding-sections"), "graph-finding-section")[0];
+  outline = findAllByClass(section, "graph-finding-section-outline")[0];
+  titleHit = findAllByClass(elements.get("graph-finding-section-titles"), "graph-finding-section-title-hit")[0];
+
+  const navigation = ui.state.navigation.state;
+  const before = {
+    view: ui.state.view,
+    selection: { ...ui.state.selection },
+    selectedFindingId: ui.state.selectedFindingId,
+    detailApiId: ui.state.detailApiId,
+    zoom: navigation.zoom,
+    panX: navigation.panX,
+    panY: navigation.panY,
+    layoutCount: layoutCalls.length
+  };
+  outline.dispatchEvent({ type: "click" });
+  assert.equal(elements.get("finding-modal").hidden, false);
+  assert.equal(ui.state.view, before.view);
+  assert.equal(ui.state.selection.kind, before.selection.kind);
+  assert.equal(ui.state.selection.id, before.selection.id);
+  assert.equal(ui.state.selectedFindingId, before.selectedFindingId);
+  assert.equal(ui.state.detailApiId, before.detailApiId);
+  assert.equal(navigation.zoom, before.zoom);
+  assert.equal(navigation.panX, before.panX);
+  assert.equal(navigation.panY, before.panY);
+  assert.equal(layoutCalls.length, before.layoutCount);
+
+  elements.get("finding-modal").dispatchEvent({ type: "keydown", key: "Escape" });
+  assert.equal(section.focused, true);
+  assert.equal(elements.get("finding-modal").hidden, true);
+  titleHit.dispatchEvent({ type: "click" });
+  assert.equal(elements.get("finding-modal").hidden, false);
+  elements.get("finding-modal").dispatchEvent({ type: "keydown", key: "Escape" });
+  assert.equal(section.focused, true);
+  const spaceKey = { type: "keydown", key: " " };
+  section.dispatchEvent(spaceKey);
+  assert.equal(spaceKey.defaultPrevented, true);
+  assert.equal(elements.get("finding-modal").hidden, false);
+  elements.get("finding-modal").dispatchEvent({ type: "keydown", key: "Escape" });
+  assert.equal(section.focused, true);
+
+  elements.get("graph-canvas").dispatchEvent({ type: "pointerdown", target: outline, clientX: 10, clientY: 20, pointerId: 1 });
+  assert.equal(navigation.dragging, false);
+  elements.get("graph-canvas").dispatchEvent({ type: "pointerdown", target: titleHit, clientX: 10, clientY: 20, pointerId: 3 });
+  assert.equal(navigation.dragging, false);
+  elements.get("graph-canvas").dispatchEvent({ type: "pointerdown", target: elements.get("graph-svg"), clientX: 10, clientY: 20, pointerId: 2 });
+  assert.equal(navigation.dragging, true);
+  elements.get("graph-canvas").dispatchEvent({ type: "pointerup", target: elements.get("graph-svg"), pointerId: 2 });
+  assert.equal(navigation.dragging, false);
+
+  const layout = ui.state.layout;
+  const presentation = layout.plan.projection.nodes[0];
+  const minimapNode = findAllByClass(elements.get("graph-minimap-nodes"), "graph-minimap-node")
+    .find((item) => item.getAttribute("data-node-id") === presentation.id);
+  assert.ok(minimapNode);
+  assert.equal(Number(minimapNode.getAttribute("width")), presentation.width);
+  assert.equal(Number(minimapNode.getAttribute("height")), presentation.height);
+  const fitBounds = navigation.visibleBounds;
+  const fitRect = {
+    left: fitBounds.x, top: fitBounds.y,
+    right: fitBounds.x + fitBounds.width, bottom: fitBounds.y + fitBounds.height
+  };
+  const sectionBounds = layout.plan.findingSectionLayouts[0].bounds;
+  const areaBounds = layout.plan.educationArea;
+  assert.ok(fitRect.left <= sectionBounds.left && fitRect.right >= sectionBounds.right);
+  assert.ok(fitRect.top <= sectionBounds.top && fitRect.bottom >= sectionBounds.bottom);
+  assert.ok(fitRect.left <= areaBounds.left && fitRect.right >= areaBounds.right);
+  assert.ok(fitRect.top <= areaBounds.top && fitRect.bottom >= areaBounds.bottom);
+});
+
+
+test("객체 인가 사실 유형은 구조 키 대신 역할을 표시함", () => {
+  const { window } = loadUi();
+  const requirement = window.MapInBootGraph.nodeDisplay({ type: "AUTHORIZATION", label: "object-requirement|example.Foo#bar()", attributes: { factType: "OBJECT_AUTHORIZATION_REQUIREMENT", handler: "example.Foo#bar(java.lang.String)" } });
+  const path = window.MapInBootGraph.nodeDisplay({ type: "AUTHORIZATION", label: "object-access|example.Foo#bar()", attributes: { factType: "OBJECT_ACCESS_PATH", handler: "example.Foo#bar(java.lang.String)" } });
+  assert.match(requirement.primary, /객체 인가 요구/);
+  assert.match(path.primary, /객체 접근 경로/);
+  assert.doesNotMatch(requirement.primary + path.primary, /object-|example\./);
+});
+
+test("교육 흐름 경로는 관련 없는 실제 카드 내부를 지나지 않음", () => {
+  const { layoutApi, ui } = loadUi();
+  const intersects = (a, b, p) => a.x === b.x
+    ? a.x > p.x && a.x < p.x + 260 && Math.max(a.y, b.y) > p.y && Math.min(a.y, b.y) < p.y + 96
+    : a.y === b.y && a.y > p.y && a.y < p.y + 96 && Math.max(a.x, b.x) > p.x && Math.min(a.x, b.x) < p.x + 260;
+  for (const graph of [wrappedFilterGraph(5, 5), laneGraphFixture()]) {
+  const layout = layoutApi.semanticLayout(ui.normalizeGraph(graph), { positions: {} });
+  for (const edge of layout.plan.projection.edges) {
+    const route = layout.plan.projectionRoutes[edge.id];
+    if (!route) continue;
+    const commands = [...route.d.matchAll(/([MLHV])\s*(-?[\d.]+)(?:\s+(-?[\d.]+))?/g)];
+    let previous = null;
+    for (const [, command, first, second] of commands) {
+      const point = command === "H" ? { x: Number(first), y: previous.y }
+        : command === "V" ? { x: previous.x, y: Number(first) }
+          : { x: Number(first), y: Number(second) };
+      if (previous) for (const [id, position] of Object.entries(layout.positions)) {
+        if (id !== edge.sourceId && id !== edge.targetId) assert.equal(intersects(previous, point, position), false, `${edge.id}: ${id}`);
+      }
+      previous = point;
+    }
+  }
+  }
+});
+
+test("객체 인가 Handler는 실제 근거가 일치할 때만 API에 연결하고 모호한 등록 근거는 제외함", () => {
+  const { ui, elements } = loadUi();
+  const snapshot = graphFixture();
+  const endpoint = snapshot.nodes.find((node) => node.id === "node-2");
+  endpoint.attributes.handler = "org.sample.Controller#load()";
+  endpoint.evidenceIds = ["shared"];
+  snapshot.nodes.push({ id: "ambiguous-endpoint", type: "ENDPOINT", label: endpoint.label, attributes: { ...endpoint.attributes }, evidenceIds: ["shared"] });
+  snapshot.nodes.push({ id: "object-path", type: "AUTHORIZATION", label: "object-path", attributes: { factType: "OBJECT_ACCESS_PATH", handler: "org.sample.Other#load()" }, evidenceIds: ["object-evidence"] });
+  snapshot.nodes.push({ id: "object-endpoint", type: "ENDPOINT", label: "GET /objects", attributes: { httpMethod: "GET", path: "/objects", handler: "org.sample.Other#load()" }, evidenceIds: [] });
+  snapshot.evidence = [{ id: "shared", source: "RUNTIME", location: `mapping:${endpoint.attributes.handler}`, summary: `등록 Endpoint: ${endpoint.attributes.httpMethod} ${endpoint.attributes.path}` }, { id: "object-evidence" }];
+  snapshot.findings = [
+    { id: "ambiguous", ruleId: "FILTER_ORDER", title: "모호", nodeIds: [], edgeIds: [], evidenceIds: ["shared"] },
+    { id: "object", ruleId: "OBJECT_BINDING", title: "객체", nodeIds: [], edgeIds: [], evidenceIds: ["object-evidence"] }
+  ];
+  ui.renderGraph(snapshot);
+  ui.selectView("security-detail");
+  const options = elements.get("finding-api-select").children.filter((option) => option.value).map((option) => option.value);
+  assert.deepEqual(options, ["object-endpoint"]);
+  assert.equal(ui.state.selectedFindingId, "object");
+});
+
+test("속성이 없는 노드도 구조 ID와 JVM Descriptor를 제목으로 노출하지 않음", () => {
+  const { window } = loadUi();
+  for (const type of ["APPLICATION", "SERVLET", "ENDPOINT", "HANDLER", "FILTER", "AUTHENTICATION", "AUTHORIZATION", "SECURITY_DATA", "BUSINESS_SECURITY_STATE", "SECURITY_CHAIN"]) {
+    const display = window.MapInBootGraph.nodeDisplay({ id: "opaque-id", type, label: "structural|org.other.Example#run(Ljava/lang/String;)V", attributes: {} });
+    assert.doesNotMatch(display.primary, /structural\||Ljava\/|opaque-id/, type);
+  }
+});
+
+test("Snapshot 버전은 실제 조회 결과의 유효한 시각만 표시함", async () => {
+  const snapshot = graphFixture();
+  snapshot.capturedAt = "invalid-time";
+  const responses = [
+    { ok: true, json: async () => ({ phase: "COMPLETED", persistedSnapshotPresent: true, persistedCapturedAt: "2026-11-19T03:00:00Z" }) },
+    { ok: true, json: async () => snapshot }
+  ];
+  const { elements } = loadUi({ fetchImpl: () => Promise.resolve(responses.shift()) });
+  await new Promise((resolve) => setImmediate(resolve));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(textOf(elements.get("snapshot-time")), "Snapshot 버전: 확인 불가");
+});
+
+test("API 선택 목록에 구조 ID가 이름으로 노출되지 않음", () => {
+  const { ui, elements } = loadUi();
+  const snapshot = graphFixture();
+  const endpoint = snapshot.nodes.find((node) => node.id === "node-2");
+  endpoint.label = "endpoint|opaque|org.example.Api#method(Ljava/lang/String;)V";
+  endpoint.attributes = {};
+  snapshot.findings = [{ id: "finding", ruleId: "PUBLIC_ENDPOINT", title: "판단", nodeIds: ["node-2"], edgeIds: [], evidenceIds: [] }];
+  ui.renderGraph(snapshot);
+  ui.selectView("security-detail");
+  assert.doesNotMatch(textOf(elements.get("finding-api-select")), /endpoint\|opaque|Ljava|node-2/);
+});
+
+test("전체 Flow MAP은 실제 연결 Node만 기본 표시하고 옵션과 보안 MAP 원본을 보존함", () => {
+  const { ui, elements } = loadUi();
+  const snapshot = graphFixture();
+  snapshot.nodes.push({ id: "orphan-node", type: "HANDLER", serviceId: "orders", label: "고립 Handler", attributes: {}, evidenceIds: [] });
+  snapshot.edges.push({ id: "orphan-edge", sourceId: "orphan-node", targetId: "missing-node", type: "FLOWS_TO", attributes: {}, confidence: "CONFIRMED", evidenceIds: [] });
+  const original = JSON.stringify(snapshot);
+
+  ui.renderGraph(snapshot);
+  assert.equal(ui.state.graph.nodes.some((node) => node.id === "orphan-node"), true);
+  assert.equal(ui.state.graph.invalidEdges, 1);
+  assert.equal(ui.state.viewGraph.nodes.some((node) => node.id === "orphan-node"), false);
+  assert.equal(ui.state.viewGraph.edges.some((edge) => edge.id === "orphan-edge"), false);
+  assert.equal(elements.get("unconnected-node-field").hidden, false);
+
+  elements.get("include-unconnected-nodes").checked = true;
+  elements.get("include-unconnected-nodes").dispatchEvent({ type: "change" });
+  assert.equal(ui.state.viewGraph.nodes.some((node) => node.id === "orphan-node"), true);
+  assert.equal(ui.state.viewGraph.edges.some((edge) => edge.id === "orphan-edge"), false);
+
+  elements.get("include-unconnected-nodes").checked = false;
+  elements.get("include-unconnected-nodes").dispatchEvent({ type: "change" });
+  ui.selectView("security-flow");
+  assert.equal(ui.state.viewGraph.nodes.some((node) => node.id === "orphan-node"), true);
+  assert.equal(JSON.stringify(snapshot), original);
+});
+
+test("상세 취약점 MAP은 선택 Endpoint의 전체 실제 상세 Graph를 표시함", () => {
+  const { ui, elements, window } = loadUi();
+  const snapshot = detailGraphFixture();
+  snapshot.findings = [{ id: "endpoint-flow-finding", ruleId: "PUBLIC_ENDPOINT", title: "API 판단", confidence: "LIKELY", nodeIds: ["endpoint-a"], edgeIds: [], evidenceIds: [], guide: "점검" }];
+  const original = JSON.stringify(snapshot);
+  const expected = window.MapInBootFlow.deriveEndpointGraph(window.MapInBootGraph.normalize(snapshot), "endpoint-a");
+  ui.renderGraph(snapshot);
+  ui.selectView("security-flow");
+
+  const marker = findAllByClass(elements.get("graph-nodes"), "finding-marker")[0];
+  marker.dispatchEvent({ type: "click" });
+  const actual = ui.state.viewGraph;
+
+  assert.equal(ui.state.view, "security-detail");
+  assert.deepEqual(Array.from(actual.nodes, (node) => node.id), Array.from(expected.nodes, (node) => node.id));
+  assert.deepEqual(Array.from(actual.edges, (edge) => edge.id), Array.from(expected.edges, (edge) => edge.id));
+  assert.ok(actual.nodes.some((node) => node.id === "handler-a"));
+  assert.ok(actual.nodes.some((node) => node.id === "chain-a"));
+  assert.ok(actual.nodes.some((node) => node.id === "security-filter-1"));
+  assert.ok(actual.nodes.some((node) => node.id === "authorization-a"));
+  assert.ok(actual.nodes.some((node) => node.id === "security-data-a"));
+  assert.equal(actual.nodes.some((node) => node.id === "endpoint-b"), false);
+  assert.equal(actual.nodes.some((node) => node.id === "chain-b"), false);
+  assert.equal(actual.edges.some((edge) => edge.id === "secured-a"), true);
+  assert.equal(actual.edges.some((edge) => edge.id === "secured-b"), false);
+  assert.equal(JSON.stringify(snapshot), original);
+});
+
+test("Finding 영향 섹션은 실제 참조만 감싸고 별도 Modal을 키보드로 열고 닫음", async () => {
+  const { ui, elements, layoutCalls } = loadUi();
+  const snapshot = detailGraphFixture();
+  snapshot.evidence = [{ id: "finding-evidence", source: "STATIC", location: "OrderController#list", summary: "인가 관계 확인" }];
+  snapshot.findings = [{
+    id: "endpoint-impact", ruleId: "OBJECT_BINDING", title: "객체 인가 확인", description: "인가 대상 확인",
+    confidence: "LIKELY", nodeIds: ["endpoint-a", "authorization-a"], edgeIds: ["secured-a"],
+    evidenceIds: ["finding-evidence"], guide: "객체 소유자 검증"
+  }];
+  ui.renderGraph(snapshot);
+  ui.selectView("security-flow");
+  const marker = findAllByClass(elements.get("graph-nodes"), "finding-marker")[0];
+  marker.dispatchEvent({ type: "click" });
+
+  await new Promise((resolve) => setImmediate(resolve));
+
+  const section = findAllByClass(elements.get("graph-finding-sections"), "graph-finding-section")[0];
+  assert.ok(section);
+  assert.equal(section.getAttribute("data-finding-id"), "endpoint-impact");
+  assert.match(section.getAttribute("data-node-ids"), /authorization-a/);
+  assert.match(section.getAttribute("data-node-ids"), /handler-a/);
+  assert.doesNotMatch(section.getAttribute("data-node-ids"), /security-data-a|endpoint-b/);
+  assert.equal(section.getAttribute("role"), "button");
+  assert.equal(elements.get("finding-modal").hidden, false);
+  assert.equal(elements.get("finding-modal").getAttribute("role"), "dialog");
+  assert.equal(elements.get("finding-modal").getAttribute("aria-modal"), "true");
+  assert.equal(elements.get("finding-modal-title").textContent, "객체 인가 확인");
+  assert.match(textOf(elements.get("finding-modal-content")), /finding-evidence/);
+  assert.match(textOf(elements.get("finding-modal-content")), /OrderController#list/);
+  assert.match(textOf(elements.get("finding-modal-content")), /객체 소유자 검증/);
+  assert.equal(elements.get("inspector").hidden, true);
+
+  const graphNode = findAllByClass(elements.get("graph-nodes"), "graph-node")[0];
+  const layoutCount = layoutCalls.length;
+  elements.get("finding-modal-close").dispatchEvent({ type: "click" });
+  section.dispatchEvent({ type: "keydown", key: "Enter" });
+  assert.equal(elements.get("finding-modal").hidden, false);
+  assert.equal(findAllByClass(elements.get("graph-nodes"), "graph-node")[0], graphNode);
+  assert.equal(layoutCalls.length, layoutCount);
+  useHtmlCollectionChildrenTree(elements.get("finding-modal"));
+  assert.equal(typeof elements.get("finding-modal").children.forEach, "undefined");
+  const focusables = [];
+  const collectButtons = (element) => {
+    if (element.tagName === "button" && !element.hidden) focusables.push(element);
+    Array.from(element.children || []).forEach(collectButtons);
+  };
+  collectButtons(elements.get("finding-modal"));
+  const trap = { type: "keydown", key: "Tab", shiftKey: true };
+  focusables[0].dispatchEvent(trap);
+  assert.equal(trap.defaultPrevented, true);
+  assert.equal(focusables[focusables.length - 1].focused, true);
+
+  elements.get("finding-modal").dispatchEvent({ type: "keydown", key: "Escape" });
+  assert.equal(elements.get("finding-modal").hidden, true);
+  assert.equal(section.focused, true);
+  assert.equal(ui.state.view, "security-detail");
+  assert.equal(ui.state.selectedFindingId, "endpoint-impact");
+});
+
+test("HTMLCollection형 SVG 자식에서도 부분 Graph 갱신과 Node·Edge Inspector가 동작함", async () => {
+  const { ui, elements, window, layoutCalls } = loadUi();
+  ui.renderGraph(detailGraphFixture());
+  ui.openEndpointDetail("endpoint-a");
+  await ui.layoutGraph();
+  ui.clearSelection();
+  assert.equal(elements.get("inspector").hidden, true);
+
+  useHtmlCollectionChildrenTree(elements.get("graph-nodes"));
+  useHtmlCollectionChildrenTree(elements.get("graph-edges"));
+  assert.equal(typeof elements.get("graph-nodes").children.forEach, "undefined");
+  assert.equal(typeof elements.get("graph-edges").children.forEach, "undefined");
+  const originalUpdateState = window.MapInBootGraph.updateState;
+  let updateCalls = 0;
+  window.MapInBootGraph.updateState = (...args) => {
+    updateCalls += 1;
+    return originalUpdateState(...args);
+  };
+  const layoutCount = layoutCalls.length;
+  const layoutRequestId = ui.state.layoutRequestId;
+
+  assert.doesNotThrow(() => ui.selectGraphElement("node", "endpoint-a"));
+  assert.equal(updateCalls, 1);
+  assert.equal(ui.state.selection.kind, "node");
+  assert.equal(ui.state.selection.id, "endpoint-a");
+  assert.equal(elements.get("inspector").hidden, false);
+  assert.equal(elements.get("inspector").getAttribute("data-selection-id"), "endpoint-a");
+  assert.match(textOf(elements.get("inspector")), /GET \/orders/);
+
+  assert.doesNotThrow(() => ui.selectGraphElement("node", "handler-a"));
+  assert.equal(elements.get("inspector").getAttribute("data-selection-id"), "handler-a");
+  assert.doesNotMatch(textOf(elements.get("inspector")), /endpoint-a/);
+  assert.doesNotThrow(() => ui.selectGraphElement("edge", "match-a"));
+  assert.equal(elements.get("inspector").getAttribute("data-selection-kind"), "edge");
+  assert.equal(elements.get("inspector").getAttribute("data-selection-id"), "match-a");
+  assert.equal(layoutCalls.length, layoutCount);
+
+  findAllByClass(elements.get("inspector"), "inspector-close")[0].dispatchEvent({ type: "click" });
+  assert.equal(elements.get("inspector").hidden, true);
+  assert.equal(elements.get("inspector").getAttribute("aria-hidden"), "true");
+  assert.equal(ui.state.selectedEndpointId, "endpoint-a");
+  assert.equal(ui.state.layoutRequestId, layoutRequestId);
+  assert.doesNotThrow(() => ui.selectGraphElement("node", "endpoint-a"));
+  assert.equal(elements.get("inspector").hidden, false);
+  assert.equal(elements.get("inspector").getAttribute("data-selection-id"), "endpoint-a");
+  assert.equal(layoutCalls.length, layoutCount);
+});
+
+test("HTMLCollection형 Finding Marker는 선택과 필터 갱신을 유지함", async () => {
+  const { ui, elements } = loadUi();
+  const snapshot = detailGraphFixture();
+  snapshot.findings = [{
+    id: "handler-finding", ruleId: "OBJECT_BINDING", title: "Handler 판단", confidence: "CONFIRMED",
+    nodeIds: ["handler-a"], edgeIds: ["secured-a"], evidenceIds: [], guide: "인가 대상 점검"
+  }];
+  ui.renderGraph(snapshot);
+  ui.selectView("security-flow");
+  await ui.layoutGraph();
+  useHtmlCollectionChildrenTree(elements.get("graph-nodes"));
+  useHtmlCollectionChildrenTree(elements.get("graph-edges"));
+
+  ui.state.selectedFindingId = "handler-finding";
+  assert.doesNotThrow(() => ui.selectGraphElement("node", "handler-a"));
+  let marker = findAllByClass(elements.get("graph-nodes"), "finding-marker")
+    .find((item) => item.getAttribute("data-finding-id") === "handler-finding");
+  assert.ok(marker);
+  assert.equal(marker.hidden, false);
+  assert.equal(marker.getAttribute("data-selected"), "true");
+  assert.equal(marker.getAttribute("aria-pressed"), "true");
+
+  elements.get("finding-confidence").value = "LIKELY";
+  assert.doesNotThrow(() => elements.get("finding-confidence").dispatchEvent({ type: "change" }));
+  marker = findAllByClass(elements.get("graph-nodes"), "finding-marker")
+    .find((item) => item.getAttribute("data-finding-id") === "handler-finding");
+  assert.equal(marker.hidden, true);
+});
+
+test("Node 선택은 기존 SVG Node와 Edge DOM을 재사용함", () => {
+  const { ui, elements } = loadUi();
+  ui.renderGraph(graphFixture());
+  const node = findAllByClass(elements.get("graph-nodes"), "graph-node")[2];
+  const edge = findAllByClass(elements.get("graph-edges"), "graph-edge")[2];
+  ui.selectGraphElement("node", node.getAttribute("data-node-id"));
+  assert.equal(findAllByClass(elements.get("graph-nodes"), "graph-node")[2], node);
+  assert.equal(findAllByClass(elements.get("graph-edges"), "graph-edge")[2], edge);
+  assert.equal(node.getAttribute("data-selected"), "true");
 });

@@ -7,6 +7,10 @@
   const MIN_ZOOM = 0.2;
   const MAX_ZOOM = 2.5;
   const DEFAULT_CANVAS = { width: 960, height: 540 };
+  const INTERACTIVE_TARGET_CLASSES = new Set([
+    "graph-node", "graph-edge", "finding-marker", "graph-finding-section",
+    "graph-finding-section-title-target", "graph-projection-node", "graph-minimap", "map-toolbar"
+  ]);
 
   function finite(value, fallback) {
     return typeof value === "number" && Number.isFinite(value) ? value : fallback;
@@ -18,18 +22,19 @@
 
   function graphBounds(nodes, positions, fallback) {
     const values = (nodes || [])
-      .map((node) => positions && positions[node.id])
-      .filter((position) => position && finite(position.x, null) !== null && finite(position.y, null) !== null);
+      .map((node) => ({ node, position: positions && positions[node.id] || node.position }))
+      .filter(({ position }) => position && finite(position.x, null) !== null && finite(position.y, null) !== null);
     if (values.length === 0) return fallback || { x: 0, y: 0, width: 640, height: 360 };
-    let left = values[0].x;
-    let top = values[0].y;
-    let right = values[0].x + NODE_WIDTH;
-    let bottom = values[0].y + NODE_HEIGHT;
-    values.slice(1).forEach((position) => {
+    const first = values[0];
+    let left = first.position.x;
+    let top = first.position.y;
+    let right = first.position.x + finite(first.position.width, finite(first.node.width, NODE_WIDTH));
+    let bottom = first.position.y + finite(first.position.height, finite(first.node.height, NODE_HEIGHT));
+    values.slice(1).forEach(({ node, position }) => {
       left = Math.min(left, position.x);
       top = Math.min(top, position.y);
-      right = Math.max(right, position.x + NODE_WIDTH);
-      bottom = Math.max(bottom, position.y + NODE_HEIGHT);
+      right = Math.max(right, position.x + finite(position.width, finite(node.width, NODE_WIDTH)));
+      bottom = Math.max(bottom, position.y + finite(position.height, finite(node.height, NODE_HEIGHT)));
     });
     return { x: left, y: top, width: Math.max(NODE_WIDTH, right - left), height: Math.max(NODE_HEIGHT, bottom - top) };
   }
@@ -40,13 +45,13 @@
     if (values.length === 0) return fallback || { x: 0, y: 0, width: 640, height: 360 };
     let left = values[0].x;
     let top = values[0].y;
-    let right = values[0].x + NODE_WIDTH;
-    let bottom = values[0].y + NODE_HEIGHT;
+    let right = values[0].x + finite(values[0].width, NODE_WIDTH);
+    let bottom = values[0].y + finite(values[0].height, NODE_HEIGHT);
     values.slice(1).forEach((position) => {
       left = Math.min(left, position.x);
       top = Math.min(top, position.y);
-      right = Math.max(right, position.x + NODE_WIDTH);
-      bottom = Math.max(bottom, position.y + NODE_HEIGHT);
+      right = Math.max(right, position.x + finite(position.width, NODE_WIDTH));
+      bottom = Math.max(bottom, position.y + finite(position.height, NODE_HEIGHT));
     });
     return { x: left, y: top, width: Math.max(NODE_WIDTH, right - left), height: Math.max(NODE_HEIGHT, bottom - top) };
   }
@@ -114,12 +119,17 @@
     function nodeTarget(target) {
       if (!target) return false;
       if (typeof target.closest === "function"
-        && (target.closest(".graph-node") || target.closest(".graph-edge")
-          || target.closest(".graph-minimap") || target.closest(".map-toolbar"))) return true;
-      const className = typeof target.getAttribute === "function" ? target.getAttribute("class") : "";
-      return typeof className === "string"
-        && className.split(/\s+/).some((name) => name === "graph-node" || name === "graph-edge"
-          || name === "graph-minimap" || name === "map-toolbar");
+        && (target.closest(".graph-node") || target.closest(".graph-edge") || target.closest(".finding-marker")
+          || target.closest(".graph-finding-section") || target.closest(".graph-finding-section-title-target")
+          || target.closest(".graph-projection-node") || target.closest(".graph-minimap")
+          || target.closest(".map-toolbar"))) return true;
+      let current = target;
+      while (current) {
+        const className = typeof current.getAttribute === "function" ? current.getAttribute("class") : "";
+        if (typeof className === "string" && className.split(/\s+/).some((name) => INTERACTIVE_TARGET_CLASSES.has(name))) return true;
+        current = current.parentNode;
+      }
+      return false;
     }
 
     function updateMiniMap() {
@@ -147,8 +157,8 @@
           rect.setAttribute("data-node-kind", node.kind || "actual");
           rect.setAttribute("x", String(position.x));
           rect.setAttribute("y", String(position.y));
-          rect.setAttribute("width", String(NODE_WIDTH));
-          rect.setAttribute("height", String(NODE_HEIGHT));
+          rect.setAttribute("width", String(finite(position.width, finite(node.width, NODE_WIDTH))));
+          rect.setAttribute("height", String(finite(position.height, finite(node.height, NODE_HEIGHT))));
           rect.setAttribute("rx", "4");
           rect.setAttribute("fill", node.kind === "education"
             ? "#72ad83" : node.kind === "controller-group" ? "#c4b5fd" : "#4ade80");
@@ -197,7 +207,7 @@
         ? presentationNodes
         : state.graph ? state.graph.nodes : [];
       state.graphBounds = state.graph
-        ? normalizedBounds(bounds, graphBounds(state.graph.nodes, state.positions))
+        ? normalizedBounds(bounds, graphBounds(state.presentationNodes, state.positions))
         : null;
       state.visibleBounds = state.graph
         ? positionBounds(fitPositions || state.positions, graphBounds(state.graph.nodes, state.positions, state.graphBounds))

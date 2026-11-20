@@ -32,6 +32,7 @@
   };
   const nodeTypeLabel = (type) => nodeTypeNames[type] || type;
   const edgeTypeLabel = (type) => edgeTypeNames[type] || type;
+  const confidenceNames = { CONFIRMED: "확정", LIKELY: "검토 필요", UNKNOWN: "확인 불가" };
   const nodeDisplay = graphDisplay.nodeDisplay || ((item) => ({ primary: item.label, detail: "" }));
   const shortenReference = graphDisplay.handlerDisplay || ((value) => String(value || ""));
 
@@ -178,10 +179,11 @@
     if (selection.kind === "controller-group") {
       const group = controllerGroups.find((candidate) => candidate.id === selection.id);
       if (!group) return { nodeIds, edgeIds };
+      const ownedNodeIds = new Set([...(group.handlerIds || []), ...(group.endpointIds || [])]);
       nodeIds.add(selection.id);
-      [...(group.handlerIds || []), ...(group.endpointIds || [])].forEach((id) => nodeIds.add(id));
+      ownedNodeIds.forEach((id) => nodeIds.add(id));
       graph.edges.forEach((edge) => {
-        if (!nodeIds.has(edge.sourceId) && !nodeIds.has(edge.targetId)) return;
+        if (!ownedNodeIds.has(edge.sourceId) && !ownedNodeIds.has(edge.targetId)) return;
         edgeIds.add(edge.id);
         nodeIds.add(edge.sourceId);
         nodeIds.add(edge.targetId);
@@ -199,11 +201,14 @@
 
   function create(options = {}) {
     const inspector = options.inspector;
+    const findingModalTitle = options.findingModalTitle;
+    const findingModalContent = options.findingModalContent;
     const popover = options.popover;
     const surface = options.surface;
     const onClear = options.onClear || (() => {});
     const onSelect = options.onSelect || (() => {});
     const onOpenDetail = options.onOpenDetail || (() => {});
+    const onOpenFindingEndpoint = options.onOpenFindingEndpoint || (() => {});
     let activeTab = "properties";
     let current = { graph: null, visibleGraph: null, snapshot: null, selection: null, controllerGroups: [] };
 
@@ -211,6 +216,16 @@
       if (!element) return;
       element.hidden = hidden;
       element.setAttribute("aria-hidden", String(hidden));
+    }
+
+    function close() {
+      current = { graph: null, visibleGraph: null, snapshot: null, selection: null, controllerGroups: [], displayModel: null };
+      setHidden(inspector, true);
+      if (inspector) {
+        inspector.replaceChildren();
+        inspector.removeAttribute("data-selection-kind");
+        inspector.removeAttribute("data-selection-id");
+      }
     }
 
     function selectedItem(graph, selection, controllerGroups = []) {
@@ -228,7 +243,7 @@
       if (selection.kind === "node") {
         const attributes = item.attributes || {};
         if (item.type === "ENDPOINT") {
-          return [attributes.httpMethod, attributes.path].filter(Boolean).join(" ") || item.label;
+          return [attributes.httpMethod, attributes.path].filter(Boolean).join(" ") || nodeDisplay(item).primary;
         }
         return nodeDisplay(item).primary || item.label;
       }
@@ -246,14 +261,14 @@
       evidenceIds.forEach((id) => {
         const evidence = byId.get(id);
         const block = appendElement(parent, "div", "inspector-evidence");
-        appendRow(block, "Evidence ID", id);
+        appendRow(block, "근거 ID", id);
         if (!evidence) {
-          appendRow(block, "상태", "확인할 수 없음");
+          appendRow(block, "상태", "참조 확인 불가");
           return;
         }
-        appendRow(block, "Source", evidence.source);
-        appendRow(block, "Location", evidence.location);
-        appendRow(block, "Summary", evidence.summary);
+        appendRow(block, "출처 (Source)", evidence.source);
+        appendRow(block, "위치 (Location)", evidence.location);
+        appendRow(block, "요약 (Summary)", evidence.summary);
       });
     }
 
@@ -342,7 +357,7 @@
       appendRow(parent, "유형", edgeTypeLabel(item.type));
       appendRow(parent, "출발 Node ID", item.sourceId);
       appendRow(parent, "도착 Node ID", item.targetId);
-      appendRow(parent, "Confidence", item.confidence);
+      appendRow(parent, "신뢰도 (Confidence)", item.confidence);
       appendAttributes(parent, item.attributes);
       appendFindings(parent, snapshot, selection, current.controllerGroups);
       appendEvidence(parent, snapshot, item.evidenceIds);
@@ -415,7 +430,7 @@
       } else {
         appendRow(block, "방향", `${edge.sourceId} → ${edge.targetId}`);
       }
-      appendRow(block, "Confidence", edge.confidence);
+      appendRow(block, "신뢰도 (Confidence)", edge.confidence);
       appendRow(block, "출발 Node", nodes.has(edge.sourceId) ? edge.sourceId : "확인할 수 없음");
       appendRow(block, "도착 Node", nodes.has(edge.targetId) ? edge.targetId : "확인할 수 없음");
       appendAttributes(block, edge.attributes);
@@ -440,19 +455,134 @@
       referenced.forEach((edge) => appendRelation(parent, edge, selection, nodes, false));
     }
 
-    function render({ graph, visibleGraph, snapshot, selection, controllerGroups = [], displayModel = null }) {
-      current = { graph, visibleGraph, snapshot, selection, controllerGroups, displayModel };
-      setHidden(inspector, !selection);
+    // Snapshot의 원본 ID와 Finding 참조를 대조한 위치 목록
+    function appendFindingLocations(parent, graph, entry, onOpenEndpoint) {
+      appendHeading(parent, "확인된 Graph 위치");
+      if (!entry) {
+        appendEmpty(parent, "Finding을 선택하면 실제 연결 위치를 확인할 수 있습니다.");
+        return;
+      }
+      const nodesById = new Map((graph && graph.nodes || []).map((node) => [node.id, node]));
+      const edgesById = new Map((graph && graph.edges || []).map((edge) => [edge.id, edge]));
+      const edges = entry.edgeIds.map((id) => edgesById.get(id)).filter(Boolean);
+      const nodeIds = new Set(entry.nodeIds);
+      edges.forEach((edge) => {
+        nodeIds.add(edge.sourceId);
+        nodeIds.add(edge.targetId);
+      });
+      const nodes = [...nodeIds].map((id) => nodesById.get(id)).filter(Boolean);
+      if (entry.missing) appendElement(parent, "p", "inspector-help", "일부 Graph 참조를 확인할 수 없습니다.");
+      if (nodes.length === 0 && edges.length === 0) {
+        appendEmpty(parent, "확인된 연결 위치 없음");
+        return;
+      }
+      nodes.forEach((node) => {
+        const label = node.type === "ENDPOINT"
+          ? [node.attributes.httpMethod, node.attributes.path].filter(Boolean).join(" ") || nodeDisplay(node).primary
+          : nodeDisplay(node).primary || node.label;
+        const button = appendElement(parent, "button", "inspector-link", `${nodeTypeLabel(node.type)} · ${label} · ${node.id}`);
+        button.setAttribute("type", "button");
+        button.setAttribute("data-node-id", node.id);
+        button.addEventListener("click", () => onSelect("node", node.id));
+        if (node.type === "ENDPOINT") {
+          const detail = appendElement(parent, "button", "inspector-detail-action", "기능별 상세 보기");
+          detail.setAttribute("type", "button");
+          detail.setAttribute("data-endpoint-id", node.id);
+          detail.addEventListener("click", () => onOpenEndpoint(node.id));
+        }
+      });
+      edges.forEach((edge) => {
+        const button = appendElement(parent, "button", "inspector-link", `Edge · ${edgeTypeLabel(edge.type)} · ${edge.id}`);
+        button.setAttribute("type", "button");
+        button.setAttribute("data-edge-id", edge.id);
+        button.addEventListener("click", () => onSelect("edge", edge.id));
+      });
+    }
+
+    // Finding 판단, 실제 근거와 점검 가이드의 우측 Inspector
+    function renderFinding({ graph, snapshot, entry, emptyPrompt, onReturn, onOpenEndpoint, dismissed = false }) {
+      if (dismissed) {
+        close();
+        return null;
+      }
+      current = { graph, visibleGraph: null, snapshot, selection: null, controllerGroups: [], displayModel: null };
+      setHidden(inspector, false);
+      if (!inspector) return null;
+      inspector.replaceChildren();
+      inspector.setAttribute("data-selection-kind", "finding");
+      inspector.setAttribute("data-selection-id", entry ? entry.finding.id : "");
+      const finding = entry && entry.finding;
+      const header = appendElement(inspector, "div", "inspector-header");
+      appendElement(header, "span", "inspector-badge", finding ? "Finding" : "선택 필요");
+      const heading = appendElement(header, "div", "inspector-heading");
+      appendElement(heading, "strong", "inspector-title", finding ? finding.title || finding.id : emptyPrompt && emptyPrompt.title || "Finding 선택 필요");
+      appendElement(heading, "span", "inspector-subtitle", finding
+        ? `${finding.ruleId || "Rule 확인 불가"} · ${confidenceNames[finding.confidence] || "확인 불가"} (${finding.confidence || "UNKNOWN"})`
+        : emptyPrompt && emptyPrompt.description || "보안 MAP에서 확인할 Finding을 선택하세요.");
+      const closeButton = appendElement(header, "button", "inspector-close", "닫기");
+      closeButton.setAttribute("type", "button");
+      closeButton.setAttribute("aria-label", "Finding Inspector 닫기");
+      closeButton.addEventListener("click", onClear);
+      const back = appendElement(header, "button", "inspector-detail-action", "보안 MAP으로");
+      back.setAttribute("type", "button");
+      back.addEventListener("click", onReturn);
+
+      const body = appendElement(inspector, "div", "inspector-body");
+      if (!finding) {
+        appendEmpty(body, emptyPrompt && emptyPrompt.description || "보안 MAP에서 Finding을 선택할 수 있습니다.");
+        return null;
+      }
+      appendHeading(body, "판단");
+      appendRow(body, "Rule ID", finding.ruleId);
+      appendRow(body, "판단 신뢰도", `${confidenceNames[finding.confidence] || "확인 불가"} (${finding.confidence || "UNKNOWN"})`);
+      appendElement(body, "p", "inspector-help", valueOf(finding.description, "판단 설명 없음"));
+      appendFindingLocations(body, graph, entry, onOpenEndpoint);
+      appendEvidence(body, snapshot, finding.evidenceIds);
+      appendHeading(body, "점검 가이드");
+      appendElement(body, "p", "inspector-help", valueOf(finding.guide, "제공된 점검 가이드 없음"));
+      return finding;
+    }
+
+    function renderFindingModal({ graph, snapshot, entry, apiLabel, nodeIds = [], edgeIds = [], onOpenEndpoint = onOpenFindingEndpoint }) {
+      if (findingModalTitle) findingModalTitle.textContent = entry
+        ? valueOf(entry.finding.title, entry.finding.id)
+        : "Finding 선택 필요";
+      if (!findingModalContent) return null;
+      findingModalContent.replaceChildren();
+      if (!entry) {
+        appendEmpty(findingModalContent, "확인할 Finding이 없습니다.");
+        return null;
+      }
+      const finding = entry.finding;
+      appendHeading(findingModalContent, "판단");
+      appendRow(findingModalContent, "Rule ID", finding.ruleId);
+      appendRow(findingModalContent, "Confidence", `${confidenceNames[finding.confidence] || "확인 불가"} (${finding.confidence || "UNKNOWN"})`);
+      appendRow(findingModalContent, "연결 API", apiLabel || "확인된 API 없음");
+      appendElement(findingModalContent, "p", "inspector-help", valueOf(finding.description, "판단 설명 없음"));
+      const scopedEntry = {
+        ...entry,
+        nodeIds: Array.from(new Set([...(entry.nodeIds || []), ...nodeIds])),
+        edgeIds: Array.from(new Set([...(entry.edgeIds || []), ...edgeIds]))
+      };
+      appendFindingLocations(findingModalContent, graph, scopedEntry, onOpenEndpoint);
+      appendEvidence(findingModalContent, snapshot, finding.evidenceIds);
+      appendHeading(findingModalContent, "점검 가이드");
+      appendElement(findingModalContent, "p", "inspector-help", valueOf(finding.guide, "제공된 점검 가이드 없음"));
+      return finding;
+    }
+
+    function render({ graph, visibleGraph, snapshot, selection, view = null, findingId = null, onShowFinding = null, controllerGroups = [], displayModel = null }) {
+      current = { graph, visibleGraph, snapshot, selection, view, findingId, onShowFinding, controllerGroups, displayModel };
       if (!selection) {
-        if (inspector) inspector.replaceChildren();
+        close();
         return null;
       }
       const item = selectedItem(graph, selection, controllerGroups);
       if (!item) {
-        setHidden(inspector, true);
-        if (inspector) inspector.replaceChildren();
+        close();
         return null;
       }
+      setHidden(inspector, false);
       if (inspector) {
         inspector.replaceChildren();
         inspector.setAttribute("data-selection-kind", selection.kind);
@@ -468,15 +598,22 @@
       appendElement(heading, "strong", "inspector-title", selectedLabel(selection, item));
       appendElement(heading, "span", "inspector-subtitle", selection.kind === "node"
         ? nodeTypeLabel(item.type) : selection.kind === "controller-group" ? groupType : edgeTypeLabel(item.type));
-      const close = appendElement(header, "button", "inspector-close", "닫기");
-      close.setAttribute("type", "button");
-      close.setAttribute("aria-label", "Inspector 닫기");
-      close.addEventListener("click", onClear);
-      if (selection.kind === "node" && item.type === "ENDPOINT") {
+      const closeButton = appendElement(header, "button", "inspector-close", "닫기");
+      closeButton.setAttribute("type", "button");
+      closeButton.setAttribute("aria-label", "Inspector 닫기");
+      closeButton.addEventListener("click", onClear);
+      if (selection.kind === "node" && item.type === "ENDPOINT" && view !== "feature-flow") {
         const detailAction = appendElement(header, "button", "inspector-detail-action", "기능별 상세 보기");
         detailAction.setAttribute("type", "button");
         detailAction.setAttribute("data-endpoint-id", item.id);
-        detailAction.addEventListener("click", () => onOpenDetail(item.id));
+        detailAction.addEventListener("click", () => findingId
+          ? onOpenFindingEndpoint(item.id)
+          : onOpenDetail(item.id));
+      }
+      if (findingId && onShowFinding) {
+        const findingAction = appendElement(header, "button", "inspector-detail-action", "선택 Finding 다시 보기");
+        findingAction.setAttribute("type", "button");
+        findingAction.addEventListener("click", onShowFinding);
       }
 
       const tabBar = appendElement(inspector, "div", "inspector-tabs");
@@ -544,7 +681,7 @@
 
     hideHover();
     setHidden(inspector, true);
-    return { render, related, setTab, showHover, hideHover };
+    return { render, renderFinding, renderFindingModal, related, setTab, showHover, hideHover, close };
   }
 
   window.MapInBootInspector = { create, related };
