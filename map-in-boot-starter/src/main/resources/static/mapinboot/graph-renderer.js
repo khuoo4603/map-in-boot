@@ -319,7 +319,7 @@
     }
     if (node.type === "HANDLER") {
       const parts = handlerParts(attributes.handler || node.label);
-      return { primary: parts.primary || "핸들러 확인 불가", detail: parts.detail || "메서드 확인 불가" };
+      return { primary: parts.detail || "메서드 확인 불가", detail: parts.primary || "핸들러 확인 불가" };
     }
     if (node.type === "FILTER") {
       const registration = attributes.registrationKind === "SECURITY" ? "보안" : attributes.registrationKind === "SERVLET" ? "서블릿" : "등록 확인 필요";
@@ -339,10 +339,12 @@
       };
     }
     if (node.type === "SECURITY_CHAIN") {
-      const order = attributes.chainOrder ? `${attributes.chainOrder}번` : "순서 확인 불가";
+      const chainName = stringValue(attributes.proxyBeanName, "");
+      const matcher = matcherDisplay(attributes.matcherCondition);
       return {
-        primary: `보안 체인 ${order}`,
-        detail: matcherDisplay(attributes.matcherCondition) || "조건 확인 불가"
+        primary: matcher || chainName || "보안 체인",
+        detail: [chainName && chainName !== matcher ? chainName : "", attributes.chainOrder ? `순서 ${attributes.chainOrder}` : ""]
+          .filter(Boolean).join(" · ") || "조건 확인 불가"
       };
     }
     if (node.type === "SERVLET") {
@@ -352,9 +354,11 @@
       };
     }
     if (node.type === "APPLICATION") {
+      const version = attributes.applicationVersion ? `버전 ${attributes.applicationVersion}` : "";
+      const serviceId = node.serviceId ? `서비스 ID ${node.serviceId}` : "";
       return {
-        primary: simpleClassName(attributes.applicationClass || node.label) || "애플리케이션",
-        detail: attributes.applicationVersion ? `버전 ${attributes.applicationVersion}` : "애플리케이션 진입"
+        primary: simpleClassName(attributes.applicationName || attributes.applicationClass || node.label) || "애플리케이션",
+        detail: [version, serviceId].filter(Boolean).join(" · ") || "애플리케이션 진입"
       };
     }
     if (node.type === "AUTHORIZATION") {
@@ -376,11 +380,30 @@
       };
     }
     if (node.type === "SECURITY_DATA") {
+      const dataKindNames = {
+        JWT: "JWT",
+        JWT_CLAIM: "JWT Claim",
+        SESSION_STATE: "Session 상태",
+        HEADER: "Header",
+        PRINCIPAL: "Principal",
+        AUTHORITY: "권한"
+      };
+      const dataKind = stringValue(attributes.dataKind, "");
+      if (dataKindNames[dataKind]) {
+        const detailValue = dataKind === "JWT_CLAIM" ? attributes.claimName
+          : dataKind === "PRINCIPAL" ? friendlyClassName(attributes.principalType)
+            : dataKind === "HEADER" ? attributes.headerName
+              : attributes.apiName;
+        const operationNames = { READ: "조회", CREATE: "생성", VERIFY_CONFIGURATION: "검증 구성", DECLARE: "선언" };
+        const detail = [detailValue, operationNames[attributes.operation]].filter(Boolean).join(" · ");
+        return { primary: dataKindNames[dataKind], detail };
+      }
       return securityDataDisplay(attributes, attributes.dataType || attributes.securityKind || "보안 정보");
     }
     if (node.type === "BUSINESS_SECURITY_STATE") {
       const kind = attributes.factType === "BUSINESS_STATE_EVALUATION" ? "업무 상태 검증"
-        : attributes.factType === "BUSINESS_STATE_REQUIREMENT" ? "업무 상태 요구" : "업무 보안 상태";
+        : attributes.factType === "BUSINESS_STATE_REQUIREMENT" || attributes.stateAction === "REQUIRES" ? "업무 상태 요구"
+          : attributes.stateAction === "PRODUCES" ? "업무 상태 생성" : "업무 보안 상태";
       return {
         primary: [kind, attributes.stateName].filter(Boolean).join(" · "),
         detail: attributes.pathOutcome === "BYPASS_PATH" ? "검증 경로 우회"
@@ -429,7 +452,7 @@
       segments.forEach((segment) => {
         const candidate = `${current}${segment}/`;
         if (current !== "/" && candidate.length > maxLength) {
-          parts.push(current);
+          parts.push(current.endsWith("/") ? current.slice(0, -1) : current);
           current = `/${segment}/`;
         } else {
           current = candidate;
@@ -607,20 +630,18 @@
       const width = Math.min(170, Math.max(54, label.length * 13));
       const height = 18;
       const base = edgeLabelPosition(source, target, 0, edgeRoutes && edgeRoutes[edge.id]);
-      const candidates = [0, -20, 20, -40, 40].map((offset) => ({
-        x: base.x,
-        y: base.y + offset,
-        width,
-        height
-      }));
-      const candidate = candidates.find((box) => !nodeBoxes.some((nodeBox) => boxesOverlap(box, nodeBox))
-        && !usedBoxes.some((usedBox) => boxesOverlap(box, usedBox))) || candidates[0];
-      const collision = nodeBoxes.some((nodeBox) => boxesOverlap(candidate, nodeBox))
-        || usedBoxes.some((usedBox) => boxesOverlap(candidate, usedBox));
-      const selected = options.selection && options.selection.kind === "edge" && options.selection.id === edge.id;
-      const visible = requested && (!collision || selected);
-      placed.set(edge.id, { x: candidate.x, y: candidate.y, visible, collision });
-      if (visible) usedBoxes.push(candidate);
+      const candidates = [0, -20, 20, -40, 40].map((offset) => {
+        const x = base.x;
+        const y = base.y + offset;
+        return { x, y, bounds: { x: x - width / 2, y: y - 14, width, height } };
+      });
+      const candidate = candidates.find(({ bounds }) => !nodeBoxes.some((nodeBox) => boxesOverlap(bounds, nodeBox))
+        && !usedBoxes.some((usedBox) => boxesOverlap(bounds, usedBox)));
+      const collision = !candidate;
+      const position = candidate || { x: base.x, y: base.y };
+      const visible = requested && !collision;
+      placed.set(edge.id, { x: position.x, y: position.y, visible, collision });
+      if (visible) usedBoxes.push(candidate.bounds);
     });
     return placed;
   }
@@ -907,7 +928,7 @@
       card.setAttribute("class", "graph-projection-card");
       card.setAttribute("width", String(nodeWidth));
       card.setAttribute("height", String(nodeHeight));
-      card.setAttribute("rx", "6");
+      card.setAttribute("rx", "7");
       group.appendChild(card);
       addText(group, "graph-projection-type", 14, 22, "내부 처리 단계");
       addNodeText(group, "graph-projection-label", 14, 48, node.primary, nodeWidth - 28, 28);
@@ -1232,7 +1253,7 @@
       edgeLabelElements.push(label);
       const setHoveredLabel = (visible) => {
         if (options.displayEdgeLabels === false) return;
-        if (visible || (selection && selection.kind === "edge" && selection.id === edge.id)) {
+        if (!labelPosition.collision && (visible || (selection && selection.kind === "edge" && selection.id === edge.id))) {
           label.setAttribute("data-visible", "true");
         } else {
           label.setAttribute("data-visible", "false");
@@ -1282,7 +1303,7 @@
       card.setAttribute("class", "graph-node-card");
       card.setAttribute("width", String(NODE_WIDTH));
       card.setAttribute("height", String(NODE_HEIGHT));
-      card.setAttribute("rx", "6");
+      card.setAttribute("rx", "7");
       card.setAttribute("stroke", style);
       group.appendChild(card);
       const mark = createElement("rect");
@@ -1372,7 +1393,7 @@
       card.setAttribute("class", "graph-node-card graph-controller-group-card");
       card.setAttribute("width", String(NODE_WIDTH));
       card.setAttribute("height", String(NODE_HEIGHT));
-      card.setAttribute("rx", "6");
+      card.setAttribute("rx", "7");
       card.setAttribute("stroke", "#c4b5fd");
       group.appendChild(card);
       const mark = createElement("rect");

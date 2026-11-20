@@ -34,7 +34,6 @@
   const edgeTypeLabel = (type) => edgeTypeNames[type] || type;
   const confidenceNames = { CONFIRMED: "확정", LIKELY: "검토 필요", UNKNOWN: "확인 불가" };
   const nodeDisplay = graphDisplay.nodeDisplay || ((item) => ({ primary: item.label, detail: "" }));
-  const shortenReference = graphDisplay.handlerDisplay || ((value) => String(value || ""));
 
   function valueOf(value, fallback = "확인할 수 없음") {
     return value === null || value === undefined || value === "" ? fallback : String(value);
@@ -86,9 +85,6 @@
 
   function attributeValue(key, value) {
     const text = valueOf(value);
-    if (["handler", "filterClass", "applicationClass", "servletClass", "matcherClass", "provider", "principalType", "apiOwner"].includes(key)) {
-      return shortenReference(value);
-    }
     return attributeValueNames[text] ? `${attributeValueNames[text]} (${text})` : text;
   }
 

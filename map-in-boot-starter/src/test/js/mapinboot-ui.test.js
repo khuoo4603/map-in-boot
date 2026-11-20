@@ -2658,6 +2658,11 @@ test("실제 10 NodeType·9 EdgeType와 방향·근거를 SVG에 보존함", () 
 test("Graph 표시 라벨은 짧은 한글 타입과 의미 중심 이름을 사용함", () => {
   const { ui, elements, window } = loadUi();
   const snapshot = graphFixture();
+  snapshot.nodes[0].attributes = {
+    applicationClass: "com.example.orders.OrderApplication",
+    applicationVersion: "1.2.0"
+  };
+  snapshot.nodes[1].attributes = { servletName: "dispatcherServlet", servletKind: "DISPATCHER", urlPattern: "/" };
   snapshot.nodes[2].label = "endpoint|requestMappingHandlerMapping|GET|/mapinboot/api/status|com.mapinboot.starter.web.api.StatusController#status(jakarta.servlet.http.HttpServletRequest)|";
   snapshot.nodes[2].attributes = {
     httpMethod: "GET",
@@ -2668,6 +2673,7 @@ test("Graph 표시 라벨은 짧은 한글 타입과 의미 중심 이름을 사
   snapshot.nodes[3].attributes = { handler: snapshot.nodes[2].attributes.handler };
   snapshot.nodes[4].attributes = {
     chainOrder: "3",
+    proxyBeanName: "springSecurityFilterChain",
     matcherCondition: "NOT(GET /api/legacy/account-summary/{accountId})"
   };
   snapshot.nodes[5].attributes = {
@@ -2675,12 +2681,23 @@ test("Graph 표시 라벨은 짧은 한글 타입과 의미 중심 이름을 사
     filterClass: "org.springframework.security.oauth2.server.resource.web.authentication.BearerTokenAuthenticationFilter",
     filterOrder: "8"
   };
+  snapshot.nodes[6].attributes = { authenticationKind: "JWT", provider: "org.springframework.security.authentication.dao.DaoAuthenticationProvider" };
+  snapshot.nodes[7].attributes = { policyKind: "AUTHORITY_REQUIRED", requiredAuthority: "ROLE_BANK_ADMIN" };
+  snapshot.nodes[8].attributes = { dataKind: "JWT_CLAIM", claimName: "sub", operation: "READ" };
 
   ui.renderGraph(snapshot);
 
   const nodeTexts = Array.from(elements.get("graph-nodes").children, textOf);
+  const firstNodeCard = findAllByClass(elements.get("graph-nodes").children[0], "graph-node-card")[0];
+  assert.equal(firstNodeCard.attributes.width, "260");
+  assert.equal(firstNodeCard.attributes.height, "96");
+  assert.equal(firstNodeCard.attributes.rx, "7");
   assert.match(nodeTexts[0], /애플리케이션/);
+  assert.match(nodeTexts[0], /OrderApplication/);
+  assert.match(nodeTexts[0], /서비스 ID orders/);
   assert.match(nodeTexts[1], /서블릿/);
+  assert.match(nodeTexts[1], /dispatcherServlet/);
+  assert.match(nodeTexts[1], /DISPATCHER · \/?/);
   assert.match(nodeTexts[2], /API/);
   assert.match(nodeTexts[2], /GET \/mapinboot\/api\/status/);
   assert.match(nodeTexts[2], /StatusController#status\(\)/);
@@ -2688,10 +2705,22 @@ test("Graph 표시 라벨은 짧은 한글 타입과 의미 중심 이름을 사
   assert.match(nodeTexts[3], /핸들러/);
   assert.match(nodeTexts[3], /StatusController/);
   assert.match(nodeTexts[3], /status\(\)/);
+  const handlerDisplay = window.MapInBootGraph.nodeDisplay(snapshot.nodes[3]);
+  assert.equal(handlerDisplay.primary, "status()");
+  assert.equal(handlerDisplay.detail, "StatusController");
   assert.match(nodeTexts[4], /보안 체인/);
+  assert.match(window.MapInBootGraph.nodeDisplay(snapshot.nodes[4]).primary, /^제외 · GET \/api\/legacy\/account-summary/);
+  assert.match(nodeTexts[4], /springSecurityFilterChain/);
   assert.match(nodeTexts[5], /필터/);
   assert.match(nodeTexts[5], /Bearer Token Authentication Filter/);
   assert.doesNotMatch(nodeTexts[5], /org\.springframework/);
+  assert.match(nodeTexts[6], /JWT/);
+  assert.match(nodeTexts[6], /DaoAuthenticationProvider/);
+  assert.match(nodeTexts[7], /권한 필요/);
+  assert.match(nodeTexts[7], /ROLE_BANK_ADMIN/);
+  assert.match(nodeTexts[8], /JWT Claim/);
+  assert.match(nodeTexts[8], /sub/);
+  assert.match(nodeTexts[8], /조회/);
 
   const edgeLabels = findAllByClass(elements.get("graph-edges"), "graph-edge-label");
   assert.equal(edgeLabels.every((label) => label.attributes["data-visible"] === "false"), true);
@@ -2711,6 +2740,134 @@ test("Graph 표시 라벨은 짧은 한글 타입과 의미 중심 이름을 사
   assert.equal(hoveredLabel.attributes["data-visible"], "false");
   assert.equal(window.MapInBootGraph.nodeTypeLabel("ENDPOINT"), "API");
   assert.equal(window.MapInBootGraph.edgeTypeLabel("FILTERED_BY"), "적용 필터");
+});
+
+test("Node 카드는 간결한 Handler를 보이고 Inspector는 전체 FQCN 원문을 보존함", () => {
+  const { ui, elements } = loadUi();
+  const snapshot = graphFixture();
+  const handler = "org.example.account.AccountController#load(java.lang.String)";
+  snapshot.nodes[2].attributes.handler = handler;
+  ui.renderGraph(snapshot);
+
+  const node = findAllByClass(elements.get("graph-nodes"), "graph-node")
+    .find((item) => item.getAttribute("data-node-id") === "node-2");
+  assert.match(textOf(node), /AccountController#load\(\)/);
+  ui.selectGraphElement("node", "node-2");
+  assert.ok(textOf(elements.get("inspector")).includes(handler));
+});
+
+test("Endpoint 경로는 HTTP Method와 경로를 두 줄로 배치하고 Inspector 원문을 보존함", () => {
+  const { ui, elements } = loadUi();
+  const snapshot = graphFixture();
+  const path = "/api/financial-accounts/{accountId}/transactions";
+  snapshot.nodes[2].attributes = { httpMethod: "GET", path, handler: "org.example.AccountController#transactions()" };
+  ui.renderGraph(snapshot);
+
+  const endpoint = elements.get("graph-nodes").children[2];
+  const lines = endpoint.children.filter((child) => child.attributes.class === "graph-node-label");
+  assert.equal(lines.length, 2);
+  assert.deepEqual(lines.map((line) => line.textContent), ["GET /api/financial-accounts", "/{accountId}/transactions"]);
+  assert.match(lines[0].textContent, /^GET \/api/);
+  assert.match(lines[1].textContent, /\{accountId\}/);
+
+  ui.selectGraphElement("node", "node-2");
+  assert.ok(textOf(elements.get("inspector")).includes(path));
+
+  const extendedPath = `${path}/ledger/entries`;
+  snapshot.nodes[2].attributes.path = extendedPath;
+  ui.renderGraph(snapshot);
+  const extendedLines = elements.get("graph-nodes").children[2].children
+    .filter((child) => child.attributes.class === "graph-node-label");
+  assert.equal(extendedLines.length, 2);
+  assert.match(extendedLines[1].textContent, /…$/);
+  ui.selectGraphElement("node", "node-2");
+  assert.ok(textOf(elements.get("inspector")).includes(extendedPath));
+});
+
+test("겹치는 Edge 라벨은 선택·Hover해도 Node 위에 강제 표시하지 않음", () => {
+  const { window, elements } = loadUi();
+  const snapshot = graphFixture();
+  snapshot.nodes = [
+    { id: "source", type: "ENDPOINT", label: "GET /orders", attributes: { httpMethod: "GET", path: "/orders" }, evidenceIds: [] },
+    { id: "target", type: "AUTHORIZATION", label: "인가 정책", attributes: { policyKind: "AUTHENTICATED" }, evidenceIds: [] },
+    { id: "blocker", type: "SECURITY_DATA", label: "보안 정보", attributes: { dataType: "JWT" }, evidenceIds: [] }
+  ];
+  snapshot.edges = [{ id: "secured-edge", sourceId: "source", targetId: "target", type: "SECURED_BY", confidence: "CONFIRMED", evidenceIds: [] }];
+  snapshot.findings = [];
+  const graph = window.MapInBootGraph.normalize(snapshot);
+  const layers = {
+    svg: elements.get("graph-svg"),
+    viewport: elements.get("graph-viewport"),
+    areaLayer: elements.get("graph-areas"),
+    projectionLayer: elements.get("graph-flow-projection"),
+    guideLayer: elements.get("graph-guides"),
+    edgeLayer: elements.get("graph-edges"),
+    nodeLayer: elements.get("graph-nodes"),
+    findingLayer: elements.get("graph-finding-sections"),
+    findingTitleLayer: elements.get("graph-finding-section-titles")
+  };
+  const positions = { source: { x: 0, y: 0 }, target: { x: 400, y: 0 }, blocker: { x: 300, y: 0 } };
+  let clickedEdgeId = "";
+  const render = (selection = null) => window.MapInBootGraph.render(graph, layers, {
+    positions,
+    selection,
+    related: { nodeIds: new Set(["source", "target", "blocker"]), edgeIds: new Set(["secured-edge"]) },
+    onEdgeClick: (id) => { clickedEdgeId = id; }
+  });
+
+  render();
+  const edge = findAllByClass(elements.get("graph-edges"), "graph-edge")[0];
+  const label = findAllByClass(elements.get("graph-edges"), "graph-edge-label")[0];
+  assert.ok(edge);
+  assert.equal(label.attributes["data-collision"], "true");
+  edge.dispatchEvent({ type: "mouseenter" });
+  assert.equal(label.attributes["data-visible"], "false");
+
+  render({ kind: "edge", id: "secured-edge" });
+  const selectedLabel = findAllByClass(elements.get("graph-edges"), "graph-edge-label")[0];
+  assert.equal(selectedLabel.attributes["data-collision"], "true");
+  assert.equal(selectedLabel.attributes["data-visible"], "false");
+  const selectedPath = findAllByClass(elements.get("graph-edges"), "graph-edge")[0];
+  assert.ok(selectedPath.attributes.d);
+  assert.equal(findAllByClass(elements.get("graph-edges"), "graph-edge").length, 1);
+  selectedPath.dispatchEvent({ type: "click" });
+  assert.equal(clickedEdgeId, "secured-edge");
+});
+
+test("같은 구간의 선택·Hover Edge 라벨은 서로 겹치지 않는 후보에 배치함", () => {
+  const { window, elements } = loadUi();
+  const snapshot = graphFixture();
+  snapshot.nodes = [
+    { id: "source", type: "HANDLER", label: "Controller#load", attributes: { handler: "Controller#load" }, evidenceIds: [] },
+    { id: "target", type: "SECURITY_DATA", label: "JWT", attributes: { dataKind: "JWT" }, evidenceIds: [] }
+  ];
+  snapshot.edges = [
+    { id: "secured-edge", sourceId: "source", targetId: "target", type: "SECURED_BY", attributes: {}, confidence: "CONFIRMED", evidenceIds: [] },
+    { id: "reads-edge", sourceId: "source", targetId: "target", type: "READS_SECURITY_DATA", attributes: {}, confidence: "CONFIRMED", evidenceIds: [] }
+  ];
+  snapshot.findings = [];
+  const graph = window.MapInBootGraph.normalize(snapshot);
+  const layers = {
+    svg: elements.get("graph-svg"), viewport: elements.get("graph-viewport"),
+    areaLayer: elements.get("graph-areas"), projectionLayer: elements.get("graph-flow-projection"),
+    guideLayer: elements.get("graph-guides"), edgeLayer: elements.get("graph-edges"),
+    nodeLayer: elements.get("graph-nodes"), findingLayer: elements.get("graph-finding-sections"),
+    findingTitleLayer: elements.get("graph-finding-section-titles")
+  };
+  window.MapInBootGraph.render(graph, layers, {
+    positions: { source: { x: 0, y: 0 }, target: { x: 500, y: 0 } },
+    selection: { kind: "edge", id: "secured-edge" },
+    hoverEdgeId: "reads-edge"
+  });
+
+  const labels = findAllByClass(elements.get("graph-edges"), "graph-edge-label");
+  const selected = labels.find((label) => label.attributes["data-edge-id"] === "secured-edge");
+  const hovered = labels.find((label) => label.attributes["data-edge-id"] === "reads-edge");
+  assert.equal(selected.attributes["data-visible"], "true");
+  assert.equal(hovered.attributes["data-visible"], "true");
+  assert.equal(selected.attributes["data-collision"], "false");
+  assert.equal(hovered.attributes["data-collision"], "false");
+  assert.ok(Math.abs(Number(selected.attributes.y) - Number(hovered.attributes.y)) >= 18);
 });
 
 test("ELK layout은 좌우 의미 그룹과 여유 간격 힌트를 전달함", () => {
@@ -3952,6 +4109,7 @@ test("전체 MAP은 동일 FQCN Controller Handler를 표시 그룹으로 묶고
   assert.equal(findAllByClass(elements.get("graph-nodes"), "graph-controller-group").length, groups.length);
   const reportGroupElement = findAllByClass(elements.get("graph-nodes"), "graph-controller-group")
     .find((element) => element.attributes["data-controller-fqcn"] === "com.example.ReportController");
+  assert.equal(findAllByClass(reportGroupElement, "graph-controller-group-card")[0].attributes.rx, "7");
   reportGroupElement.dispatchEvent({ type: "keydown", key: "Enter" });
   assert.equal(ui.state.selection.kind, "controller-group");
   assert.equal(ui.state.selection.id, reportGroups[0].id);
@@ -4347,6 +4505,17 @@ test("업무 상태 구조 식별자는 카드 이름이 아닌 의미 있는 �
   assert.match(display.primary, /업무 상태 검증/);
   assert.match(display.primary, /verified/);
   assert.doesNotMatch(display.primary + display.detail, /state-evaluation\||Ljava/);
+
+  const required = window.MapInBootGraph.nodeDisplay({
+    type: "BUSINESS_SECURITY_STATE", label: "state-requires|identity_verified",
+    attributes: { stateAction: "REQUIRES", stateName: "identity_verified" }
+  });
+  const produced = window.MapInBootGraph.nodeDisplay({
+    type: "BUSINESS_SECURITY_STATE", label: "state-produces|identity_verified",
+    attributes: { stateAction: "PRODUCES", stateName: "identity_verified" }
+  });
+  assert.match(required.primary, /업무 상태 요구/);
+  assert.match(produced.primary, /업무 상태 생성/);
 });
 
 test("화면 전환 후 상세 취약점 선택을 유지함", () => {
