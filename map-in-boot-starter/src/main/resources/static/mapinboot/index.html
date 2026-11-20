@@ -76,12 +76,16 @@
             <h1 id="view-title" class="sr-only">전체 Flow Map</h1>
             <div class="graph-tools map-toolbar" aria-label="Graph 탐색 도구">
               <div class="graph-navigation-tools" aria-label="화면 이동 도구">
-                <button class="graph-tool-button" id="zoom-out" type="button" aria-label="Graph 축소">−</button>
-                <button class="graph-tool-button" id="zoom-in" type="button" aria-label="Graph 확대">+</button>
-                <button class="graph-tool-button" id="fit-graph" type="button">화면 맞춤</button>
-                <button class="graph-tool-button" id="reset-view" type="button">보기 초기화</button>
-                <div class="map-filter-toggle">
-                  <button class="graph-tool-button map-filter-button" id="filter-toggle" type="button" aria-label="필터 열기" aria-expanded="false" aria-controls="map-filter-panel">
+                <button class="graph-tool-button" id="zoom-out" type="button" aria-label="그래프 축소" data-tooltip="그래프 축소"><span aria-hidden="true">−</span></button>
+                <button class="graph-tool-button" id="zoom-in" type="button" aria-label="그래프 확대" data-tooltip="그래프 확대"><span aria-hidden="true">+</span></button>
+                <button class="graph-tool-button" id="fit-graph" type="button" aria-label="전체 그래프 맞춤" data-tooltip="전체 그래프 맞춤">
+                  <svg class="toolbar-icon fit-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M8 3H3v5m13-5h5v5M3 16v5h5m13-5v5h-5M8 8l-5-5m13 5 5-5M8 16l-5 5m13-5 5 5"></path></svg>
+                </button>
+                <button class="graph-tool-button" id="reset-view" type="button" aria-label="보기 초기화" data-tooltip="보기 초기화">
+                  <svg class="toolbar-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M4 11a8 8 0 1 1 2.2 5.5M4 5v6h6"></path></svg>
+                </button>
+                <div class="toolbar-tool-group map-filter-toggle">
+                  <button class="graph-tool-button map-filter-button" id="filter-toggle" type="button" aria-label="필터 열기" data-tooltip="검색 및 그래프 필터" aria-expanded="false" aria-controls="map-filter-panel">
                     <svg class="filter-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
                       <path d="M4 6h4m4 0h8M4 12h8m4 0h4M4 18h2m4 0h10"></path>
                       <circle cx="10" cy="6" r="1.5"></circle>
@@ -130,6 +134,16 @@
                     <button class="map-filter-reset" id="search-reset" type="button">검색 초기화</button>
                     <span class="graph-filter-status sr-only" id="graph-filter-status" role="status" aria-live="polite">Graph 없음</span>
                   </div>
+                </div>
+                <div class="toolbar-tool-group map-lock-toggle">
+                  <button class="graph-tool-button map-lock-button" id="screen-lock-toggle" type="button" aria-label="화면 이동과 확대·축소 고정" data-tooltip="화면 이동과 확대·축소 고정" aria-pressed="false" data-locked="false">
+                    <svg class="toolbar-icon lock-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                      <rect x="4.5" y="10" width="15" height="11" rx="2"></rect>
+                      <path class="lock-shackle-open" d="M8 10V7a4 4 0 0 1 7.6-1.7"></path>
+                      <path class="lock-shackle-closed" d="M8 10V7a4 4 0 0 1 8 0v3"></path>
+                      <circle cx="12" cy="15.5" r="1"></circle>
+                    </svg>
+                  </button>
                 </div>
               </div>
             </div>

@@ -39,6 +39,7 @@ function createElement(tagName = "div") {
   const element = {
     attributes,
     children,
+    pointerCaptures: new Set(),
     tagName,
     parentNode: null,
     classList: { toggle() {} },
@@ -104,8 +105,8 @@ function createElement(tagName = "div") {
       }
       return null;
     },
-    setPointerCapture() {},
-    releasePointerCapture() {},
+    setPointerCapture(pointerId) { this.pointerCaptures.add(pointerId); },
+    releasePointerCapture(pointerId) { this.pointerCaptures.delete(pointerId); },
     querySelector() { return createElement(); }
   };
   Object.assign(element, createEventTarget());
@@ -120,7 +121,7 @@ function loadUi({ fetchImpl, timers, animationClock, clipboard } = {}) {
     "graph-empty", "graph-state-message", "graph-svg", "graph-viewport", "graph-areas", "graph-flow-projection", "graph-guides",
     "graph-edges", "graph-nodes", "graph-finding-section-titles", "service-name", "snapshot-time", "endpoint-search", "endpoint-filter-label", "endpoint-filter-label-text",
     "endpoint-options", "node-filter-field", "node-filter", "edge-filter-field", "edge-filter", "unconnected-node-field", "include-unconnected-nodes", "finding-filter-fields", "finding-rule", "finding-confidence", "finding-list", "finding-api-fields", "finding-api-select", "finding-all-apis", "detail-finding-list", "search-reset", "filter-toggle", "map-filter-panel", "zoom-in", "zoom-out", "fit-graph",
-    "reset-view", "graph-filter-status", "graph-minimap", "graph-minimap-svg",
+    "reset-view", "screen-lock-toggle", "graph-filter-status", "graph-minimap", "graph-minimap-svg",
     "graph-minimap-nodes", "graph-minimap-viewport", "graph-finding-sections", "finding-modal", "finding-modal-title", "finding-modal-close", "finding-modal-content", "inspector", "graph-popover",
     "request-flow-controls", "request-flow-start", "request-flow-pause", "request-flow-reset",
     "request-flow-status", "request-flow-education", "request-flow-dot"
@@ -628,9 +629,13 @@ test("Snapshot 새로고침은 같은 Finding만 복원하고 사라진 ID는 �
   const instance = loadUi({ fetchImpl: () => Promise.resolve(responses.shift()) });
   await new Promise((resolve) => setImmediate(resolve));
   await new Promise((resolve) => setImmediate(resolve));
+  instance.ui.navigation.setLocked(true);
+  assert.equal(instance.ui.navigation.state.locked, true);
   instance.ui.selectView("security-flow");
   findAllByClass(instance.elements.get("graph-nodes"), "finding-marker")[0].dispatchEvent({ type: "click" });
+  instance.ui.navigation.setLocked(true);
   await instance.ui.loadStatus();
+  assert.equal(instance.ui.navigation.state.locked, false);
   assert.equal(instance.ui.state.view, "security-detail");
   assert.equal(instance.ui.state.selectedFindingId, "finding-1");
   assert.equal(instance.elements.get("inspector").hidden, true);
@@ -984,14 +989,18 @@ test("SVG Graph 표시 상태는 hidden 속성을 실제로 제거하고 재설�
   assert.equal(elements.get("graph-svg").hasAttribute("hidden"), false);
 });
 
-test("MAP 기본 툴바는 좌측 상단 5개 조작만 노출하고 검색 결과 Select를 제거함", () => {
+test("MAP 툴바는 좌측 상단에 기존 조작과 화면 고정만 노출하고 검색 결과 Select를 제거함", () => {
   assert.match(appCss, /--header-height:\s*clamp\(60px/);
-  assert.match(appCss, /\.map-toolbar\s*\{[^}]*left:\s*clamp\(/s);
+  assert.match(appCss, /\.map-toolbar\s*\{[^}]*top:\s*14px;[^}]*left:\s*18px;[^}]*background:\s*#363636/s);
+  assert.doesNotMatch(appCss.match(/\.map-toolbar\s*\{[^}]*\}/s)[0], /backdrop-filter|background:\s*rgba\(/);
+  assert.match(appCss, /\.graph-tool-button\s*\{[^}]*width:\s*34px;[^}]*height:\s*34px/);
+  assert.match(appCss, /\.graph-tool-button\[data-tooltip\]::after\s*\{[^}]*border:\s*1px solid #575757;[^}]*background:\s*#424242/);
   assert.match(indexHtml, /id="view-title" class="sr-only"/);
   assert.doesNotMatch(indexHtml, /class="map-toolbar-title"/);
   assert.doesNotMatch(indexHtml, /id="endpoint-results"|검색 결과/);
   assert.doesNotMatch(appJs, /endpointResults|renderSearchResults/);
-  assert.equal((indexHtml.match(/class="graph-tool-button(?:\s|\")/g) || []).length, 5);
+  assert.equal((indexHtml.match(/class="graph-tool-button(?:\s|\")/g) || []).length, 6);
+  assert.match(indexHtml, /id="screen-lock-toggle"[^>]*aria-pressed="false"/);
   assert.match(indexHtml, /id="filter-toggle"[^>]*aria-expanded="false"[^>]*aria-controls="map-filter-panel"/);
   assert.match(indexHtml, /id="map-filter-panel"[^>]*hidden/);
 });
@@ -3390,6 +3399,124 @@ test("Fit·Zoom·Pan·Reset과 Mini Map Viewport가 같은 좌표를 사용함",
   assert.equal(navigation.state.panX, 0);
   assert.equal(navigation.state.panY, 0);
   assert.equal(elements.get("graph-svg").attributes.viewBox, "0 0 960 540");
+});
+
+test("화면 고정은 활성 이동이 없어도 브라우저 포인터 예외 없이 전환됨", () => {
+  const { ui, elements } = loadUi();
+  const graphCanvas = elements.get("graph-canvas");
+  graphCanvas.releasePointerCapture = (pointerId) => {
+    if (!graphCanvas.pointerCaptures.has(pointerId)) {
+      const error = new Error("NotFoundError: No active pointer with the given id is found.");
+      error.name = "NotFoundError";
+      throw error;
+    }
+    graphCanvas.pointerCaptures.delete(pointerId);
+  };
+
+  assert.doesNotThrow(() => elements.get("screen-lock-toggle").dispatchEvent({ type: "click" }));
+  assert.equal(ui.navigation.state.locked, true);
+  assert.equal(elements.get("screen-lock-toggle").getAttribute("aria-pressed"), "true");
+});
+
+test("화면 고정 중 Finding Marker 선택은 Modal을 열고 잠금을 유지함", async () => {
+  const { ui, elements } = loadUi();
+  const snapshot = graphFixture();
+  snapshot.findings = [{
+    id: "finding-1", ruleId: "CHAIN_ORDER", title: "실제 참조 Finding", description: "검토 이유",
+    confidence: "UNKNOWN", nodeIds: [], edgeIds: ["edge-3"], evidenceIds: ["evidence-3"], guide: "검토 가이드"
+  }];
+  ui.renderGraph(snapshot);
+  ui.selectView("security-flow");
+  await ui.layoutGraph();
+  ui.navigation.setLocked(true);
+
+  const marker = findAllByClass(elements.get("graph-edges"), "finding-marker")[0];
+  assert.ok(marker);
+  marker.dispatchEvent({ type: "click" });
+  assert.equal(ui.state.selectedFindingId, "finding-1");
+  assert.equal(elements.get("finding-modal").hidden, false);
+  assert.equal(ui.navigation.state.locked, true);
+
+  elements.get("finding-modal-close").dispatchEvent({ type: "click" });
+  assert.equal(elements.get("finding-modal").hidden, true);
+  assert.equal(ui.navigation.state.locked, true);
+});
+
+test("화면 고정은 모든 사용자 Pan·Zoom 우회 경로를 막고 선택·필터를 유지함", async () => {
+  const { ui, elements } = loadUi();
+  ui.renderGraph(graphFixture());
+  await ui.layoutGraph();
+  const navigation = ui.navigation;
+  const lockToggle = elements.get("screen-lock-toggle");
+  const viewport = navigation.state;
+
+  assert.equal(viewport.locked, false);
+  assert.equal(lockToggle.getAttribute("aria-pressed"), "false");
+  assert.equal(lockToggle.getAttribute("data-tooltip"), "화면 이동과 확대·축소 고정");
+  elements.get("graph-canvas").dispatchEvent({ type: "pointerdown", pointerId: 6, target: elements.get("graph-canvas") });
+  assert.equal(viewport.dragging, true);
+  assert.equal(elements.get("graph-canvas").pointerCaptures.has(6), true);
+  lockToggle.dispatchEvent({ type: "click" });
+  assert.equal(viewport.locked, true);
+  assert.equal(viewport.dragging, false);
+  assert.equal(elements.get("graph-canvas").pointerCaptures.has(6), false);
+  assert.equal(lockToggle.getAttribute("aria-pressed"), "true");
+  assert.equal(lockToggle.getAttribute("data-tooltip"), "화면 고정 해제");
+  ["zoom-in", "zoom-out", "fit-graph", "reset-view"].forEach((id) => {
+    assert.equal(elements.get(id).getAttribute("aria-disabled"), "true");
+  });
+
+  const lockedViewport = { zoom: viewport.zoom, panX: viewport.panX, panY: viewport.panY };
+  const pointerDown = { type: "pointerdown", pointerId: 7, target: elements.get("graph-canvas") };
+  elements.get("graph-canvas").dispatchEvent(pointerDown);
+  elements.get("graph-canvas").dispatchEvent({ type: "pointermove", pointerId: 7, clientX: 220, clientY: 180 });
+  const wheel = { type: "wheel", deltaY: -1, clientX: 120, clientY: 100 };
+  elements.get("graph-svg").dispatchEvent(wheel);
+  elements.get("zoom-in").dispatchEvent({ type: "click" });
+  elements.get("zoom-out").dispatchEvent({ type: "click" });
+  elements.get("fit-graph").dispatchEvent({ type: "click" });
+  elements.get("reset-view").dispatchEvent({ type: "click" });
+  navigation.panBy(60, 40);
+  navigation.zoomBy(1.5, 200, 140);
+  navigation.zoomAt(2, 200, 140);
+  navigation.fit();
+  navigation.reset();
+  ui.focusEndpoint("node-2");
+  assert.deepEqual({ zoom: viewport.zoom, panX: viewport.panX, panY: viewport.panY }, lockedViewport);
+  assert.equal(viewport.dragging, false);
+  assert.equal(wheel.defaultPrevented, true);
+  assert.equal(elements.get("graph-canvas").getAttribute("data-navigation-locked"), "true");
+
+  elements.get("filter-toggle").dispatchEvent({ type: "click" });
+  assert.equal(elements.get("map-filter-panel").hidden, false);
+  ui.selectGraphElement("node", "node-2");
+  assert.equal(elements.get("inspector").hidden, false);
+  ui.clearSelection();
+  assert.equal(viewport.locked, true);
+
+  const edge = findAllByClass(elements.get("graph-edges"), "graph-edge")
+    .find((item) => item.getAttribute("data-edge-id") === "edge-3");
+  edge.dispatchEvent({ type: "mouseenter" });
+  assert.equal(elements.get("graph-popover").hidden, false);
+  edge.dispatchEvent({ type: "click" });
+  assert.equal(ui.state.selection.kind, "edge");
+  assert.equal(ui.state.selection.id, "edge-3");
+  assert.equal(elements.get("inspector").hidden, false);
+  ui.clearSelection();
+  assert.equal(viewport.locked, true);
+
+  lockToggle.dispatchEvent({ type: "click" });
+  assert.equal(viewport.locked, false);
+  assert.equal(lockToggle.getAttribute("aria-pressed"), "false");
+  navigation.panBy(10, -6);
+  navigation.zoomBy(1.1, 200, 140);
+  assert.notEqual(viewport.panX, lockedViewport.panX);
+  assert.notEqual(viewport.zoom, lockedViewport.zoom);
+
+  lockToggle.dispatchEvent({ type: "click" });
+  ui.selectView("security-flow");
+  assert.equal(viewport.locked, false);
+  assert.equal(lockToggle.getAttribute("aria-pressed"), "false");
 });
 
 test("넓은 Graph의 화면 맞춤은 전체 표시 영역을 Canvas에 포함함", () => {

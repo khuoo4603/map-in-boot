@@ -160,7 +160,8 @@
       zoomIn: document.querySelector("#zoom-in"),
       zoomOut: document.querySelector("#zoom-out"),
       fit: document.querySelector("#fit-graph"),
-      reset: document.querySelector("#reset-view")
+      reset: document.querySelector("#reset-view"),
+      lockToggle: document.querySelector("#screen-lock-toggle")
     })
     : null;
   state.navigation = navigation;
@@ -908,6 +909,7 @@
   function selectView(view, preserveFeatureSelection = false) {
     if (!viewNames[view]) return;
     const viewChanged = state.view !== view;
+    if (viewChanged && navigation) navigation.setLocked(false);
     if (viewChanged) state.inspectorDismissed = false;
     if (view !== "security-detail") closeFindingModal(false);
     if (view === "security-flow" || view === "security-detail") {
@@ -1710,7 +1712,7 @@
       if (graphViewport) graphViewport.setAttribute("data-layout-mode", "elk");
       if (graphEmpty) graphEmpty.hidden = true;
       setHidden(graphSvg, false);
-      if (navigation) navigation.fit();
+      if (navigation) navigation.fit({ allowLocked: true });
       if (state.filters.query || state.filters.nodeType || state.filters.edgeType) {
         graphStateMessage.textContent = state.visibleGraph.nodes.length === 0
           ? "필터 결과가 없습니다."
@@ -1864,7 +1866,10 @@
     if (endpointSearch) endpointSearch.value = "";
     if (nodeFilter) nodeFilter.value = "";
     if (edgeFilter) edgeFilter.value = "";
-    if (navigation) navigation.reset();
+    if (navigation) {
+      navigation.setLocked(false);
+      navigation.reset();
+    }
     closeFindingModal(false);
     resetGraph("Snapshot 조회 중");
     renderStatus();
