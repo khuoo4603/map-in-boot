@@ -2708,7 +2708,7 @@ test("Graph 표시 라벨은 짧은 한글 타입과 의미 중심 이름을 사
   const handlerDisplay = window.MapInBootGraph.nodeDisplay(snapshot.nodes[3]);
   assert.equal(handlerDisplay.primary, "status()");
   assert.equal(handlerDisplay.detail, "StatusController");
-  assert.match(nodeTexts[4], /보안 체인/);
+  assert.match(nodeTexts[4], /보안 필터 체인/);
   assert.match(window.MapInBootGraph.nodeDisplay(snapshot.nodes[4]).primary, /^제외 · GET \/api\/legacy\/account-summary/);
   assert.match(nodeTexts[4], /springSecurityFilterChain/);
   assert.match(nodeTexts[5], /필터/);
@@ -3775,6 +3775,61 @@ test("Hover 요약과 Node·Edge Inspector가 실제 ID·연결·Evidence를 사
   document.dispatchEvent({ type: "keydown", key: "Escape" });
   assert.equal(inspector.hidden, true);
   assert.equal(ui.state.selection, null);
+});
+
+test("Inspector 속성 순서·확실성 문구와 고정 헤더·본문 스크롤을 구분함", () => {
+  const { ui, elements } = loadUi();
+  const snapshot = graphFixture();
+  const endpoint = snapshot.nodes[2];
+  endpoint.attributes = {
+    handler: "com.example.OrderController#list",
+    path: "/orders",
+    httpMethod: "GET"
+  };
+  const filter = snapshot.nodes.find((node) => node.type === "FILTER");
+  filter.attributes = {
+    registrationKind: "SERVLET",
+    filterClass: "com.example.AuditFilter",
+    pathStatus: "CURRENT_PATH_NOT_APPLIED"
+  };
+  snapshot.edges.push({
+    id: "inspector-authorization-use",
+    sourceId: endpoint.id,
+    targetId: filter.id,
+    type: "USES_FOR_AUTHORIZATION",
+    attributes: {},
+    confidence: "CONFIRMED",
+    evidenceIds: []
+  });
+
+  ui.renderGraph(snapshot);
+  ui.selectGraphElement("node", endpoint.id);
+  const inspector = elements.get("inspector");
+  const propertyRows = findAllByClass(inspector, "inspector-row");
+  const labels = propertyRows.map((row) => row.children[0].textContent);
+  const endpointLabels = labels.filter((label) => ["HTTP Method", "경로", "핸들러"].includes(label));
+  assert.deepEqual(endpointLabels, ["HTTP Method", "경로", "핸들러"]);
+  assert.match(textOf(inspector), /com\.example\.OrderController#list/);
+
+  ui.selectGraphElement("node", filter.id);
+  assert.match(textOf(inspector), /서블릿 \(SERVLET\)/);
+  assert.match(textOf(inspector), /현재 경로 미적용 \(CURRENT_PATH_NOT_APPLIED\)/);
+
+  ui.selectGraphElement("edge", "inspector-authorization-use");
+  assert.match(textOf(inspector), /실제 인가 사용/);
+  const confidenceRow = findAllByClass(inspector, "inspector-row")
+    .find((row) => row.children[0].textContent === "판단 신뢰도");
+  assert.ok(confidenceRow);
+  assert.equal(confidenceRow.children[1].textContent, "확인됨 (CONFIRMED)");
+
+  assert.match(appCss, /\.inspector\s*\{[^}]*width:\s*clamp\(420px,\s*30vw,\s*480px\)[^}]*overflow:\s*hidden/s);
+  assert.match(appCss, /\.inspector-header\s*\{[^}]*flex:\s*0\s+0\s+auto/s);
+  assert.match(appCss, /\.inspector-tabs\s*\{[^}]*flex:\s*0\s+0\s+auto/s);
+  assert.match(appCss, /\.inspector-body\s*\{[^}]*min-height:\s*0[^}]*overflow-y:\s*auto/s);
+  assert.match(appCss, /@media\s*\(max-width:\s*1279px\)\s*\{[^}]*\.inspector\s*\{[^}]*position:\s*fixed[^}]*width:\s*min\(480px,\s*96vw\)/s);
+  assert.match(appCss, /\.app-body:has\(>\s*#inspector:not\(\[hidden\]\)\)\s+\.graph-minimap\s*\{[^}]*right:\s*calc\(min\(480px,\s*96vw\)\s*\+\s*14px\)/s);
+  assert.match(appCss, /@media\s*\(max-width:\s*760px\)\s*\{[^}]*--header-height:\s*114px/);
+  assert.match(appCss, /@media\s*\(max-width:\s*520px\)\s*\{[^}]*--header-height:\s*138px/);
 });
 
 test("[T18] Status·Snapshot의 401·403·404·5xx 오류를 분리한 상태 문구로 표시함", async () => {

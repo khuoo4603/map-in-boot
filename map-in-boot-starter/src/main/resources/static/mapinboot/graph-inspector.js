@@ -12,7 +12,7 @@
     SERVLET: "서블릿",
     ENDPOINT: "API",
     HANDLER: "핸들러",
-    SECURITY_CHAIN: "보안 체인",
+    SECURITY_CHAIN: "보안 필터 체인",
     FILTER: "필터",
     AUTHENTICATION: "인증",
     AUTHORIZATION: "인가",
@@ -24,15 +24,16 @@
     MATCHED_BY: "적용 체인",
     FILTERED_BY: "적용 필터",
     SECURED_BY: "보호 근거",
-    READS_SECURITY_DATA: "보안정보 읽음",
+    READS_SECURITY_DATA: "보안정보 읽기",
     WRITES_SECURITY_DATA: "보안정보 기록",
     CONVERTS_TO_AUTHORITY: "권한 변환",
-    USES_FOR_AUTHORIZATION: "인가 사용",
+    USES_FOR_AUTHORIZATION: "실제 인가 사용",
     SECURITY_STATE: "보안 상태"
   };
   const nodeTypeLabel = (type) => nodeTypeNames[type] || type;
   const edgeTypeLabel = (type) => edgeTypeNames[type] || type;
   const confidenceNames = { CONFIRMED: "확정", LIKELY: "검토 필요", UNKNOWN: "확인 불가" };
+  const inspectorConfidenceNames = { CONFIRMED: "확인됨", LIKELY: "검토 필요", UNKNOWN: "판단 불가" };
   const nodeDisplay = graphDisplay.nodeDisplay || ((item) => ({ primary: item.label, detail: "" }));
 
   function valueOf(value, fallback = "확인할 수 없음") {
@@ -43,12 +44,13 @@
     httpMethod: "HTTP Method",
     path: "경로",
     handler: "핸들러",
-    registrationKind: "등록 구분",
-    filterClass: "Filter 클래스",
+    registrationKind: "등록 유형",
+    filterClass: "필터 클래스",
     filterOrder: "Filter 순서",
-    chainKey: "Chain 식별자",
+    chainKey: "보안 필터 체인 식별자",
     chainOrder: "Chain 순서",
-    matcherCondition: "매칭 조건",
+    matcherCondition: "요청 매칭 조건",
+    pathStatus: "경로 적용 상태",
     operation: "작업",
     apiType: "API 유형",
     apiName: "API 이름",
@@ -78,6 +80,13 @@
     SERVLET: "서블릿",
     CONFIGURATION: "구성"
   };
+  const registrationKindNames = { SECURITY: "보안", SERVLET: "서블릿", UNKNOWN: "확인 불가" };
+  const pathStatusNames = {
+    REGISTERED: "등록됨",
+    CURRENT_PATH_NOT_APPLIED: "현재 경로 미적용",
+    UNREGISTERED_REFERENCE: "미등록",
+    UNKNOWN: "확인 불가"
+  };
 
   function attributeLabel(key) {
     return attributeNames[key] || key;
@@ -85,7 +94,15 @@
 
   function attributeValue(key, value) {
     const text = valueOf(value);
-    return attributeValueNames[text] ? `${attributeValueNames[text]} (${text})` : text;
+    const translated = key === "registrationKind" ? registrationKindNames[text]
+      : key === "pathStatus" ? pathStatusNames[text]
+        : attributeValueNames[text];
+    return translated ? `${translated} (${text})` : text;
+  }
+
+  function confidenceValue(value) {
+    const code = valueOf(value, "UNKNOWN");
+    return `${inspectorConfidenceNames[code] || inspectorConfidenceNames.UNKNOWN} (${code})`;
   }
 
   function appendElement(parent, tagName, className, text) {
@@ -324,16 +341,19 @@
       });
     }
 
-    function appendAttributes(parent, attributes) {
+    function appendAttributes(parent, attributes, priorityKeys = []) {
       const entries = attributes && typeof attributes === "object" && !Array.isArray(attributes)
         ? Object.entries(attributes)
         : [];
+      const prioritized = priorityKeys.map((key) => entries.find(([entryKey]) => entryKey === key)).filter(Boolean);
+      const remaining = entries.filter(([key]) => !priorityKeys.includes(key));
+      const orderedEntries = [...prioritized, ...remaining];
       appendHeading(parent, "추가 속성");
-      if (entries.length === 0) {
+      if (orderedEntries.length === 0) {
         appendEmpty(parent, "추가 속성 없음");
         return;
       }
-      entries.forEach(([key, value]) => appendRow(parent, attributeLabel(key), attributeValue(key, value)));
+      orderedEntries.forEach(([key, value]) => appendRow(parent, attributeLabel(key), attributeValue(key, value)));
     }
 
     function appendNodeButton(parent, node, direction) {
@@ -388,7 +408,11 @@
         appendRow(parent, "이름", display.primary || item.label);
         appendRow(parent, "설명", display.detail || "확인할 수 없음");
         if (item.type === "ENDPOINT") appendRow(parent, "API", selectedLabel(selection, item));
-        appendAttributes(parent, item.attributes);
+        const attributeOrder = item.type === "ENDPOINT" ? ["httpMethod", "path", "handler"]
+          : item.type === "SECURITY_CHAIN" ? ["chainOrder", "matcherCondition", "chainKey"]
+            : item.type === "FILTER" ? ["registrationKind", "filterOrder", "filterClass"]
+              : item.type === "SECURITY_DATA" ? ["dataType", "securityKind", "usage"] : [];
+        appendAttributes(parent, item.attributes, attributeOrder);
         appendFindings(parent, snapshot, selection, current.controllerGroups);
         appendEvidence(parent, snapshot, item.evidenceIds);
         return;
@@ -397,7 +421,7 @@
       appendRow(parent, "유형", edgeTypeLabel(item.type));
       appendRow(parent, "출발 Node ID", item.sourceId);
       appendRow(parent, "도착 Node ID", item.targetId);
-      appendRow(parent, "신뢰도 (Confidence)", item.confidence);
+      appendRow(parent, "판단 신뢰도", confidenceValue(item.confidence));
       appendAttributes(parent, item.attributes);
       appendFindings(parent, snapshot, selection, current.controllerGroups);
       appendEvidence(parent, snapshot, item.evidenceIds);
@@ -470,7 +494,7 @@
       } else {
         appendRow(block, "방향", `${edge.sourceId} → ${edge.targetId}`);
       }
-      appendRow(block, "신뢰도 (Confidence)", edge.confidence);
+      appendRow(block, "판단 신뢰도", confidenceValue(edge.confidence));
       appendRow(block, "출발 Node", nodes.has(edge.sourceId) ? edge.sourceId : "확인할 수 없음");
       appendRow(block, "도착 Node", nodes.has(edge.targetId) ? edge.targetId : "확인할 수 없음");
       appendAttributes(block, edge.attributes);
@@ -557,7 +581,7 @@
       const heading = appendElement(header, "div", "inspector-heading");
       appendElement(heading, "strong", "inspector-title", finding ? finding.title || finding.id : emptyPrompt && emptyPrompt.title || "Finding 선택 필요");
       appendElement(heading, "span", "inspector-subtitle", finding
-        ? `${finding.ruleId || "Rule 확인 불가"} · ${confidenceNames[finding.confidence] || "확인 불가"} (${finding.confidence || "UNKNOWN"})`
+        ? `${finding.ruleId || "Rule 확인 불가"} · ${confidenceValue(finding.confidence)}`
         : emptyPrompt && emptyPrompt.description || "보안 MAP에서 확인할 Finding을 선택하세요.");
       const closeButton = appendElement(header, "button", "inspector-close", "닫기");
       closeButton.setAttribute("type", "button");
@@ -574,7 +598,7 @@
       }
       appendHeading(body, "판단");
       appendRow(body, "Rule ID", finding.ruleId);
-      appendRow(body, "판단 신뢰도", `${confidenceNames[finding.confidence] || "확인 불가"} (${finding.confidence || "UNKNOWN"})`);
+      appendRow(body, "판단 신뢰도", confidenceValue(finding.confidence));
       appendElement(body, "p", "inspector-help", valueOf(finding.description, "판단 설명 없음"));
       appendFindingLocations(body, graph, entry, onOpenEndpoint);
       appendEvidence(body, snapshot, finding.evidenceIds);

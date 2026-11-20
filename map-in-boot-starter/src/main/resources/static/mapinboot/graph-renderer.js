@@ -20,7 +20,7 @@
     SERVLET: "서블릿",
     ENDPOINT: "API",
     HANDLER: "핸들러",
-    SECURITY_CHAIN: "보안 체인",
+    SECURITY_CHAIN: "보안 필터 체인",
     FILTER: "필터",
     AUTHENTICATION: "인증",
     AUTHORIZATION: "인가",
@@ -35,7 +35,7 @@
     READS_SECURITY_DATA: "보안정보 읽기",
     WRITES_SECURITY_DATA: "보안정보 기록",
     CONVERTS_TO_AUTHORITY: "권한 변환",
-    USES_FOR_AUTHORIZATION: "인가 사용",
+    USES_FOR_AUTHORIZATION: "실제 인가 사용",
     SECURITY_STATE: "보안 상태"
   };
   const nodeStyles = {
