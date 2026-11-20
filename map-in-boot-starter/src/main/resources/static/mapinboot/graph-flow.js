@@ -1,6 +1,8 @@
 (() => {
   "use strict";
 
+  const scope = typeof window !== "undefined" ? window : self;
+
   const NODE_TYPES = Object.freeze({
     ENDPOINT: "ENDPOINT",
     HANDLER: "HANDLER",
@@ -9,6 +11,7 @@
     FILTER: "FILTER"
   });
   const EDGE_TYPES = Object.freeze({
+    FLOWS_TO: "FLOWS_TO",
     MATCHED_BY: "MATCHED_BY",
     FILTERED_BY: "FILTERED_BY"
   });
@@ -56,11 +59,18 @@
     return { status: "UNKNOWN", order: null, source: "NONE" };
   }
 
-  function createIndex(graph) {
+  function createIndex(graph, evidence = []) {
     const nodes = graph && Array.isArray(graph.nodes) ? graph.nodes : [];
     const edges = graph && Array.isArray(graph.edges) ? graph.edges : [];
     const nodeById = new Map(nodes.map((node) => [node.id, node]));
     const edgeById = new Map(edges.map((edge) => [edge.id, edge]));
+    const incomingByNode = new Map(nodes.map((node) => [node.id, []]));
+    const outgoingByNode = new Map(nodes.map((node) => [node.id, []]));
+    const validEdges = edges.filter((edge) => nodeById.has(edge.sourceId) && nodeById.has(edge.targetId));
+    validEdges.forEach((edge) => {
+      incomingByNode.get(edge.targetId).push(edge);
+      outgoingByNode.get(edge.sourceId).push(edge);
+    });
     const endpoints = nodes.filter((node) => node.type === NODE_TYPES.ENDPOINT);
     const handlers = nodes.filter((node) => node.type === NODE_TYPES.HANDLER);
     const chains = nodes.filter((node) => node.type === NODE_TYPES.SECURITY_CHAIN);
@@ -71,8 +81,7 @@
       && attributes(node).registrationKind === "SERVLET");
 
     function firstMatchedChain(endpointId) {
-      const candidates = edges.filter((edge) => edge.type === EDGE_TYPES.MATCHED_BY
-        && edge.sourceId === endpointId);
+      const candidates = (outgoingByNode.get(endpointId) || []).filter((edge) => edge.type === EDGE_TYPES.MATCHED_BY);
       if (candidates.length !== 1) {
         return { status: "UNCERTAIN", reason: candidates.length === 0 ? "MISSING" : "MULTIPLE", chain: null, edge: null };
       }
@@ -85,8 +94,8 @@
     }
 
     function filtersFor(sourceId, registrationKind) {
-      const relationships = edges
-        .filter((edge) => edge.type === EDGE_TYPES.FILTERED_BY && edge.sourceId === sourceId)
+      const relationships = (outgoingByNode.get(sourceId) || [])
+        .filter((edge) => edge.type === EDGE_TYPES.FILTERED_BY)
         .map((edge) => ({ edge, node: nodeById.get(edge.targetId) }))
         .filter((item) => item.node && item.node.type === NODE_TYPES.FILTER
           && attributes(item.node).registrationKind === registrationKind
@@ -149,8 +158,12 @@
       graph,
       nodeById,
       edgeById,
+      evidenceById: new Map((Array.isArray(evidence) ? evidence : []).filter((item) => item && item.id).map((item) => [item.id, item])),
+      incomingByNode,
+      outgoingByNode,
       nodes,
       edges,
+      validEdges,
       endpoints,
       handlers,
       chains,
@@ -166,10 +179,29 @@
     };
   }
 
-  // 선택 Endpoint의 실제 관계만 원본 객체 참조로 추출
-  function deriveEndpointGraph(graph, endpointId) {
+  // 실제 관계에 닿지 않는 Node를 원본과 분리해 전체 MAP 표시 Graph로 구성
+  function deriveConnectedGraph(graph, index = null) {
     const source = graph && typeof graph === "object" ? graph : { nodes: [], edges: [] };
-    const index = createIndex(source);
+    const graphIndex = index || createIndex(source);
+    const connectedIds = new Set();
+    graphIndex.validEdges.forEach((edge) => {
+      connectedIds.add(edge.sourceId);
+      connectedIds.add(edge.targetId);
+    });
+    const nodes = graphIndex.nodes.filter((node) => connectedIds.has(node.id));
+    return {
+      ...source,
+      nodes,
+      edges: graphIndex.validEdges.slice(),
+      filters: { query: "", nodeType: "", edgeType: "" },
+      unconnectedNodeCount: graphIndex.nodes.length - nodes.length
+    };
+  }
+
+  // 선택 Endpoint의 실제 관계만 원본 객체 참조로 추출
+  function deriveEndpointGraph(graph, endpointId, cachedIndex = null) {
+    const source = graph && typeof graph === "object" ? graph : { nodes: [], edges: [] };
+    const index = cachedIndex || createIndex(source);
     const endpoint = index.nodeById.get(endpointId);
     const match = endpoint && endpoint.type === NODE_TYPES.ENDPOINT
       ? index.firstMatchedChain(endpointId)
@@ -201,7 +233,39 @@
       return true;
     };
 
+    const includeFlowPath = (direction) => {
+      if (!endpoint || endpoint.type !== NODE_TYPES.ENDPOINT) return;
+      const queue = [endpointId];
+      const visited = new Set();
+      while (queue.length > 0) {
+        const currentId = queue.shift();
+        if (visited.has(currentId)) continue;
+        visited.add(currentId);
+        const relations = (direction === "incoming" ? index.incomingByNode : index.outgoingByNode).get(currentId) || [];
+        relations.forEach((edge) => {
+          if (edge.type !== EDGE_TYPES.FLOWS_TO) return;
+          const relatedId = direction === "incoming" ? edge.sourceId : edge.targetId;
+          const related = index.nodeById.get(relatedId);
+          if (!canIncludeNode(related)) return;
+          includeNode(related);
+          includeEdge(edge);
+          if (!visited.has(relatedId)) queue.push(relatedId);
+        });
+      }
+    };
+
     if (endpoint && endpoint.type === NODE_TYPES.ENDPOINT) includeNode(endpoint);
+    includeFlowPath("incoming");
+    includeFlowPath("outgoing");
+    nodeIds.forEach((id) => {
+      const node = index.nodeById.get(id);
+      if (!node || node.type !== NODE_TYPES.SERVLET) return;
+      index.servletFiltersForServlet(node.id).edges.forEach((edge) => {
+        const filter = index.nodeById.get(edge.targetId);
+        if (filter) includeNode(filter);
+        includeEdge(edge);
+      });
+    });
     if (handler.node) {
       includeNode(handler.node);
       securityFrontier.push(handler.node.id);
@@ -256,7 +320,7 @@
       filters: { query: "", nodeType: "", edgeType: "" },
       sourceGraph: source,
       endpointId,
-      index: createIndex({ ...source, nodes, edges }),
+      index,
       match,
       handler,
       securityFilters: match.status === "CONFIRMED"
@@ -266,8 +330,9 @@
     };
   }
 
-  window.MapInBootFlow = {
+  scope.MapInBootFlow = {
     createIndex,
+    deriveConnectedGraph,
     positiveInteger,
     orderState,
     deriveEndpointGraph

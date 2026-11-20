@@ -11,6 +11,12 @@
   const COLUMN_STEP = 360;
   const SECTION_GAP = 96;
   const NODE_SAFE_MARGIN = 24;
+  const FINDING_SECTION_PADDING_X = 28;
+  const FINDING_SECTION_TOP_PADDING = 48;
+  const FINDING_SECTION_BOTTOM_PADDING = 24;
+  const FINDING_TITLE_HEIGHT = 18;
+  const FINDING_TITLE_GAP = 22;
+  const EDUCATION_AREA_TOP_PADDING = 48;
   const TOP_PADDING = 72;
   const ROW_STEP = 156;
   const CHAIN_GAP = 192;
@@ -32,6 +38,36 @@
     "org.eclipse.elk.layered.layering.strategy": "MIN_WIDTH",
     "org.eclipse.elk.padding": "[top=32,left=32,bottom=32,right=32]"
   });
+  const PREPROCESS_THRESHOLD = 2400;
+
+  function prepareGraphData(graph, task, endpointId, cachedIndex = null) {
+    const flow = scope.MapInBootFlow;
+    if (!flow) throw new Error("Graph 전처리 모듈을 사용할 수 없습니다.");
+    const index = cachedIndex || flow.createIndex(graph);
+    if (task === "connectedGraph") {
+      const connected = flow.deriveConnectedGraph(graph, index);
+      return {
+        task,
+        nodeIds: connected.nodes.map((node) => node.id),
+        edgeIds: connected.edges.map((edge) => edge.id),
+        unconnectedNodeCount: connected.unconnectedNodeCount
+      };
+    }
+    if (task === "endpointGraph") {
+      const detail = flow.deriveEndpointGraph(graph, endpointId, index);
+      return {
+        task,
+        endpointId,
+        nodeIds: detail.nodes.map((node) => node.id),
+        edgeIds: detail.edges.map((edge) => edge.id),
+        match: { status: detail.match.status, reason: detail.match.reason, chainId: detail.match.chain && detail.match.chain.id,
+          edgeId: detail.match.edge && detail.match.edge.id },
+        handler: { status: detail.handler.status, reason: detail.handler.reason, nodeId: detail.handler.node && detail.handler.node.id },
+        securityFilterIds: detail.securityFilters.map((node) => node.id)
+      };
+    }
+    throw new Error(`지원하지 않는 Graph 전처리 작업: ${task}`);
+  }
 
   function createLaneDefinitions({ servletFilterCount = 1, maxSecurityFilters = 1, endpointCount = 0 } = {}) {
     const servletColumns = Math.min(MAX_FILTER_COLUMNS, Math.max(1, servletFilterCount));
@@ -218,6 +254,28 @@
     ].join("\u0000");
   }
 
+  function routeFromPoints(points) {
+    const simplified = [];
+    points.forEach((point) => {
+      const previous = simplified[simplified.length - 1];
+      if (previous && previous.x === point.x && previous.y === point.y) return;
+      while (simplified.length >= 2) {
+        const beforePrevious = simplified[simplified.length - 2];
+        const current = simplified[simplified.length - 1];
+        const sameColumn = beforePrevious.x === current.x && current.x === point.x;
+        const sameRow = beforePrevious.y === current.y && current.y === point.y;
+        if (!sameColumn && !sameRow) break;
+        simplified.pop();
+      }
+      simplified.push(point);
+    });
+    return { sections: [{
+      startPoint: simplified[0],
+      bendPoints: simplified.slice(1, -1),
+      endPoint: simplified[simplified.length - 1]
+    }] };
+  }
+
   function baseRouteFor(source, target, parallelIndex = 0, edgeType = "", sourceNode, targetNode, routeBoundary) {
     if (!source || !target) return { sections: [] };
     if (edgeType === "MATCHED_BY") {
@@ -263,41 +321,48 @@
     }
     if (SUPPORT_EDGE_TYPES.has(edgeType) && sourceNode && targetNode) {
       const forward = target.x >= source.x;
-      const start = {
-        x: source.x + (forward ? NODE_WIDTH : 0),
-        y: source.y + NODE_HEIGHT / 2
-      };
-      const end = {
-        x: target.x + (forward ? NODE_WIDTH : 0),
-        y: target.y + NODE_HEIGHT / 2
-      };
       const routePositions = routeBoundary && routeBoundary.positions ? Object.values(routeBoundary.positions) : [];
-      const candidateX = [];
-      for (let distance = NODE_SAFE_MARGIN + 20; distance <= NODE_WIDTH * 8; distance += 8) {
-        candidateX.push(target.x - distance, target.x + NODE_WIDTH + distance);
-      }
-      const clearX = (candidate) => routePositions.every((position) => candidate <= position.x - NODE_SAFE_MARGIN
-        || candidate >= position.x + NODE_WIDTH + NODE_SAFE_MARGIN);
-      const channelX = candidateX.find(clearX)
-        ?? (forward ? target.x + NODE_WIDTH + NODE_WIDTH : target.x - NODE_WIDTH);
-      const entersFromRight = channelX > target.x + NODE_WIDTH / 2;
-      end.x = entersFromRight ? target.x + NODE_WIDTH : target.x;
-      const channelY = Math.max(
-        routeBoundary && finite(routeBoundary.height) ? routeBoundary.height : 0,
-        source.y + NODE_HEIGHT,
-        target.y + NODE_HEIGHT
-      ) + NODE_SAFE_MARGIN + 48 + parallelIndex * 16;
-      return {
-        sections: [{
-          startPoint: start,
-          bendPoints: [
-            { x: start.x, y: channelY },
-            { x: channelX, y: channelY },
-            { x: channelX, y: end.y }
-          ],
-          endPoint: end
-        }]
-      };
+      const sourceY = source.y + NODE_HEIGHT / 2;
+      const targetY = target.y + NODE_HEIGHT / 2;
+      const preferredChannelX = forward
+        ? target.x - NODE_SAFE_MARGIN - 1
+        : target.x + NODE_WIDTH + NODE_SAFE_MARGIN + 1;
+      const parallelChannelX = preferredChannelX + (forward ? -1 : 1) * parallelIndex * 8;
+      const candidateXs = new Set([preferredChannelX, parallelChannelX,
+        forward ? target.x + NODE_WIDTH + NODE_SAFE_MARGIN + 1 : target.x - NODE_SAFE_MARGIN - 1]);
+      routePositions.forEach((position) => {
+        candidateXs.add(position.x - NODE_SAFE_MARGIN - 1);
+        candidateXs.add(position.x + NODE_WIDTH + NODE_SAFE_MARGIN + 1);
+      });
+      const candidates = Array.from(candidateXs).sort((left, right) => left - right);
+      let bestRoute = null;
+      let bestCost = Number.POSITIVE_INFINITY;
+      candidates.forEach((channelX) => {
+        if ((channelX > source.x && channelX < source.x + NODE_WIDTH)
+          || (channelX > target.x && channelX < target.x + NODE_WIDTH)) return;
+        const startRight = channelX >= source.x + NODE_WIDTH / 2;
+        const targetWest = channelX <= target.x + NODE_WIDTH / 2;
+        const start = { x: source.x + (startRight ? NODE_WIDTH : 0), y: sourceY };
+        const end = { x: target.x + (targetWest ? 0 : NODE_WIDTH), y: targetY };
+        const route = routeFromPoints([start, { x: channelX, y: sourceY }, { x: channelX, y: targetY }, end]);
+        const section = route.sections[0];
+        const points = [section.startPoint, ...section.bendPoints, section.endPoint];
+        if (routeIntersectsAnyNode(route, sourceNode.id, targetNode.id, routeBoundary && routeBoundary.positions || {})) return;
+        const length = points.slice(1).reduce((total, point, index) => total
+          + Math.abs(point.x - points[index].x) + Math.abs(point.y - points[index].y), 0);
+        const bends = Math.max(0, points.length - 2);
+        const wrongSourceSide = startRight !== forward;
+        const wrongTargetSide = targetWest !== forward;
+        const parallelBias = parallelIndex > 0 ? Math.abs(channelX - parallelChannelX) * 8 : 0;
+        const cost = length + bends * 24 + (wrongSourceSide ? NODE_WIDTH : 0)
+          + (wrongTargetSide ? NODE_WIDTH : 0) + parallelBias;
+        if (cost < bestCost) {
+          bestCost = cost;
+          bestRoute = route;
+        }
+      });
+      return bestRoute || routeAroundNodes(source, target, sourceNode.id, targetNode.id,
+        routeBoundary && routeBoundary.positions || {});
     }
     const sourceRight = target.x >= source.x;
     const start = {
@@ -322,14 +387,97 @@
     };
   }
 
-  function projectionNode(id, primary, detail, column, y) {
+  function projectionNode(id, primary, detail, column, y, lane = null) {
+    const x = NODE_PADDING + column * COLUMN_STEP;
     return {
       id,
+      presentationId: id,
       kind: "education",
       primary,
       detail,
-      position: { x: NODE_PADDING + column * COLUMN_STEP, y }
+      width: NODE_WIDTH,
+      height: NODE_HEIGHT,
+      position: { x, y },
+      bounds: { left: x, top: y, right: x + NODE_WIDTH, bottom: y + NODE_HEIGHT },
+      lane,
+      groupId: "education-flow",
+      isEducational: true
     };
+  }
+
+  function layoutRect(position, width = NODE_WIDTH, height = NODE_HEIGHT) {
+    const rectWidth = finite(position.width) && position.width > 0 ? position.width : width;
+    const rectHeight = finite(position.height) && position.height > 0 ? position.height : height;
+    return {
+      left: position.x,
+      top: position.y,
+      right: position.x + rectWidth,
+      bottom: position.y + rectHeight
+    };
+  }
+
+  function overlapsRect(left, right, gap = 0) {
+    return left.left - gap < right.right && left.right + gap > right.left
+      && left.top - gap < right.bottom && left.bottom + gap > right.top;
+  }
+
+  function labelBounds(left, top, right, label, fontSize = 12) {
+    const measured = Array.from(text(label)).reduce((width, character) =>
+      width + (/[ᄀ-ᇿ㄰-㆏가-힯]/.test(character) ? fontSize : fontSize * 0.58), 0);
+    const labelLeft = left + 8;
+    return {
+      left: labelLeft,
+      top: top + 1,
+      right: Math.min(right - 4, labelLeft + measured + 8),
+      bottom: top + 22
+    };
+  }
+
+  function sectionLayoutsFor(graph, positions, titleObstacles = []) {
+    const nodes = new Map((graph.nodes || []).map((node) => [node.id, node]));
+    const usedTitles = [];
+    const layouts = [];
+    const sections = (Array.isArray(graph.findingSections) ? graph.findingSections : []).slice().sort((left, right) =>
+      text(left.finding && left.finding.id).localeCompare(text(right.finding && right.finding.id)));
+    sections.forEach((section) => {
+      const nodeIds = Array.from(new Set((section.nodeIds || []).filter((id) => nodes.has(id) && positions[id])));
+      const related = nodeIds.map((id) => positions[id]);
+      if (related.length === 0) return;
+      const left = Math.min(...related.map((position) => position.x)) - FINDING_SECTION_PADDING_X;
+      const right = Math.max(...related.map((position) => position.x + NODE_WIDTH)) + FINDING_SECTION_PADDING_X;
+      const topNode = Math.min(...related.map((position) => position.y));
+      const bottomNode = Math.max(...related.map((position) => position.y + NODE_HEIGHT));
+      const relatedIds = new Set(nodeIds);
+      const unrelatedCards = (graph.nodes || []).filter((node) => !relatedIds.has(node.id))
+        .map((node) => positions[node.id]).filter(Boolean).map((position) => layoutRect(position));
+      let titleTop = topNode - 40;
+      const titleBoundsAt = (top) => ({
+        left: left + 12,
+        top,
+        right: right - 12,
+        bottom: top + FINDING_TITLE_HEIGHT
+      });
+      for (let attempt = 0; attempt < unrelatedCards.length + titleObstacles.length + usedTitles.length + 8; attempt += 1) {
+        const candidate = titleBoundsAt(titleTop);
+        if (![...unrelatedCards, ...titleObstacles, ...usedTitles].some((obstacle) => overlapsRect(candidate, obstacle, 4))) break;
+        titleTop -= FINDING_TITLE_GAP;
+      }
+      const titleBounds = titleBoundsAt(titleTop);
+      usedTitles.push(titleBounds);
+      layouts.push({
+        findingId: section.finding.id,
+        nodeIds,
+        bounds: {
+          left,
+          top: Math.min(topNode - FINDING_SECTION_TOP_PADDING, titleTop - 8),
+          right,
+          bottom: bottomNode + FINDING_SECTION_BOTTOM_PADDING
+        },
+        titleBounds,
+        titlePosition: { x: titleBounds.left + 2, y: titleBounds.top + 15 }
+      });
+    });
+    return layouts;
   }
 
   function projectionEdge(id, sourceId, targetId, kind = "education", metadata = {}) {
@@ -412,7 +560,15 @@
       y: target.y + NODE_HEIGHT / 2
     };
     const margin = NODE_SAFE_MARGIN;
-    const entries = Object.entries(positions).filter(([nodeId]) => nodeId !== sourceId && nodeId !== targetId);
+    const routeBounds = {
+      left: Math.min(start.x, end.x) - NODE_WIDTH - margin * 2,
+      right: Math.max(start.x, end.x) + NODE_WIDTH + margin * 2,
+      top: Math.min(start.y, end.y) - NODE_HEIGHT - margin * 2,
+      bottom: Math.max(start.y, end.y) + NODE_HEIGHT + margin * 2
+    };
+    const entries = Object.entries(positions).filter(([nodeId, position]) => nodeId !== sourceId && nodeId !== targetId
+      && position.x < routeBounds.right && position.x + NODE_WIDTH > routeBounds.left
+      && position.y < routeBounds.bottom && position.y + NODE_HEIGHT > routeBounds.top);
     const obstacles = entries.map(([, position]) => ({ position, expanded: {
       x: position.x - margin, y: position.y - margin,
       width: NODE_WIDTH + margin * 2, height: NODE_HEIGHT + margin * 2
@@ -441,29 +597,75 @@
     const startY = ys.indexOf(start.y);
     const endX = xs.indexOf(end.x);
     const endY = ys.indexOf(end.y);
-    const key = (x, y) => `${x}:${y}`;
-    const queue = [[startX, startY]];
-    let queueIndex = 0;
-    const parent = new Map([[key(startX, startY), null]]);
-    const directions = [[1, 0], [-1, 0], [0, 1], [0, -1]];
-    while (queueIndex < queue.length) {
-      const [xIndex, yIndex] = queue[queueIndex++];
-      if (xIndex === endX && yIndex === endY) break;
-      directions.forEach(([xDelta, yDelta]) => {
-        const nextX = xIndex + xDelta;
-        const nextY = yIndex + yDelta;
+    const stateKey = (x, y, direction) => `${x}:${y}:${direction}`;
+    const distance = (left, right) => Math.abs(left.x - right.x) + Math.abs(left.y - right.y);
+    const startKey = stateKey(startX, startY, 0);
+    const costs = new Map([[startKey, 0]]);
+    const parent = new Map([[startKey, null]]);
+    const heap = [];
+    const compare = (left, right) => left.score - right.score || left.cost - right.cost
+      || left.y - right.y || left.x - right.x || left.direction - right.direction;
+    const push = (item) => {
+      heap.push(item);
+      let index = heap.length - 1;
+      while (index > 0) {
+        const parentIndex = Math.floor((index - 1) / 2);
+        if (compare(heap[parentIndex], item) <= 0) break;
+        heap[index] = heap[parentIndex];
+        index = parentIndex;
+      }
+      heap[index] = item;
+    };
+    const pop = () => {
+      const first = heap[0];
+      const last = heap.pop();
+      if (heap.length > 0) {
+        let index = 0;
+        while (true) {
+          const leftIndex = index * 2 + 1;
+          const rightIndex = leftIndex + 1;
+          if (leftIndex >= heap.length) break;
+          const childIndex = rightIndex < heap.length && compare(heap[rightIndex], heap[leftIndex]) < 0
+            ? rightIndex : leftIndex;
+          if (compare(heap[childIndex], last) >= 0) break;
+          heap[index] = heap[childIndex];
+          index = childIndex;
+        }
+        heap[index] = last;
+      }
+      return first;
+    };
+    const startPoint = { x: xs[startX], y: ys[startY] };
+    const endPoint = { x: xs[endX], y: ys[endY] };
+    push({ x: startX, y: startY, direction: 0, cost: 0, score: distance(startPoint, endPoint) });
+    let endKey = null;
+    const directions = [[1, 0, 1], [-1, 0, 1], [0, 1, 2], [0, -1, 2]];
+    while (heap.length > 0) {
+      const currentState = pop();
+      const currentKey = stateKey(currentState.x, currentState.y, currentState.direction);
+      if (currentState.cost !== costs.get(currentKey)) continue;
+      if (currentState.x === endX && currentState.y === endY) {
+        endKey = currentKey;
+        break;
+      }
+      const current = { x: xs[currentState.x], y: ys[currentState.y] };
+      directions.forEach(([xDelta, yDelta, direction]) => {
+        const nextX = currentState.x + xDelta;
+        const nextY = currentState.y + yDelta;
         if (nextX < 0 || nextX >= xs.length || nextY < 0 || nextY >= ys.length) return;
-        const nextKey = key(nextX, nextY);
-        if (parent.has(nextKey)) return;
         const next = { x: xs[nextX], y: ys[nextY] };
-        const current = { x: xs[xIndex], y: ys[yIndex] };
         if (!clearRouteSegment(current, next, obstacles)) return;
-        parent.set(nextKey, key(xIndex, yIndex));
-        queue.push([nextX, nextY]);
+        const nextKey = stateKey(nextX, nextY, direction);
+        const bendCost = currentState.direction && currentState.direction !== direction ? 40 : 0;
+        const nextCost = currentState.cost + distance(current, next) + bendCost;
+        if (nextCost >= (costs.get(nextKey) ?? Number.POSITIVE_INFINITY)) return;
+        costs.set(nextKey, nextCost);
+        parent.set(nextKey, currentKey);
+        push({ x: nextX, y: nextY, direction, cost: nextCost,
+          score: nextCost + distance(next, endPoint) });
       });
     }
-    const endKey = key(endX, endY);
-    if (!parent.has(endKey)) return null;
+    if (!endKey) return null;
     const points = [];
     let currentKey = endKey;
     while (currentKey !== null) {
@@ -472,21 +674,7 @@
       currentKey = parent.get(currentKey);
     }
     points.reverse();
-    const simplified = points.filter((point, index) => {
-      if (index === 0 || index === points.length - 1) return true;
-      const previous = points[index - 1];
-      const next = points[index + 1];
-      return previous.x !== point.x || point.x !== next.x
-        ? previous.y !== point.y || point.y !== next.y
-        : false;
-    });
-    return {
-      sections: [{
-        startPoint: simplified[0],
-        bendPoints: simplified.slice(1, -1),
-        endPoint: simplified[simplified.length - 1]
-      }]
-    };
+    return routeFromPoints(points);
   }
 
   function routeFor(source, target, parallelIndex = 0, edgeType = "", sourceNode, targetNode, routeBoundary) {
@@ -890,6 +1078,42 @@
       handler: { top: centeredStart(blockHeight(controllerGroups.length)), height: blockHeight(controllerGroups.length) + laneOffset * 2, centerY: mainCenterY + laneOffset }
     };
 
+    const detailPresentation = graph.presentationContext === "detail";
+    const groupedPositionByNode = new Map();
+    if (!detailPresentation) {
+      controllerGroups.forEach((group) => (group.handlerIds || []).forEach((id) => groupedPositionByNode.set(id, group.position)));
+      groups.forEach((group) => (group.nodeIds || []).forEach((id) => groupedPositionByNode.set(id, group.position)));
+    }
+    const displayPosition = (id) => groupedPositionByNode.get(id) || positions[id];
+    const layoutTitleBounds = [];
+    lanes.forEach((lane) => {
+      const members = graph.nodes.filter((node) => laneForNode(node) === lane.id)
+        .map((node) => displayPosition(node.id)).filter(Boolean);
+      if (members.length === 0) return;
+      const left = Math.min(...members.map((position) => position.x)) - NODE_SAFE_MARGIN;
+      const top = Math.min(...members.map((position) => position.y)) - 42;
+      const right = Math.max(...members.map((position) => position.x + NODE_WIDTH)) + NODE_SAFE_MARGIN;
+      lane.headerBounds = labelBounds(left, top, right, lane.label);
+      layoutTitleBounds.push(lane.headerBounds);
+    });
+    chainGroups.forEach((group) => {
+      group.headerBounds = labelBounds(group.left, group.top, group.right, group.label, 11);
+      layoutTitleBounds.push(group.headerBounds);
+    });
+    const findingSectionLayouts = sectionLayoutsFor(graph, positions, layoutTitleBounds);
+    const hiddenGroupMembers = new Set();
+    const visibleGroupBounds = [];
+    if (!detailPresentation) {
+      controllerGroups.concat(groups).forEach((group) => {
+        (group.handlerIds || group.nodeIds || []).forEach((id) => hiddenGroupMembers.add(id));
+        if (group.position) visibleGroupBounds.push(layoutRect(group.position));
+      });
+    }
+    const occupiedBounds = graph.nodes.filter((node) => !hiddenGroupMembers.has(node.id))
+      .map((node) => positions[node.id]).filter(Boolean).map((position) => layoutRect(position))
+      .concat(visibleGroupBounds, layoutTitleBounds,
+        findingSectionLayouts.flatMap((section) => [section.bounds, section.titleBounds]));
+
     const projectionNodes = [
       projectionNode("education-http-request", "HTTP 요청 수신", "교육용 표시 · 실제 요청 Trace 아님", 0, EDUCATION_Y),
       projectionNode("education-request-prepare", "Request 준비", "HttpServletRequest · HttpServletResponse 참조", 1, EDUCATION_Y),
@@ -900,17 +1124,40 @@
       projectionNode("education-request-matcher", "RequestMatcher 평가", chains.map((chain) => `체인 ${attributes(chain).chainOrder || "?"}`).join(" · ") || "체인 확인 불가", delegationLane.column + 2, EDUCATION_Y),
       projectionNode("education-servlet-chain-continue", "Servlet FilterChain 계속", "인증 실패·인가 거부 시 이후 단계 미도달 가능", mvcLane.column, EDUCATION_Y),
       projectionNode("education-handler-mapping", "HandlerMapping", "요청과 Handler의 매핑 정보 조회", mappingLane.column, EDUCATION_Y),
-      projectionNode("education-handler-adapter", "HandlerAdapter", "확인된 Controller·Handler 호출 준비", mappingLane.column + 1, EDUCATION_Y),
-      projectionNode("education-response-return", "Response 복귀", "호출 체인을 거쳐 응답 반환 · 교육용 표시", handlerLane.column + 1, EDUCATION_Y)
+      projectionNode("education-handler-adapter", "HandlerAdapter", "확인된 Controller·Handler 호출 준비", mappingLane.column + 1, EDUCATION_Y)
     ];
     const laneByColumn = new Map(lanes.map((lane) => [lane.column, lane]));
     projectionNodes.forEach((node) => {
       const oldColumn = (node.position.x - NODE_PADDING) / COLUMN_STEP;
-      const lane = laneByColumn.get(oldColumn)
-        || lanes.find((item) => item.id === "handler" && item.column + 1 === oldColumn);
+      const lane = laneByColumn.get(oldColumn);
       if (!lane) return;
-      const offset = lane.column === oldColumn ? 0 : 1;
-      node.position.x = lane.x + offset * COLUMN_STEP;
+      node.position.x = lane.x;
+      node.lane = lane.id;
+    });
+    // 실제 카드·표시 그룹·영역 제목 Bounds를 기준으로 교육용 카드 위치 확정
+    projectionNodes.forEach((node) => {
+      const nearby = occupiedBounds.filter((bounds) => node.position.x - NODE_SAFE_MARGIN < bounds.right
+        && node.position.x + node.width + NODE_SAFE_MARGIN > bounds.left);
+      const candidates = new Set([Math.max(TOP_PADDING, educationStartY)]);
+      nearby.forEach((bounds) => {
+        candidates.add(bounds.top - node.height - NODE_SAFE_MARGIN);
+        candidates.add(bounds.bottom + NODE_SAFE_MARGIN + EDUCATION_AREA_TOP_PADDING);
+      });
+      const lowest = Math.max(TOP_PADDING, ...nearby.map((bounds) =>
+        bounds.bottom + NODE_SAFE_MARGIN + EDUCATION_AREA_TOP_PADDING));
+      candidates.add(lowest);
+      const ordered = Array.from(candidates).filter((y) => Number.isFinite(y) && y >= TOP_PADDING)
+        .sort((left, right) => Math.abs(left - educationStartY) - Math.abs(right - educationStartY) || left - right);
+      const available = ordered.find((y) => {
+        const candidate = {
+          ...layoutRect({ x: node.position.x, y }, node.width, node.height),
+          top: y - EDUCATION_AREA_TOP_PADDING
+        };
+        return !occupiedBounds.some((bounds) => overlapsRect(candidate, bounds, NODE_SAFE_MARGIN));
+      });
+      node.position.y = available === undefined ? lowest : available;
+      node.bounds = layoutRect(node.position, node.width, node.height);
+      occupiedBounds.push(node.bounds);
     });
     const projectionEdges = [];
     const addProjectionEdge = (id, sourceId, targetId, metadata = {}) =>
@@ -964,7 +1211,6 @@
     });
     handlers.forEach((handler) => {
       addProjectionEdge(`adapter-to-${handler.id}`, "education-handler-adapter", handler.id);
-      addProjectionEdge(`handler-to-response-${handler.id}`, handler.id, "education-response-return");
     });
 
     const lanePlans = lanes.map((lane) => {
@@ -972,8 +1218,7 @@
         .filter((node) => laneForNode(node) === lane.id && positions[node.id])
         .map((node) => node.id);
       const memberPositions = nodeIds.map((id) => {
-        const group = controllerGroups.find((candidate) => (candidate.handlerIds || []).includes(id));
-        return group ? group.position : positions[id];
+        return displayPosition(id);
       });
       return {
         ...lane,
@@ -988,26 +1233,40 @@
           }
       };
     });
+    const firstProjection = projectionNodes.slice().sort((left, right) =>
+      left.position.y - right.position.y || left.position.x - right.position.x)[0];
     const educationArea = {
-      left: Math.min(...projectionNodes.map((node) => node.position.x)) - NODE_SAFE_MARGIN,
-      top: educationStartY - 48,
-      right: Math.max(...projectionNodes.map((node) => node.position.x + NODE_WIDTH)) + NODE_SAFE_MARGIN,
-      bottom: educationStartY + NODE_HEIGHT + 32,
-      topPadding: 48
+      left: Math.min(...projectionNodes.map((node) => node.bounds.left)) - NODE_SAFE_MARGIN,
+      top: Math.min(...projectionNodes.map((node) => node.bounds.top)) - EDUCATION_AREA_TOP_PADDING,
+      right: Math.max(...projectionNodes.map((node) => node.bounds.right)) + NODE_SAFE_MARGIN,
+      bottom: Math.max(...projectionNodes.map((node) => node.bounds.bottom)) + 32,
+      topPadding: EDUCATION_AREA_TOP_PADDING,
+      titleX: firstProjection.position.x + 12,
+      titleY: Math.min(...projectionNodes.map((node) => node.position.y)) - EDUCATION_AREA_TOP_PADDING + 18
     };
     const projection = { nodes: projectionNodes, edges: projectionEdges };
-    const projectionPositions = Object.fromEntries(projectionNodes.map((node) => [node.id, node.position]));
-    const allPositions = { ...positions, ...projectionPositions };
+    const projectionPositions = Object.fromEntries(projectionNodes.map((node) => [node.id, {
+      ...node.position,
+      width: node.width,
+      height: node.height
+    }]));
+    const groupPositions = Object.fromEntries((detailPresentation ? [] : controllerGroups.concat(groups))
+      .filter((group) => group.position).map((group) => [group.id, group.position]));
+    const routePositions = { ...positions, ...projectionPositions };
+    const allPositions = { ...positions, ...groupPositions, ...projectionPositions };
     const projectionRoutes = {};
     projectionEdges.forEach((edge) => {
-      const source = allPositions[edge.sourceId];
-      const target = allPositions[edge.targetId];
+      const source = routePositions[edge.sourceId];
+      const target = routePositions[edge.targetId];
       if (!source || !target) return;
-      const start = { x: source.x + NODE_WIDTH, y: source.y + NODE_HEIGHT / 2 };
-      const end = { x: target.x, y: target.y + NODE_HEIGHT / 2 };
+      const sourceWidth = finite(source.width) && source.width > 0 ? source.width : NODE_WIDTH;
+      const sourceHeight = finite(source.height) && source.height > 0 ? source.height : NODE_HEIGHT;
+      const targetHeight = finite(target.height) && target.height > 0 ? target.height : NODE_HEIGHT;
+      const start = { x: source.x + sourceWidth, y: source.y + sourceHeight / 2 };
+      const end = { x: target.x, y: target.y + targetHeight / 2 };
       if (edge.routeKind === "filter-wrap") {
         projectionRoutes[edge.id] = {
-          d: `M ${start.x} ${start.y} H ${source.x + NODE_WIDTH + 48} V ${target.y - 36} H ${target.x - 48} V ${end.y} H ${end.x}`,
+          d: `M ${start.x} ${start.y} H ${source.x + sourceWidth + 48} V ${target.y - 36} H ${target.x - 48} V ${end.y} H ${end.x}`,
           kind: edge.routeKind
         };
       } else if (Math.abs(start.y - end.y) < 2) {
@@ -1019,14 +1278,32 @@
           kind: edge.routeKind || "direct"
         };
       }
+      const points = [];
+      for (const match of projectionRoutes[edge.id].d.matchAll(/([MHV])\s*(-?[\d.]+)(?:\s+(-?[\d.]+))?/g)) {
+        const previous = points[points.length - 1];
+        points.push(match[1] === "H" ? { x: Number(match[2]), y: previous.y }
+          : match[1] === "V" ? { x: previous.x, y: Number(match[2]) }
+            : { x: Number(match[2]), y: Number(match[3]) });
+      }
+      const route = { sections: [{ startPoint: points[0], bendPoints: points.slice(1, -1), endPoint: points[points.length - 1] }] };
+      if (routeIntersectsAnyNode(route, edge.sourceId, edge.targetId, routePositions)) {
+        const alternate = routeAroundNodes(source, target, edge.sourceId, edge.targetId, routePositions);
+        const section = alternate && alternate.sections[0];
+        if (section) {
+          const safePoints = [section.startPoint, ...(section.bendPoints || []), section.endPoint];
+          projectionRoutes[edge.id].d = safePoints.map((point, index) => `${index ? "L" : "M"} ${point.x} ${point.y}`).join(" ");
+        }
+      }
     });
     const width = Math.max(
       NODE_PADDING * 2 + NODE_WIDTH,
-      ...Object.values(allPositions).map((position) => position.x + NODE_WIDTH + NODE_PADDING)
+      ...Object.values(allPositions).map((position) => position.x
+        + (finite(position.width) && position.width > 0 ? position.width : NODE_WIDTH) + NODE_PADDING)
     );
     const height = Math.max(
       TOP_PADDING + NODE_HEIGHT,
-      ...Object.values(allPositions).map((position) => position.y + NODE_HEIGHT + NODE_PADDING),
+      ...Object.values(allPositions).map((position) => position.y
+        + (finite(position.height) && position.height > 0 ? position.height : NODE_HEIGHT) + NODE_PADDING),
       handlerY + NODE_PADDING
     );
     const edgeRoutes = {};
@@ -1134,6 +1411,7 @@
         chainGroups,
         controllerGroups,
         displayModel,
+        findingSectionLayouts,
         displayEdgeRoutes,
         overviewProjectionRoutes,
         guideRoutes,
@@ -1219,15 +1497,24 @@
   function createClient(ElkConstructor = scope.ELK) {
     let elk = null;
     let latestRequest = 0;
+    let requestSequence = 0;
     let layoutWorker = null;
     let workerUnavailable = false;
     const pending = new Map();
+    const sentGenerations = new Set();
     if (typeof ElkConstructor === "function") elk = new ElkConstructor({ workerUrl: WORKER_URL });
 
     function finish(requestId, layout, fallback) {
       const request = pending.get(requestId);
       if (!request) return;
       pending.delete(requestId);
+      if (request.type === "prepare") {
+        try {
+          const result = fallback ? prepareGraphData(request.graph, request.task, request.endpointId) : layout;
+          request.resolve({ ...result, requestId, generation: request.generation, viewKey: request.viewKey, stale: false, fallback: Boolean(fallback) });
+        } catch (error) { request.reject(error); }
+        return;
+      }
       if (requestId !== latestRequest) { request.resolve({ requestId, stale: true }); return; }
       try {
         const result = fallback ? semanticLayout(request.graph, request.elkLayout) : layout;
@@ -1238,48 +1525,72 @@
     function stopWorker(fallback) {
       if (layoutWorker) layoutWorker.terminate();
       layoutWorker = null;
-      Array.from(pending.keys()).forEach((id) => finish(id, null, fallback));
+      sentGenerations.clear();
+      Array.from(pending.entries()).forEach(([id, request]) => finish(id, null, fallback || request.type === "prepare"));
+    }
+
+    function ensureWorker() {
+      if (layoutWorker) return true;
+      if (workerUnavailable || typeof scope.Worker !== "function") return false;
+      try {
+        layoutWorker = new scope.Worker("/mapinboot/layout-client.js");
+        const worker = layoutWorker;
+        layoutWorker.onmessage = (event) => {
+          if (layoutWorker !== worker) return;
+          const message = event.data || {};
+          if (message.type === "snapshot-ready") return;
+          if (message.type === "prepared") {
+            const request = pending.get(message.requestId);
+            if (!request || request.type !== "prepare") return;
+            if (message.error) {
+              workerUnavailable = true;
+              stopWorker(true);
+              return;
+            }
+            if (message.generation !== request.generation || message.viewKey !== request.viewKey || message.task !== request.task) {
+              pending.delete(message.requestId);
+              request.resolve({ requestId: message.requestId, generation: request.generation, viewKey: request.viewKey, stale: true });
+              return;
+            }
+            finish(message.requestId, message.result, false);
+            return;
+          }
+          if (message.error) { workerUnavailable = true; stopWorker(true); return; }
+          finish(message.requestId, message.layout, false);
+        };
+        layoutWorker.onerror = (event) => {
+          if (event && typeof event.preventDefault === "function") event.preventDefault();
+          if (layoutWorker !== worker) return;
+          workerUnavailable = true;
+          stopWorker(true);
+        };
+        return true;
+      } catch (_error) {
+        workerUnavailable = true;
+        layoutWorker = null;
+        return false;
+      }
     }
 
     function calculate(graph, elkLayout, requestId) {
-      if (workerUnavailable || typeof scope.Worker !== "function") {
+      if (!ensureWorker()) {
         return Promise.resolve({ ...semanticLayout(graph, elkLayout), requestId, stale: requestId !== latestRequest });
       }
-      try {
-        if (!layoutWorker) {
-          layoutWorker = new scope.Worker("/mapinboot/layout-client.js");
-          const worker = layoutWorker;
-          layoutWorker.onmessage = (event) => {
-            if (layoutWorker !== worker) return;
-            const message = event.data || {};
-            if (message.error) { workerUnavailable = true; stopWorker(true); return; }
-            finish(message.requestId, message.layout, false);
-          };
-          layoutWorker.onerror = (event) => {
-            if (event && typeof event.preventDefault === "function") event.preventDefault();
-            if (layoutWorker !== worker) return;
-            workerUnavailable = true;
-            stopWorker(true);
-          };
-        }
-        return new Promise((resolve, reject) => {
-          pending.set(requestId, { graph, elkLayout, resolve, reject });
-          try { layoutWorker.postMessage({ requestId, graph, elkLayout }); }
-          catch (_error) { workerUnavailable = true; stopWorker(true); }
-        });
-      } catch (_error) {
-        workerUnavailable = true;
-        return Promise.resolve({ ...semanticLayout(graph, elkLayout), requestId, stale: requestId !== latestRequest });
-      }
+      return new Promise((resolve, reject) => {
+        pending.set(requestId, { type: "layout", graph, elkLayout, resolve, reject });
+        try { layoutWorker.postMessage({ requestId, graph, elkLayout }); }
+        catch (_error) { workerUnavailable = true; stopWorker(true); }
+      });
     }
 
     return {
       workerUrl: WORKER_URL,
       layoutOptions: LAYOUT_OPTIONS,
+      preprocessThreshold: PREPROCESS_THRESHOLD,
       buildGraph,
       layout(graph) {
-        const requestId = ++latestRequest;
-        if (pending.size > 0) stopWorker(false);
+        const requestId = ++requestSequence;
+        latestRequest = requestId;
         if (!elk) return Promise.reject(new Error("ELK.js Worker를 사용할 수 없습니다."));
         return elk.layout(buildGraph(graph), { layoutOptions: LAYOUT_OPTIONS }).then((result) => {
           if (requestId !== latestRequest) return { requestId, stale: true };
@@ -1287,8 +1598,27 @@
           return calculate(graph, elkLayout, requestId);
         });
       },
+      prepareGraph(graph, generation, viewKey, task, endpointId = "") {
+        const requestId = ++requestSequence;
+        const fallback = () => ({ ...prepareGraphData(graph, task, endpointId), requestId, generation, viewKey, stale: false, fallback: true });
+        if (graph.nodes.length < PREPROCESS_THRESHOLD || !ensureWorker()) return Promise.resolve(fallback());
+        return new Promise((resolve, reject) => {
+          pending.set(requestId, { type: "prepare", graph, generation, viewKey, task, endpointId, resolve, reject });
+          try {
+            if (!sentGenerations.has(generation)) {
+              layoutWorker.postMessage({ type: "snapshot", generation, graph });
+              sentGenerations.add(generation);
+              while (sentGenerations.size > 2) sentGenerations.delete(sentGenerations.values().next().value);
+            }
+            layoutWorker.postMessage({ type: "prepare", requestId, generation, viewKey, task, endpointId });
+          } catch (_error) {
+            workerUnavailable = true;
+            stopWorker(true);
+          }
+        });
+      },
       terminate() {
-        latestRequest += 1;
+        latestRequest = ++requestSequence;
         stopWorker(false);
         if (elk && typeof elk.terminateWorker === "function") elk.terminateWorker();
       }
@@ -1299,19 +1629,49 @@
   scope.MapInBootLayout = {
     version: ELK_VERSION,
     workerUrl: WORKER_URL,
+    preprocessThreshold: PREPROCESS_THRESHOLD,
     layoutOptions: LAYOUT_OPTIONS,
     buildGraph,
     extractLayout,
     semanticLayout,
+    prepareGraphData,
     createClient,
+    prepareGraph: (graph, generation, viewKey, task, endpointId) => client.prepareGraph(graph, generation, viewKey, task, endpointId),
     layout: (graph) => client.layout(graph),
     terminate: () => client.terminate()
   };
   if (typeof document === "undefined" && typeof self !== "undefined" && typeof self.importScripts === "function") {
+    if (!scope.MapInBootFlow) self.importScripts("/mapinboot/graph-flow.js");
+    const snapshots = new Map();
     self.onmessage = (event) => {
-      const { requestId, graph, elkLayout } = event.data;
-      try { self.postMessage({ requestId, layout: semanticLayout(graph, elkLayout) }); }
-      catch (error) { self.postMessage({ requestId, error: error.message || "배치 계산 실패" }); }
+      const message = event.data || {};
+      if (message.type === "snapshot") {
+        try {
+          const index = scope.MapInBootFlow.createIndex(message.graph);
+          snapshots.delete(message.generation);
+          snapshots.set(message.generation, { graph: message.graph, index });
+          while (snapshots.size > 2) snapshots.delete(snapshots.keys().next().value);
+          self.postMessage({ type: "snapshot-ready", generation: message.generation });
+        } catch (error) {
+          self.postMessage({ type: "snapshot-ready", generation: message.generation, error: error.message || "Graph 준비 실패" });
+        }
+        return;
+      }
+      if (message.type === "prepare") {
+        const stored = snapshots.get(message.generation);
+        try {
+          if (!stored) throw new Error("Snapshot 세대 데이터가 없습니다.");
+          const result = prepareGraphData(stored.graph, message.task, message.endpointId, stored.index);
+          self.postMessage({ type: "prepared", requestId: message.requestId, generation: message.generation,
+            viewKey: message.viewKey, task: message.task, result });
+        } catch (error) {
+          self.postMessage({ type: "prepared", requestId: message.requestId, generation: message.generation,
+            viewKey: message.viewKey, task: message.task, error: error.message || "Graph 전처리 실패" });
+        }
+        return;
+      }
+      try { self.postMessage({ requestId: message.requestId, layout: semanticLayout(message.graph, message.elkLayout) }); }
+      catch (error) { self.postMessage({ requestId: message.requestId, error: error.message || "배치 계산 실패" }); }
     };
   }
 })();

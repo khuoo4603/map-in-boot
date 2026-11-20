@@ -32,7 +32,7 @@
     MATCHED_BY: "적용 체인",
     FILTERED_BY: "적용 필터",
     SECURED_BY: "보호 근거",
-    READS_SECURITY_DATA: "보안정보 읽음",
+    READS_SECURITY_DATA: "보안정보 읽기",
     WRITES_SECURITY_DATA: "보안정보 기록",
     CONVERTS_TO_AUTHORITY: "권한 변환",
     USES_FOR_AUTHORIZATION: "인가 사용",
@@ -308,7 +308,7 @@
     };
   }
 
-  function nodeDisplay(node, displayOptions = {}) {
+  function nodeDisplayRaw(node, displayOptions = {}) {
     const attributes = node.attributes || {};
     if (node.type === "ENDPOINT") {
       const endpoint = [attributes.httpMethod, attributes.path].filter(Boolean).join(" ");
@@ -358,6 +358,12 @@
       };
     }
     if (node.type === "AUTHORIZATION") {
+      if (attributes.factType === "OBJECT_AUTHORIZATION_REQUIREMENT" || attributes.factType === "OBJECT_ACCESS_PATH") {
+        return {
+          primary: attributes.factType === "OBJECT_AUTHORIZATION_REQUIREMENT" ? "객체 인가 요구" : "객체 접근 경로",
+          detail: handlerDisplay(attributes.handler) || "핸들러 확인 불가"
+        };
+      }
       return {
         primary: policyDisplay(attributes.policyKind),
         detail: [attributes.requiredAuthority, attributes.policyMatcherCondition].filter(Boolean).join(" · ") || "인가 조건 확인 필요"
@@ -373,9 +379,12 @@
       return securityDataDisplay(attributes, attributes.dataType || attributes.securityKind || "보안 정보");
     }
     if (node.type === "BUSINESS_SECURITY_STATE") {
+      const kind = attributes.factType === "BUSINESS_STATE_EVALUATION" ? "업무 상태 검증"
+        : attributes.factType === "BUSINESS_STATE_REQUIREMENT" ? "업무 상태 요구" : "업무 보안 상태";
       return {
-        primary: attributes.stateKind || attributes.stateAction || node.label,
-        detail: [attributes.pathOutcome, attributes.coverage].filter(Boolean).join(" · ") || "업무 보안 상태"
+        primary: [kind, attributes.stateName].filter(Boolean).join(" · "),
+        detail: attributes.pathOutcome === "BYPASS_PATH" ? "검증 경로 우회"
+          : handlerDisplay(attributes.handler) || "상태 정보 확인"
       };
     }
     const keys = detailKeys[node.type] || [];
@@ -383,6 +392,16 @@
       primary: simpleClassName(node.label) || node.label,
       detail: attributeDetails(attributes, keys).join(" · ") || "속성 확인 필요"
     };
+  }
+
+  function nodeDisplay(node, displayOptions = {}) {
+    const display = nodeDisplayRaw(node, displayOptions);
+    const safe = (value, fallback) => {
+      const text = String(value || "").trim();
+      if (!text || text === node.id || text.includes("|") || /L[^;\s]*\/[\w/$]+;/.test(text)) return fallback;
+      return shorten(text, 96);
+    };
+    return { primary: safe(display.primary, "이름 확인 불가"), detail: safe(display.detail, "상세 정보 확인 불가") };
   }
 
   function createElement(name) {
@@ -635,7 +654,8 @@
     box.setAttribute("width", String(area.right - area.left));
     box.setAttribute("height", String(area.bottom - area.top));
     group.appendChild(box);
-    addText(group, "graph-area-label", area.left + 12, area.top + 18, "내부 처리 과정");
+    addText(group, "graph-area-label", Number.isFinite(area.titleX) ? area.titleX : area.left + 12,
+      Number.isFinite(area.titleY) ? area.titleY : area.top + 18, "내부 처리 과정");
     layer.appendChild(group);
     return { id: "education", label: "내부 처리 과정", nodeIds: [] };
   }
@@ -733,8 +753,7 @@
       const source = positions[endpoint.id];
       const target = handler && positions[handler.id];
       if (!source || !target) return;
-      const related = !selection || (selection.kind === "node"
-        && [endpoint.id, handler.id].includes(selection.id));
+      const related = guideRelated(plan, endpoint.id, handler.id, selection);
       const path = createElement("path");
       path.setAttribute("class", "graph-guide graph-guide-handler");
       path.setAttribute("data-guide-kind", "endpoint-handler");
@@ -746,9 +765,18 @@
       const planned = !detailMode && matchesGroup && plan.guideRoutes && plan.guideRoutes[endpoint.id];
       path.setAttribute("d", planned || projectionRoute(source, target));
       layer.appendChild(path);
-      guides.push({ id: `${endpoint.id}:${handler.id}`, kind: "endpoint-handler", endpointId: endpoint.id, handlerId: handler.id });
+      guides.push({ id: `${endpoint.id}:${handler.id}`, kind: "endpoint-handler", endpointId: endpoint.id, handlerId: handler.id, element: path });
     });
     return guides;
+  }
+
+  function guideRelated(plan, endpointId, handlerId, selection) {
+    if (!selection) return true;
+    if (selection.kind === "node") return [endpointId, handlerId].includes(selection.id);
+    if (selection.kind !== "controller-group") return false;
+    const group = (plan && plan.controllerGroups || []).find((item) => item.id === selection.id);
+    return Boolean(group && (group.endpointIds || []).includes(endpointId)
+      && (group.handlerIds || []).includes(handlerId));
   }
 
   function projectionRoute(source, target, edge, index = 0) {
@@ -768,6 +796,13 @@
 
   function projectionRelated(edge, graph, plan, flowIndex, selection) {
     if (!selection) return true;
+    if (selection.kind === "controller-group") {
+      const group = (plan.controllerGroups || []).concat(plan.displayModel && plan.displayModel.groups || [])
+        .find((item) => item.id === selection.id);
+      if (!group) return false;
+      const groupNodeIds = new Set([...(group.endpointIds || []), ...(group.handlerIds || [])]);
+      return groupNodeIds.has(edge.sourceId) || groupNodeIds.has(edge.targetId);
+    }
     let selectedChainId = null;
     let selectedEndpointId = null;
     if (selection.kind === "node") {
@@ -788,10 +823,10 @@
     if (selectedChainId && (branchIds.has(edge.sourceId) || branchIds.has(edge.targetId))) return true;
     if (selectedChainId && edge.id.includes(selectedChainId)) return true;
     if (selectedEndpointId && edge.id.includes(selectedEndpointId)) return true;
-    if (selectedEndpointId && (edge.id.startsWith("adapter-to-") || edge.id.startsWith("handler-to-response-"))) {
+    if (selectedEndpointId && edge.id.startsWith("adapter-to-")) {
       const handler = flowIndex && flowIndex.handlerFor ? flowIndex.handlerFor(selectedEndpointId) : null;
       const mapping = plan.displayModel && plan.displayModel.nodeToDisplay;
-      const handlerId = edge.id.startsWith("adapter-to-") ? edge.targetId : edge.sourceId;
+      const handlerId = edge.targetId;
       return Boolean(handler && handler.node && (handlerId === handler.node.id
         || mapping && mapping[handlerId] && mapping[handlerId] === mapping[handler.node.id]));
     }
@@ -821,7 +856,7 @@
       const seen = new Set();
       projectionEdges = projectionEdges.filter((edge) => {
         if (mappingEdges.includes(edge)) return false;
-        if (!edge.id.startsWith("adapter-to-") && !edge.id.startsWith("handler-to-response-")) return true;
+        if (!edge.id.startsWith("adapter-to-")) return true;
         const mapping = plan.displayModel && plan.displayModel.nodeToDisplay;
         const sourceId = mapping && mapping[edge.sourceId] || edge.sourceId;
         const targetId = mapping && mapping[edge.targetId] || edge.targetId;
@@ -860,6 +895,8 @@
     });
     projection.nodes.forEach((node) => {
       const position = node.position;
+      const nodeWidth = Number.isFinite(node.width) ? node.width : NODE_WIDTH;
+      const nodeHeight = Number.isFinite(node.height) ? node.height : NODE_HEIGHT;
       const group = createElement("g");
       group.setAttribute("class", "graph-projection-node");
       group.setAttribute("transform", `translate(${position.x} ${position.y})`);
@@ -868,17 +905,149 @@
       group.setAttribute("aria-label", `${node.primary} ${node.detail}`);
       const card = createElement("rect");
       card.setAttribute("class", "graph-projection-card");
-      card.setAttribute("width", String(NODE_WIDTH));
-      card.setAttribute("height", String(NODE_HEIGHT));
+      card.setAttribute("width", String(nodeWidth));
+      card.setAttribute("height", String(nodeHeight));
       card.setAttribute("rx", "6");
       group.appendChild(card);
       addText(group, "graph-projection-type", 14, 22, "내부 처리 단계");
-      addNodeText(group, "graph-projection-label", 14, 48, node.primary, NODE_WIDTH - 28, 28);
-      addNodeText(group, "graph-projection-detail", 14, 76, node.detail, NODE_WIDTH - 28, 40);
+      addNodeText(group, "graph-projection-label", 14, 48, node.primary, nodeWidth - 28, 28);
+      addNodeText(group, "graph-projection-detail", 14, 76, node.detail, nodeWidth - 28, 40);
       layer.appendChild(group);
       nodeElements.push(group);
     });
     return { nodes: nodeElements, edges: edgeElements, routes };
+  }
+
+  function renderFindingSections(graph, positions, layer, titleLayer, sections, onFindingClick, plan) {
+    if (!layer) return [];
+    layer.replaceChildren();
+    if (titleLayer) titleLayer.replaceChildren();
+    const nodeById = new Map((graph.nodes || []).map((node) => [node.id, node]));
+    const cardBounds = (position) => ({
+      left: position.x,
+      top: position.y,
+      right: position.x + NODE_WIDTH,
+      bottom: position.y + NODE_HEIGHT
+    });
+    const overlaps = (left, right) => left.left < right.right && left.right > right.left
+      && left.top < right.bottom && left.bottom > right.top;
+    const usedTitles = [];
+    const rendered = [];
+    const relatedFindingId = (target) => {
+      let current = target;
+      while (current) {
+        const id = typeof current.getAttribute === "function" ? current.getAttribute("data-finding-id") : null;
+        if (id) return id;
+        current = current.parentNode;
+      }
+      return null;
+    };
+    const entries = (Array.isArray(sections) ? sections : []).slice().sort((left, right) =>
+      stringValue(left.finding && left.finding.id, "").localeCompare(stringValue(right.finding && right.finding.id, "")));
+    entries.forEach((section) => {
+      const nodes = (section.nodeIds || []).map((id) => nodeById.get(id)).filter(Boolean);
+      const located = nodes.map((node) => positions[node.id]).filter(Boolean);
+      if (located.length === 0) return;
+      const planned = plan && Array.isArray(plan.findingSectionLayouts)
+        ? plan.findingSectionLayouts.find((item) => item.findingId === section.finding.id)
+        : null;
+      const relatedIds = new Set(nodes.map((node) => node.id));
+      const minY = Math.min(...located.map((point) => point.y));
+      let bounds = planned && planned.bounds;
+      let titleBounds = planned && planned.titleBounds;
+      if (!bounds || !titleBounds) {
+        const left = Math.min(...located.map((point) => point.x)) - 28;
+        const right = Math.max(...located.map((point) => point.x + NODE_WIDTH)) + 28;
+        let titleTop = Math.max(0, minY - 40);
+        const titleRect = (top) => ({ left: left + 12, top, right: right - 12, bottom: top + 18 });
+        const unrelatedCards = (graph.nodes || []).filter((node) => !relatedIds.has(node.id))
+          .map((node) => positions[node.id]).filter(Boolean).map(cardBounds);
+        for (let attempt = 0; attempt < unrelatedCards.length + usedTitles.length + 8; attempt += 1) {
+          const candidate = titleRect(titleTop);
+          if (!unrelatedCards.some((card) => overlaps(candidate, card))
+            && !usedTitles.some((title) => overlaps(candidate, title))) break;
+          titleTop = Math.max(0, titleTop - 22);
+        }
+        titleBounds = titleRect(titleTop);
+        bounds = {
+          left,
+          top: Math.max(0, Math.min(minY - 48, titleTop - 8)),
+          right,
+          bottom: Math.max(...located.map((point) => point.y + NODE_HEIGHT)) + 24
+        };
+      }
+      usedTitles.push(titleBounds);
+      const group = createElement("g");
+      group.setAttribute("class", "graph-finding-section");
+      group.setAttribute("data-finding-id", section.finding.id);
+      group.setAttribute("data-node-ids", nodes.map((node) => node.id).join(","));
+      group.setAttribute("data-edge-ids", (section.edgeIds || []).join(","));
+      group.setAttribute("data-selected", String(Boolean(section.selected)));
+      group.setAttribute("data-hovered", "false");
+      group.setAttribute("data-confidence", section.finding.confidence || "UNKNOWN");
+      group.setAttribute("data-bounds", [bounds.left, bounds.top, bounds.right, bounds.bottom].join(","));
+      group.setAttribute("data-title-bounds", [titleBounds.left, titleBounds.top, titleBounds.right, titleBounds.bottom].join(","));
+      group.setAttribute("tabindex", "0");
+      group.setAttribute("role", "button");
+      const confidence = section.finding.confidence || "UNKNOWN";
+      const confidenceLabel = { CONFIRMED: "확정", LIKELY: "검토 필요", UNKNOWN: "확인 불가" }[confidence] || "확인 불가";
+      const label = `${section.finding.title || section.finding.id} · ${confidenceLabel}`;
+      group.setAttribute("aria-label", `Finding 영향 범위 열기: ${label}`);
+      const outline = createElement("rect");
+      outline.setAttribute("class", "graph-area-box graph-finding-section-outline");
+      outline.setAttribute("x", String(bounds.left));
+      outline.setAttribute("y", String(bounds.top));
+      outline.setAttribute("width", String(bounds.right - bounds.left));
+      outline.setAttribute("height", String(bounds.bottom - bounds.top));
+      outline.setAttribute("rx", "8");
+      outline.setAttribute("pointer-events", "all");
+      group.appendChild(outline);
+      let titleGroup = null;
+      const activate = (event) => {
+        if (event && event.stopPropagation) event.stopPropagation();
+        if (onFindingClick) onFindingClick(section.finding.id, group);
+      };
+      const updateHover = (event, hovered) => {
+        if (!hovered && event && relatedFindingId(event.relatedTarget) === section.finding.id) return;
+        group.setAttribute("data-hovered", String(hovered));
+        if (titleGroup) titleGroup.setAttribute("data-hovered", String(hovered));
+      };
+      group.addEventListener("pointerover", (event) => updateHover(event, true));
+      group.addEventListener("pointerout", (event) => updateHover(event, false));
+      group.addEventListener("click", activate);
+      group.addEventListener("keydown", (event) => {
+        if (!event || (event.key !== "Enter" && event.key !== " ")) return;
+        if (event.preventDefault) event.preventDefault();
+        activate(event);
+      });
+      layer.appendChild(group);
+      if (titleLayer) {
+        titleGroup = createElement("g");
+        titleGroup.setAttribute("class", "graph-finding-section-title-target");
+        titleGroup.setAttribute("data-finding-id", section.finding.id);
+        titleGroup.setAttribute("data-selected", String(Boolean(section.selected)));
+        titleGroup.setAttribute("data-confidence", confidence);
+        titleGroup.setAttribute("data-hovered", "false");
+        titleGroup.addEventListener("pointerover", (event) => updateHover(event, true));
+        titleGroup.addEventListener("pointerout", (event) => updateHover(event, false));
+        const hit = createElement("rect");
+        hit.setAttribute("class", "graph-finding-section-title-hit");
+        hit.setAttribute("x", String(titleBounds.left));
+        hit.setAttribute("y", String(titleBounds.top));
+        hit.setAttribute("width", String(titleBounds.right - titleBounds.left));
+        hit.setAttribute("height", String(titleBounds.bottom - titleBounds.top));
+        hit.setAttribute("pointer-events", "all");
+        titleGroup.appendChild(hit);
+        const title = addNodeText(titleGroup, "graph-finding-section-title", titleBounds.left + 2,
+          titleBounds.top + 15, label, titleBounds.right - titleBounds.left - 4,
+          Math.max(8, Math.floor((titleBounds.right - titleBounds.left - 4) / 12)));
+        title.setAttribute("aria-hidden", "true");
+        titleGroup.addEventListener("click", activate);
+        titleLayer.appendChild(titleGroup);
+      }
+      rendered.push(group);
+    });
+    return rendered;
   }
 
   function render(graph, layers, options = {}) {
@@ -888,9 +1057,10 @@
       entries.forEach(({ finding }, index) => {
         const marker = createElement("g");
         marker.setAttribute("class", "finding-marker");
-        marker.setAttribute("transform", `translate(${x + index * 22} ${y})`);
+        marker.setAttribute("transform", `translate(${x + index * 32} ${y})`);
         marker.setAttribute("tabindex", "0");
         marker.setAttribute("role", "button");
+        marker.setAttribute("data-finding-id", finding.id);
         marker.setAttribute("data-confidence", finding.confidence || "UNKNOWN");
         marker.setAttribute("data-selected", String(finding.id === options.selectedFindingId));
         marker.setAttribute("aria-pressed", String(finding.id === options.selectedFindingId));
@@ -900,16 +1070,17 @@
         title.textContent = label;
         marker.appendChild(title);
         const circle = createElement("circle");
-        circle.setAttribute("r", "9");
+        circle.setAttribute("r", "14");
+        circle.setAttribute("vector-effect", "non-scaling-stroke");
         marker.appendChild(circle);
         const text = createElement("text");
         text.setAttribute("text-anchor", "middle");
-        text.setAttribute("y", "4");
+        text.setAttribute("y", "5");
         text.textContent = "!";
         marker.appendChild(text);
         const select = (event) => {
           if (event && event.stopPropagation) event.stopPropagation();
-          if (options.onFindingClick) options.onFindingClick(finding.id);
+          if (options.onFindingClick) options.onFindingClick(finding.id, marker);
         };
         marker.addEventListener("click", select);
         marker.addEventListener("keydown", (event) => {
@@ -943,17 +1114,18 @@
       : new Set();
     const edgePairCounts = new Map();
     const edgeElements = [];
+    const edgeLabelElements = [];
     const nodeElements = [];
     const areas = renderAreas(graph, positions, layers.areaLayer, options.layoutPlan, size.height);
     let guides;
-    if (options.findingDetailMode) {
+    if (options.findingDetailMode && !options.detailMode) {
       if (layers.guideLayer) layers.guideLayer.replaceChildren();
       guides = [];
     } else {
       guides = renderGuides(graph, displayPositions, layers.guideLayer, options.layoutPlan, options.flowIndex, selection, options.detailMode);
     }
     let projection;
-    if (options.findingDetailMode) {
+    if (options.findingDetailMode && !options.detailMode) {
       if (layers.projectionLayer) layers.projectionLayer.replaceChildren();
       projection = { nodes: [], edges: [] };
     } else {
@@ -1057,6 +1229,7 @@
       label.setAttribute("fill", style.color);
       label.textContent = edgeTypeNames[edge.type] || edge.type;
       layers.edgeLayer.appendChild(label);
+      edgeLabelElements.push(label);
       const setHoveredLabel = (visible) => {
         if (options.displayEdgeLabels === false) return;
         if (visible || (selection && selection.kind === "edge" && selection.id === edge.id)) {
@@ -1083,6 +1256,7 @@
       group.setAttribute("class", "graph-node");
       group.setAttribute("transform", `translate(${position.x} ${position.y})`);
       group.setAttribute("data-node-id", node.id);
+      group.setAttribute("data-has-finding", String(findings.some((entry) => entry.nodeIds.includes(node.id))));
       group.setAttribute("data-node-type", node.type);
       group.setAttribute("data-evidence-ids", node.evidenceIds.join(","));
       group.setAttribute("data-selected", String(Boolean(selection && selection.kind === "node" && selection.id === node.id)));
@@ -1168,6 +1342,8 @@
       group.setAttribute("class", groupDefinition.type ? "graph-node graph-support-group" : "graph-node graph-controller-group");
       group.setAttribute("transform", `translate(${position.x} ${position.y})`);
       group.setAttribute("data-controller-group-id", groupDefinition.id);
+      group.setAttribute("data-has-finding", String(findings.some((entry) => entry.nodeIds.some((id) =>
+        (groupDefinition.nodeIds || []).includes(id) || (groupDefinition.handlerIds || []).includes(id)))));
       group.setAttribute("data-controller-fqcn", groupDefinition.controllerFqcn);
       group.setAttribute("data-handler-ids", (groupDefinition.handlerIds || []).join(","));
       group.setAttribute("data-endpoint-ids", (groupDefinition.endpointIds || []).join(","));
@@ -1237,14 +1413,22 @@
     const displayNodes = graph.nodes.filter((node) => !groupedHandlerIds.has(node.id)).map((node) => ({
       ...node,
       position: displayPositions[node.id],
+      width: NODE_WIDTH,
+      height: NODE_HEIGHT,
+      bounds: { x: displayPositions[node.id].x, y: displayPositions[node.id].y, width: NODE_WIDTH, height: NODE_HEIGHT },
       kind: "actual"
     })).concat(controllerGroups.map((group) => ({
       id: group.id,
       type: "CONTROLLER_GROUP",
       label: group.controllerName || group.controllerFqcn,
       position: group.position,
+      width: NODE_WIDTH,
+      height: NODE_HEIGHT,
+      bounds: { x: group.position.x, y: group.position.y, width: NODE_WIDTH, height: NODE_HEIGHT },
       kind: "controller-group"
     })));
+    const findingSections = renderFindingSections(graph, displayPositions, layers.findingLayer, layers.findingTitleLayer,
+      options.findingSections, options.onFindingSectionClick || options.onFindingClick, options.layoutPlan);
     return {
       positions: displayPositions,
       actualPositions: positions,
@@ -1257,11 +1441,80 @@
       invalidEdges: graph.invalidEdges,
       nodeElements,
       edgeElements,
+      edgeLabelElements,
       nodeById,
       areas,
       guides,
-      projection
+      projection,
+      findingSections
     };
+  }
+
+  function updateState(rendered, graph, options = {}, layers = {}) {
+    if (!rendered) return null;
+    const selection = options.selection || null;
+    const relatedNodeIds = options.related && options.related.nodeIds instanceof Set ? options.related.nodeIds : new Set();
+    const relatedEdgeIds = options.related && options.related.edgeIds instanceof Set ? options.related.edgeIds : new Set();
+    const findings = Array.isArray(options.findings) ? options.findings : [];
+    const findingIds = new Set(findings.map((entry) => entry.finding.id));
+    const findingNodeIds = new Set(findings.flatMap((entry) => entry.nodeIds || []));
+    rendered.nodeElements.forEach((element) => {
+      const nodeId = element.getAttribute("data-node-id");
+      const groupId = element.getAttribute("data-controller-group-id");
+      const id = nodeId || groupId;
+      const selected = Boolean(selection && ((selection.kind === "node" && selection.id === nodeId)
+        || (selection.kind === "controller-group" && selection.id === groupId)));
+      element.setAttribute("data-selected", String(selected));
+      element.setAttribute("data-related", String(!selection || relatedNodeIds.has(id)
+        || (element.getAttribute("data-handler-ids") || "").split(",").some((item) => relatedNodeIds.has(item))));
+      if (nodeId) element.setAttribute("data-has-finding", String(findingNodeIds.has(nodeId)));
+      if (groupId) element.setAttribute("data-has-finding", String((element.getAttribute("data-handler-ids") || "").split(",").some((item) => findingNodeIds.has(item))));
+    });
+    rendered.edgeElements.forEach((element) => {
+      const edgeIds = (element.getAttribute("data-edge-ids") || element.getAttribute("data-edge-id") || "").split(",");
+      element.setAttribute("data-selected", String(Boolean(selection && selection.kind === "edge" && edgeIds.includes(selection.id))));
+      element.setAttribute("data-related", String(!selection || edgeIds.some((id) => relatedEdgeIds.has(id))));
+    });
+    rendered.edgeLabelElements.forEach((element) => {
+      const edgeId = element.getAttribute("data-edge-id");
+      const selected = Boolean(selection && selection.kind === "edge" && selection.id === edgeId);
+      element.setAttribute("data-selected", String(selected));
+      element.setAttribute("data-related", String(!selection || relatedEdgeIds.has(edgeId)));
+      if (selected) element.setAttribute("data-visible", "true");
+    });
+    (rendered.guides || []).forEach((guide) => {
+      if (guide.element) guide.element.setAttribute("data-related", String(guideRelated(options.layoutPlan, guide.endpointId, guide.handlerId, selection)));
+    });
+    const projectionEdges = new Map((options.layoutPlan && options.layoutPlan.projection
+      && options.layoutPlan.projection.edges || []).map((edge) => [edge.id, edge]));
+    projectionEdges.set("mapping-to-adapter-shared", {
+      id: "mapping-to-adapter-shared",
+      sourceId: "education-handler-mapping",
+      targetId: "education-handler-adapter"
+    });
+    (rendered.projection && rendered.projection.edges || []).forEach((element) => {
+      const edge = projectionEdges.get(element.getAttribute("data-projection-edge-id"));
+      if (edge) element.setAttribute("data-related", String(projectionRelated(edge, graph,
+        options.layoutPlan || {}, options.flowIndex, selection)));
+    });
+    const updateMarkers = (parent) => {
+      if (!parent) return;
+      for (const element of Array.from(parent.children || [])) {
+        if ((element.getAttribute("class") || "").split(/\s+/).includes("finding-marker")) {
+          const findingId = element.getAttribute("data-finding-id");
+          const selected = findingId === options.selectedFindingId;
+          element.setAttribute("data-selected", String(selected));
+          element.setAttribute("aria-pressed", String(selected));
+          element.hidden = !findingIds.has(findingId);
+        }
+        updateMarkers(element);
+      }
+    };
+    updateMarkers(layers.nodeLayer);
+    updateMarkers(layers.edgeLayer);
+    rendered.findingSections = renderFindingSections(graph, rendered.positions, layers.findingLayer, layers.findingTitleLayer,
+      options.findingSections, options.onFindingSectionClick || options.onFindingClick, options.layoutPlan);
+    return rendered;
   }
 
   window.MapInBootGraph = {
@@ -1280,6 +1533,7 @@
     indexFindings,
     filter: filterGraph,
     render,
+    updateState,
     nodeDisplay
   };
 })();

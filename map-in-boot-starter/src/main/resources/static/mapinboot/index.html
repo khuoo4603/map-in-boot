@@ -14,8 +14,8 @@
         <span class="product-name">Map in Boot</span>
         <div class="header-meta" aria-label="Snapshot 정보">
           <span class="service-name" id="service-name">서비스 미확인</span>
-          <span class="snapshot-time" id="snapshot-time">조회 전</span>
-          <span class="view-state" id="view-state">Snapshot 조회 전</span>
+          <span class="snapshot-time" id="snapshot-time">Snapshot 버전: 확인 불가</span>
+          <span class="sr-only" id="view-state">Snapshot 조회 전</span>
         </div>
       </div>
       <div class="header-group header-right">
@@ -95,34 +95,19 @@
                       <input id="endpoint-search" type="search" autocomplete="off" placeholder="Method·Path·Handler" aria-controls="endpoint-options" aria-expanded="false" aria-autocomplete="list">
                       <div class="endpoint-options" id="endpoint-options" role="listbox" aria-label="API 선택" hidden></div>
                     </label>
-                    <label id="node-filter-field">NodeType
+                    <label id="node-filter-field">노드 유형
                       <select id="node-filter">
-                        <option value="">모든 NodeType</option>
-                        <option value="APPLICATION">APPLICATION</option>
-                        <option value="SERVLET">SERVLET</option>
-                        <option value="ENDPOINT">ENDPOINT</option>
-                        <option value="HANDLER">HANDLER</option>
-                        <option value="SECURITY_CHAIN">SECURITY_CHAIN</option>
-                        <option value="FILTER">FILTER</option>
-                        <option value="AUTHENTICATION">AUTHENTICATION</option>
-                        <option value="AUTHORIZATION">AUTHORIZATION</option>
-                        <option value="SECURITY_DATA">SECURITY_DATA</option>
-                        <option value="BUSINESS_SECURITY_STATE">BUSINESS_SECURITY_STATE</option>
+                        <option value="">모든 노드 유형</option>
                       </select>
                     </label>
-                    <label id="edge-filter-field">EdgeType
+                    <label id="edge-filter-field">관계 유형
                       <select id="edge-filter">
-                        <option value="">모든 EdgeType</option>
-                        <option value="FLOWS_TO">FLOWS_TO</option>
-                        <option value="MATCHED_BY">MATCHED_BY</option>
-                        <option value="FILTERED_BY">FILTERED_BY</option>
-                        <option value="SECURED_BY">SECURED_BY</option>
-                        <option value="READS_SECURITY_DATA">READS_SECURITY_DATA</option>
-                        <option value="WRITES_SECURITY_DATA">WRITES_SECURITY_DATA</option>
-                        <option value="CONVERTS_TO_AUTHORITY">CONVERTS_TO_AUTHORITY</option>
-                        <option value="USES_FOR_AUTHORIZATION">USES_FOR_AUTHORIZATION</option>
-                        <option value="SECURITY_STATE">SECURITY_STATE</option>
+                        <option value="">모든 관계 유형</option>
                       </select>
+                    </label>
+                    <label id="unconnected-node-field" hidden>
+                      <input id="include-unconnected-nodes" type="checkbox">
+                      미연결 노드 포함
                     </label>
                     <div id="finding-filter-fields" hidden>
                       <label>Finding 유형<select id="finding-rule">
@@ -135,6 +120,12 @@
                         <option value="LIKELY">검토 필요</option><option value="UNKNOWN">확인 불가</option>
                       </select></label>
                       <div id="finding-list" class="finding-list"></div>
+                    </div>
+                    <div id="finding-api-fields" hidden>
+                      <label>취약점 연결 API<select id="finding-api-select" aria-controls="detail-finding-list">
+                        <option value="">API 선택</option>
+                      </select></label>
+                      <div id="detail-finding-list" class="finding-api-list" role="group" aria-label="선택 API의 Finding" aria-live="polite"></div>
                     </div>
                     <button class="map-filter-reset" id="search-reset" type="button">검색 초기화</button>
                     <span class="graph-filter-status sr-only" id="graph-filter-status" role="status" aria-live="polite">Graph 없음</span>
@@ -157,10 +148,12 @@
               </defs>
               <g id="graph-viewport">
                 <g id="graph-areas" class="graph-areas" aria-hidden="true"></g>
-            <g id="graph-flow-projection" class="graph-flow-projection" aria-hidden="true"></g>
+                <g id="graph-finding-sections" class="graph-finding-sections"></g>
+                <g id="graph-flow-projection" class="graph-flow-projection" aria-hidden="true"></g>
                 <g id="graph-guides" class="graph-guides" aria-hidden="true"></g>
                 <g id="graph-edges"></g>
                 <g id="graph-nodes"></g>
+                <g id="graph-finding-section-titles" class="graph-finding-section-titles" aria-hidden="true"></g>
                 <g id="request-flow-education" aria-hidden="true" hidden>
                   <circle id="request-flow-dot" class="request-flow-dot" cx="0" cy="0" r="6" hidden></circle>
                 </g>
@@ -187,6 +180,15 @@
         </section>
       </main>
 
+      <div class="finding-modal" id="finding-modal" role="dialog" aria-modal="true" aria-labelledby="finding-modal-title" hidden>
+        <section class="finding-modal-panel">
+          <header class="finding-modal-header">
+            <h2 id="finding-modal-title">Finding</h2>
+            <button class="finding-modal-close" id="finding-modal-close" type="button" aria-label="Finding 상세 닫기">닫기</button>
+          </header>
+          <div class="finding-modal-content" id="finding-modal-content"></div>
+        </section>
+      </div>
       <aside class="inspector" id="inspector" aria-hidden="true" hidden></aside>
     </div>
   </div>
