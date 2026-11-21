@@ -972,6 +972,12 @@ test("Header 아래 Graph Surface가 단일 MAP이고 툴바가 Surface 내부 �
   assert.match(appCss, /background-image:\s*radial-gradient\([^;]*\.22/);
 });
 
+test("Header 경계선 높이를 제외해 Graph Surface가 Viewport를 넘지 않음", () => {
+  assert.match(appCss, /\.app-body\s*\{[^}]*height:\s*calc\(100vh - var\(--header-height\) - 1px\)/s);
+  assert.match(appCss, /\.app-body\s*\{\s*min-height:\s*calc\(100vh - var\(--header-height\) - 1px\);\s*\}/);
+  assert.match(appCss, /\.graph-canvas\s*\{\s*min-height:\s*calc\(100vh - var\(--header-height\) - 1px\);\s*\}/);
+});
+
 test("MAP에 통계 문구와 표준 Filter 참고 패널을 렌더링하지 않음", () => {
   assert.doesNotMatch(indexHtml, /id="flow-summary"|class="flow-summary"/);
   assert.doesNotMatch(indexHtml, /id="standard-filter-reference"|class="standard-filter-reference"/);
