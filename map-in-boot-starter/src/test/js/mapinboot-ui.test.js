@@ -1700,6 +1700,205 @@ test("Spring Security 7 표준 Filter 판정이 FQCN·보존 Snapshot 상태·Ch
   assert.equal(JSON.stringify(graph), before);
 });
 
+test("Spring Security 7 표준 Filter 12종이 FQCN과 교육 필수 항목을 제공함", () => {
+  const { window } = loadUi();
+  const references = window.MapInBootStandardFilters.list();
+  const expectedFqcns = [
+    "org.springframework.security.web.context.SecurityContextHolderFilter",
+    "org.springframework.security.web.header.HeaderWriterFilter",
+    "org.springframework.security.web.csrf.CsrfFilter",
+    "org.springframework.security.web.authentication.logout.LogoutFilter",
+    "org.springframework.security.web.authentication.www.BasicAuthenticationFilter",
+    "org.springframework.security.oauth2.server.resource.web.authentication.BearerTokenAuthenticationFilter",
+    "org.springframework.security.web.savedrequest.RequestCacheAwareFilter",
+    "org.springframework.security.web.servletapi.SecurityContextHolderAwareRequestFilter",
+    "org.springframework.security.web.authentication.AnonymousAuthenticationFilter",
+    "org.springframework.security.web.session.SessionManagementFilter",
+    "org.springframework.security.web.access.ExceptionTranslationFilter",
+    "org.springframework.security.web.access.intercept.AuthorizationFilter"
+  ];
+  const educationFields = ["role", "input", "condition", "processing", "outcomes", "cautions"];
+
+  assert.deepEqual(Array.from(references, (reference) => reference.fqcn), expectedFqcns);
+  assert.deepEqual(Array.from(references, (reference) => reference.referenceOrder),
+    Array.from({ length: 12 }, (_, index) => index + 1));
+  references.forEach((reference) => {
+    assert.match(reference.source, /목록 순서는 교육용/);
+    educationFields.forEach((field) => {
+      assert.equal(typeof reference[field], "string", `${reference.name} ${field} 문자열 제공`);
+      assert.ok(reference[field].trim().length > 0, `${reference.name} ${field} 설명 제공`);
+    });
+  });
+});
+
+test("상세 처리 보기에서 표준 Filter 교육을 선택하고 실제 Snapshot 속성·Evidence를 보존함", async () => {
+  const { ui, elements } = loadUi();
+  const snapshot = standardFilterGraphFixture();
+  snapshot.evidence = [{
+    id: "evidence-security-filter-1",
+    source: "CODE_PATTERN",
+    location: "SecurityConfiguration#filterChain",
+    summary: "실제 등록 근거"
+  }];
+  ui.renderGraph(snapshot);
+  ui.openEndpointDetail("endpoint-a");
+  await ui.layoutGraph();
+  ui.selectGraphElement("node", "security-filter-1");
+  assert.equal(findAllByClass(elements.get("inspector"), "inspector-tab")
+    .some((button) => button.attributes["data-tab"] === "filter-education"), false);
+  assert.match(textOf(elements.get("inspector")), /org\.springframework\.security\.web\.csrf\.CsrfFilter/);
+  elements.get("setting-show-detail-flow").checked = true;
+  elements.get("setting-show-detail-flow").dispatchEvent({ type: "change" });
+
+  let inspector = elements.get("inspector");
+  let educationTab = findAllByClass(inspector, "inspector-tab")
+    .find((button) => button.attributes["data-tab"] === "filter-education");
+  assert.ok(educationTab, "상세 처리 보기에서 필터 교육 탭 제공");
+  assert.equal(educationTab.getAttribute("aria-selected"), "true");
+  let educationText = textOf(inspector);
+  assert.match(educationText, /CsrfFilter/);
+  assert.match(educationText, /입력/);
+  assert.match(educationText, /확인 조건/);
+  assert.match(educationText, /대표 처리/);
+  assert.match(educationText, /가능한 결과/);
+  assert.match(educationText, /주의사항/);
+  assert.match(educationText, /실제 filterOrder를 뜻하지 않습니다/);
+  assert.match(educationText, /분석 상태 출처/);
+  assert.match(educationText, /교육 출처/);
+  assert.doesNotMatch(educationText, /evidence-security-filter-1|SecurityConfiguration#filterChain/);
+  assert.equal(findAllByClass(inspector, "inspector-filter-reference")
+    .find((button) => button.attributes["data-filter-fqcn"] === "org.springframework.security.web.csrf.CsrfFilter")
+    .attributes["data-filter-status"], "CURRENT_PATH_APPLIED");
+  assert.equal(inspector.getAttribute("data-selection-id"), "security-filter-1");
+
+  findAllByClass(inspector, "inspector-tab")
+    .find((button) => button.attributes["data-tab"] === "properties").dispatchEvent({ type: "click" });
+  inspector = elements.get("inspector");
+  const propertyText = textOf(inspector);
+  assert.match(propertyText, /org\.springframework\.security\.web\.csrf\.CsrfFilter/);
+  assert.match(propertyText, /실제 등록 근거/);
+  assert.equal(inspector.getAttribute("data-selection-id"), "security-filter-1");
+});
+
+test("미등록 표준 필터 참고 카드 선택은 Snapshot Graph 선택과 분리됨", () => {
+  const { ui, elements } = loadUi();
+  const snapshot = standardFilterGraphFixture();
+  ui.renderGraph(snapshot);
+  ui.state.display.detailedFlow = true;
+  ui.applyDisplaySettings();
+  ui.selectGraphElement("node", "endpoint-a");
+
+  const inspector = elements.get("inspector");
+  findAllByClass(inspector, "inspector-tab")
+    .find((button) => button.attributes["data-tab"] === "filter-education").dispatchEvent({ type: "click" });
+  const reference = findAllByClass(inspector, "inspector-filter-reference")
+    .find((button) => button.attributes["data-filter-fqcn"]
+      === "org.springframework.security.web.header.HeaderWriterFilter");
+  assert.ok(reference, "미등록 표준 필터 참고 카드를 선택 가능");
+  assert.equal(reference.hasAttribute("data-node-id"), false);
+  assert.match(textOf(reference), /참고: 미등록/);
+
+  reference.dispatchEvent({ type: "click" });
+  const educationText = textOf(inspector);
+  assert.match(educationText, /HeaderWriterFilter/);
+  assert.match(educationText, /실제 Graph 노드가 아닌 교육용 참고/);
+  assert.match(educationText, /응답/);
+  assert.equal(inspector.getAttribute("data-selection-id"), "endpoint-a");
+  assert.equal(snapshot.nodes.some((node) => node.id.startsWith("standard-filter-")), false);
+  assert.equal(ui.state.graph.nodes.some((node) => node.id.startsWith("standard-filter-")), false);
+});
+
+test("사용자 정의 Filter에는 표준 필터의 처리 설명을 자동 연결하지 않음", () => {
+  const { ui, elements } = loadUi();
+  const snapshot = standardFilterGraphFixture();
+  ui.state.includeUnconnectedNodes = true;
+  ui.renderGraph(snapshot);
+  ui.state.display.detailedFlow = true;
+  ui.applyDisplaySettings();
+  ui.selectGraphElement("node", "custom-csrf-filter");
+
+  const inspector = elements.get("inspector");
+  assert.ok(findAllByClass(inspector, "inspector-tab")
+    .some((button) => button.attributes["data-tab"] === "filter-education"));
+  assert.equal(findAllByClass(inspector, "inspector-filter-education-card").length, 0);
+  assert.match(textOf(inspector), /com\.example\.CsrfFilter/);
+});
+
+test("표준 필터 교육 카드가 등록·적용·불확실성 상태를 기존 분류와 일치시킴", () => {
+  const { ui, elements } = loadUi();
+  const snapshot = standardFilterGraphFixture();
+  snapshot.nodes.push(
+    {
+      id: "other-chain-bearer-filter",
+      type: "FILTER",
+      serviceId: "orders",
+      label: "BearerTokenAuthenticationFilter",
+      attributes: {
+        registrationKind: "SECURITY",
+        filterClass: "org.springframework.security.oauth2.server.resource.web.authentication.BearerTokenAuthenticationFilter",
+        chainKey: "chain-b",
+        filterOrder: "4"
+      },
+      evidenceIds: ["evidence-other-chain-bearer-filter"]
+    },
+    {
+      id: "unlinked-session-filter",
+      type: "FILTER",
+      serviceId: "orders",
+      label: "SessionManagementFilter",
+      attributes: {
+        registrationKind: "SECURITY",
+        filterClass: "org.springframework.security.web.session.SessionManagementFilter"
+      },
+      evidenceIds: ["evidence-unlinked-session-filter"]
+    }
+  );
+  snapshot.edges.push({
+    id: "other-chain-bearer-edge",
+    sourceId: "chain-b",
+    targetId: "other-chain-bearer-filter",
+    type: "FILTERED_BY",
+    attributes: { registrationKind: "SECURITY", filterOrder: "4" },
+    confidence: "CONFIRMED",
+    evidenceIds: ["evidence-other-chain-bearer-edge"]
+  });
+  const selection = { kind: "node", id: "security-filter-1" };
+  const renderEducation = (endpointChainId = "chain-a") => ui.inspector.render({
+    graph: snapshot,
+    visibleGraph: snapshot,
+    snapshot,
+    selection,
+    detailedFlow: true,
+    endpointChainId
+  });
+  const statusFor = (fqcn) => findAllByClass(elements.get("inspector"), "inspector-filter-reference")
+    .find((button) => button.attributes["data-filter-fqcn"] === fqcn)
+    .attributes["data-filter-status"];
+  const referenceFor = (fqcn) => findAllByClass(elements.get("inspector"), "inspector-filter-reference")
+    .find((button) => button.attributes["data-filter-fqcn"] === fqcn);
+
+  renderEducation(null);
+  assert.equal(statusFor("org.springframework.security.web.csrf.CsrfFilter"), "REGISTERED");
+  assert.match(textOf(referenceFor("org.springframework.security.web.csrf.CsrfFilter")), /등록됨/);
+  renderEducation("chain-a");
+  assert.equal(statusFor("org.springframework.security.web.csrf.CsrfFilter"), "CURRENT_PATH_APPLIED");
+  assert.match(textOf(referenceFor("org.springframework.security.web.csrf.CsrfFilter")), /현재 경로 적용/);
+  assert.equal((textOf(referenceFor("org.springframework.security.web.csrf.CsrfFilter")).match(/현재 경로 적용/g) || []).length, 1);
+  assert.equal(statusFor("org.springframework.security.oauth2.server.resource.web.authentication.BearerTokenAuthenticationFilter"),
+    "CURRENT_PATH_NOT_APPLIED");
+  assert.match(textOf(referenceFor("org.springframework.security.oauth2.server.resource.web.authentication.BearerTokenAuthenticationFilter")),
+    /현재 경로 미적용/);
+  assert.equal(statusFor("org.springframework.security.web.session.SessionManagementFilter"), "REGISTERED_UNCERTAIN");
+  assert.match(textOf(referenceFor("org.springframework.security.web.session.SessionManagementFilter")), /적용 경로 확인 불가/);
+  assert.equal(statusFor("org.springframework.security.web.authentication.logout.LogoutFilter"), "UNREGISTERED_REFERENCE");
+  assert.match(textOf(referenceFor("org.springframework.security.web.authentication.logout.LogoutFilter")), /참고: 미등록/);
+
+  snapshot.analysisStatus["security-filter-registration-analysis"] = "PARTIAL";
+  renderEducation("chain-a");
+  assert.equal(statusFor("org.springframework.security.web.header.HeaderWriterFilter"), "UNKNOWN");
+  assert.match(textOf(referenceFor("org.springframework.security.web.header.HeaderWriterFilter")), /등록 여부 확인 불가/);
+});
+
 test("표준 Filter 판정이 실제 Graph·ELK·MiniMap 배열에 편입되지 않음", async () => {
   const { ui, elements, layoutCalls, window } = loadUi();
   const snapshot = standardFilterGraphFixture();

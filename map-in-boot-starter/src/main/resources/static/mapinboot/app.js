@@ -907,6 +907,15 @@
     return match.status === "CONFIRMED" ? match.chain.id : null;
   }
 
+  // 교육 상태 판정에 사용할 현재 상세 Endpoint의 확인된 첫 매칭 Chain
+  function filterEducationChainId() {
+    const endpointId = isFindingDetailView() ? state.detailApiId
+      : isDetailView() ? state.selectedEndpointId : null;
+    if (!endpointId || !state.flowIndex || !state.flowIndex.firstMatchedChain) return null;
+    const match = state.flowIndex.firstMatchedChain(endpointId);
+    return match && match.status === "CONFIRMED" && match.chain ? match.chain.id : null;
+  }
+
   function selectView(view, preserveFeatureSelection = false) {
     if (!viewNames[view]) return;
     const viewChanged = state.view !== view;
@@ -1598,7 +1607,9 @@
           onShowFinding: () => selectFinding(state.selectedFindingId),
           onOpenFindingEndpoint: (endpointId) => openEndpointDetail(endpointId, state.selectedFindingId),
           controllerGroups: displayGroups(),
-          displayModel: !isDetailView() && state.layout && state.layout.plan && state.layout.plan.displayModel
+          displayModel: !isDetailView() && state.layout && state.layout.plan && state.layout.plan.displayModel,
+          detailedFlow: state.display.detailedFlow,
+          endpointChainId: filterEducationChainId()
         });
       }
     }
@@ -2114,6 +2125,8 @@
   if (showDetailFlowSetting) showDetailFlowSetting.addEventListener("change", () => {
     state.display.detailedFlow = showDetailFlowSetting.checked;
     applyDisplaySettings();
+    // 열린 Inspector에 상세 처리 보기 상태를 즉시 반영
+    if (state.selection) renderGraphView(state.layout ? "elk" : "initial", true);
   });
   if (endpointSearch) endpointSearch.addEventListener("input", () => {
     if (!isDetailView()) {

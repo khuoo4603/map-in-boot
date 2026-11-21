@@ -6,7 +6,12 @@
     { id: "connections", label: "연결 노드" },
     { id: "relations", label: "연결 관계" }
   ];
+  const filterEducationTab = { id: "filter-education", label: "필터 교육" };
   const graphDisplay = window.MapInBootGraph || {};
+  const standardFilterClient = window.MapInBootStandardFilters || null;
+  const standardFilters = standardFilterClient && standardFilterClient.list
+    ? standardFilterClient.list()
+    : [];
   const nodeTypeNames = graphDisplay.nodeTypeNames || {
     APPLICATION: "애플리케이션",
     SERVLET: "서블릿",
@@ -363,7 +368,23 @@
     const onOpenFindingEndpoint = options.onOpenFindingEndpoint || (() => {});
     const onCopy = options.onCopy || (() => {});
     let activeTab = "properties";
-    let current = { graph: null, visibleGraph: null, snapshot: null, selection: null, controllerGroups: [], displayIds: null };
+    let selectedFilterFqcn = null;
+    let current = {
+      graph: null,
+      visibleGraph: null,
+      snapshot: null,
+      selection: null,
+      controllerGroups: [],
+      displayIds: null,
+      detailedFlow: false,
+      endpointChainId: null
+    };
+
+    function availableTabs() {
+      return current.detailedFlow && standardFilters.length > 0
+        ? [...tabs, filterEducationTab]
+        : tabs;
+    }
 
     function setHidden(element, hidden) {
       if (!element) return;
@@ -372,7 +393,17 @@
     }
 
     function close() {
-      current = { graph: null, visibleGraph: null, snapshot: null, selection: null, controllerGroups: [], displayIds: null, displayModel: null };
+      current = {
+        graph: null,
+        visibleGraph: null,
+        snapshot: null,
+        selection: null,
+        controllerGroups: [],
+        displayIds: null,
+        displayModel: null,
+        detailedFlow: false,
+        endpointChainId: null
+      };
       setHidden(inspector, true);
       if (inspector) {
         inspector.replaceChildren();
@@ -622,6 +653,84 @@
       }
     }
 
+    function filterStatusSource(statusEntry) {
+      if (!statusEntry || statusEntry.status === "UNKNOWN") {
+        return "Snapshot의 등록 분석 상태 · 등록 여부 확인 불가";
+      }
+      if (statusEntry.status === "UNREGISTERED_REFERENCE") {
+        return "Snapshot의 전체 필터 등록 분석 상태";
+      }
+      if ((statusEntry.registrations || []).length > 0) {
+        return "Snapshot의 FILTER Node 및 FILTERED_BY 관계";
+      }
+      return "Snapshot의 필터 등록 분석 상태";
+    }
+
+    function renderFilterEducation(parent, graph, item, selection, snapshot) {
+      if (!standardFilterClient || standardFilters.length === 0) return;
+      const statusEntries = standardFilterClient.classify(
+        snapshot || graph,
+        snapshot && snapshot.analysisStatus || {},
+        current.endpointChainId
+      );
+      const statusByFqcn = new Map(statusEntries.map((entry) => [entry.fqcn, entry]));
+      const selectedNodeFqcn = selection && selection.kind === "node" && item && item.type === "FILTER"
+        ? item.attributes && item.attributes.filterClass
+        : null;
+      const selectedReference = standardFilters.find((reference) => reference.fqcn === selectedFilterFqcn)
+        || standardFilters.find((reference) => reference.fqcn === selectedNodeFqcn)
+        || standardFilters[0];
+      selectedFilterFqcn = selectedReference.fqcn;
+
+      appendHeading(parent, "Spring Security 표준 필터");
+      appendElement(parent, "p", "inspector-filter-education-notice",
+        "처리 설명과 목록 순서는 교육용이며, 특정 요청의 실행 기록이나 실제 filterOrder를 뜻하지 않습니다.");
+      const list = appendElement(parent, "div", "inspector-filter-reference-list");
+      list.setAttribute("role", "list");
+      standardFilters.forEach((reference) => {
+        const statusEntry = statusByFqcn.get(reference.fqcn) || {
+          status: "UNKNOWN",
+          statusLabel: standardFilterClient.statusLabel("UNKNOWN"),
+          registrations: []
+        };
+        const entry = appendElement(list, "div", "inspector-filter-reference-item");
+        entry.setAttribute("role", "listitem");
+        const button = appendElement(entry, "button", "inspector-filter-reference");
+        button.setAttribute("type", "button");
+        button.setAttribute("data-filter-fqcn", reference.fqcn);
+        button.setAttribute("data-filter-status", statusEntry.status);
+        button.setAttribute("aria-pressed", String(reference.fqcn === selectedReference.fqcn));
+        appendElement(button, "span", "inspector-filter-reference-name", reference.name);
+        appendElement(button, "span", "inspector-filter-reference-status", statusEntry.statusLabel);
+        button.addEventListener("click", () => {
+          selectedFilterFqcn = reference.fqcn;
+          render(current);
+        });
+      });
+
+      const statusEntry = statusByFqcn.get(selectedReference.fqcn) || {
+        status: "UNKNOWN",
+        statusLabel: standardFilterClient.statusLabel("UNKNOWN"),
+        registrations: []
+      };
+      const selectedActualNode = selectedNodeFqcn === selectedReference.fqcn;
+      const card = appendElement(parent, "section", "inspector-filter-education-card");
+      appendElement(card, "p", "inspector-filter-education-kind", selectedActualNode
+        ? "선택한 실제 Filter Node의 교육 설명"
+        : "실제 Graph 노드가 아닌 교육용 참고");
+      appendElement(card, "h3", "inspector-filter-education-title", selectedReference.name);
+      appendElement(card, "p", "inspector-filter-education-fqcn", selectedReference.fqcn);
+      appendElement(card, "p", "inspector-filter-education-description", selectedReference.description);
+      appendRow(card, "역할", selectedReference.role);
+      appendRow(card, "입력", selectedReference.input);
+      appendRow(card, "확인 조건", selectedReference.condition);
+      appendRow(card, "대표 처리", selectedReference.processing);
+      appendRow(card, "가능한 결과", selectedReference.outcomes);
+      appendRow(card, "주의사항", selectedReference.cautions);
+      appendRow(card, "분석 상태 출처", filterStatusSource(statusEntry));
+      appendRow(card, "교육 출처", selectedReference.source);
+    }
+
     function renderConnections(parent, graph, item, selection) {
       appendHeading(parent, "연결 노드");
       if (selection.kind === "controller-group") {
@@ -830,13 +939,40 @@
       return finding;
     }
 
-    function render({ graph, visibleGraph, snapshot, selection, view = null, findingId = null, onShowFinding = null, controllerGroups = [], displayModel = null, displayIds = null }) {
-      current = { graph, visibleGraph, snapshot, selection, view, findingId, onShowFinding, controllerGroups, displayModel, displayIds: displayIdsFor(graph, displayIds) };
+    function render({ graph, visibleGraph, snapshot, selection, view = null, findingId = null, onShowFinding = null, controllerGroups = [], displayModel = null, displayIds = null, detailedFlow = false, endpointChainId = null }) {
+      const previousDetailedFlow = current.detailedFlow;
+      const previousSelection = current.selection;
+      const selectionChanged = !previousSelection || !selection
+        || previousSelection.kind !== selection.kind || previousSelection.id !== selection.id;
+      const item = selectedItem(graph, selection, controllerGroups);
+      const selectedFilter = selection && selection.kind === "node" && item && item.type === "FILTER"
+        ? standardFilters.find((reference) => reference.fqcn === (item.attributes || {}).filterClass)
+        : null;
+      current = {
+        graph,
+        visibleGraph,
+        snapshot,
+        selection,
+        view,
+        findingId,
+        onShowFinding,
+        controllerGroups,
+        displayModel,
+        displayIds: displayIdsFor(graph, displayIds),
+        detailedFlow: Boolean(detailedFlow),
+        endpointChainId
+      };
+      if (!current.detailedFlow && activeTab === filterEducationTab.id) activeTab = "properties";
+      // 상세 모드 진입과 표준 Filter 선택 시 교육 설명으로 전환하면서 일반 선택은 현재 탭 유지
+      if (current.detailedFlow && selectedFilter && (selectionChanged || !previousDetailedFlow)) {
+        selectedFilterFqcn = selectedFilter.fqcn;
+        activeTab = filterEducationTab.id;
+      }
+      if (!availableTabs().some((tab) => tab.id === activeTab)) activeTab = "properties";
       if (!selection) {
         close();
         return null;
       }
-      const item = selectedItem(graph, selection, controllerGroups);
       if (!item) {
         close();
         return null;
@@ -875,7 +1011,7 @@
       }
 
       const tabBar = appendElement(inspector, "div", "inspector-tabs");
-      tabs.forEach((tab) => {
+      availableTabs().forEach((tab) => {
         const button = appendElement(tabBar, "button", "inspector-tab", tab.label);
         button.setAttribute("type", "button");
         button.setAttribute("data-tab", tab.id);
@@ -883,14 +1019,15 @@
         button.addEventListener("click", () => setTab(tab.id));
       });
       const body = appendElement(inspector, "div", "inspector-body");
-      if (activeTab === "connections") renderConnections(body, graph, item, selection);
+      if (activeTab === filterEducationTab.id) renderFilterEducation(body, graph, item, selection, snapshot);
+      else if (activeTab === "connections") renderConnections(body, graph, item, selection);
       else if (activeTab === "relations") renderRelations(body, graph, item, selection, snapshot);
       else renderProperties(body, graph, item, selection, snapshot);
       return item;
     }
 
     function setTab(tab) {
-      if (!tabs.some((candidate) => candidate.id === tab)) return;
+      if (!availableTabs().some((candidate) => candidate.id === tab)) return;
       activeTab = tab;
       if (current.selection) render(current);
     }
