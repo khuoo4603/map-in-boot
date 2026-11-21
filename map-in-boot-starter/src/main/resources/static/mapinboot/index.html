@@ -61,11 +61,23 @@
           <li>선택 해제는 빈 영역 클릭, 닫기 버튼 또는 Escape입니다.</li>
         </ul>
       </section>
-      <section class="header-panel settings-panel" id="settings-panel" role="dialog" aria-labelledby="settings-panel-title" hidden>
-        <h2 id="settings-panel-title">설정</h2>
-        <label><input id="setting-show-areas" type="checkbox" checked> 기술 영역 표시</label>
-        <label><input id="setting-show-edge-labels" type="checkbox" checked> 관계명 표시</label>
-        <label><input id="setting-show-minimap" type="checkbox" checked> 미니맵 표시</label>
+      <section class="header-panel settings-panel" id="settings-panel" role="dialog" aria-labelledby="settings-panel-title" aria-hidden="true" data-open="false" tabindex="-1" inert hidden>
+        <div class="settings-panel-header">
+          <h2 id="settings-panel-title">화면 설정</h2>
+          <button class="settings-close" id="settings-close" type="button" aria-label="설정 닫기">닫기</button>
+        </div>
+        <fieldset class="settings-group">
+          <legend>그래프 표시</legend>
+          <label class="settings-option"><span>기술 영역 표시</span><span class="settings-switch"><input id="setting-show-areas" type="checkbox" role="switch" aria-checked="true" checked><span class="settings-switch-track" aria-hidden="true"></span></span></label>
+          <label class="settings-option"><span>관계명 표시</span><span class="settings-switch"><input id="setting-show-edge-labels" type="checkbox" role="switch" aria-checked="true" checked><span class="settings-switch-track" aria-hidden="true"></span></span></label>
+          <label class="settings-option"><span>미니맵 표시</span><span class="settings-switch"><input id="setting-show-minimap" type="checkbox" role="switch" aria-checked="true" checked><span class="settings-switch-track" aria-hidden="true"></span></span></label>
+        </fieldset>
+        <fieldset class="settings-group">
+          <legend>교육 기능</legend>
+          <label class="settings-option"><span>상세 처리 과정 보기</span><span class="settings-switch"><input id="setting-show-detail-flow" type="checkbox" role="switch" aria-checked="false"><span class="settings-switch-track" aria-hidden="true"></span></span></label>
+          <p class="settings-description">기능별 상세 화면에서 필터 처리 원리를 단계별로 설명합니다.</p>
+        </fieldset>
+        <p class="settings-notice">설정은 현재 화면에만 적용되며 실제 분석 결과를 변경하지 않습니다.</p>
       </section>
     </div>
 

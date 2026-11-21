@@ -100,9 +100,45 @@ button:focus-visible { outline: 2px solid var(--accent-strong); outline-offset: 
 .header-panel h2 { margin: 0 0 8px; color: var(--text); font-size: 16px; }
 .header-panel ul { margin: 0; padding-left: 18px; }
 .header-panel li + li { margin-top: 5px; }
-.settings-panel { display: grid; gap: 9px; }
-.settings-panel label { display: flex; align-items: center; gap: 8px; color: var(--text); }
-.settings-panel input { accent-color: var(--accent); }
+.settings-panel {
+  position: fixed;
+  top: var(--header-height);
+  right: 0;
+  bottom: 0;
+  z-index: 8;
+  display: grid;
+  align-content: start;
+  gap: 24px;
+  width: min(380px, 100vw);
+  max-width: 420px;
+  max-height: calc(100vh - var(--header-height));
+  overflow-y: auto;
+  padding: 20px clamp(18px, 2vw, 26px);
+  border-radius: 0;
+  background: #141b17;
+  pointer-events: none;
+  transform: translateX(100%);
+  transition: transform 180ms ease;
+}
+.settings-panel[data-open="true"] { pointer-events: auto; transform: translateX(0); }
+@starting-style { .settings-panel[data-open="true"] { transform: translateX(100%); } }
+.settings-panel-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.settings-panel-header h2 { margin: 0; font-size: 18px; }
+.settings-close { min-width: 44px; min-height: 44px; padding: 0 10px; border: 1px solid var(--line); border-radius: 4px; color: var(--text); background: transparent; cursor: pointer; }
+.settings-close:hover { border-color: var(--accent); color: var(--accent-strong); }
+.settings-close:focus-visible { outline: 2px solid var(--accent-strong); outline-offset: 2px; }
+.settings-group { display: grid; gap: 4px; min-width: 0; margin: 0; padding: 0; border: 0; }
+.settings-group legend { width: 100%; margin-bottom: 8px; padding-bottom: 8px; border-bottom: 1px solid var(--line); color: var(--muted); font-size: 13px; }
+.settings-option { display: flex; align-items: center; justify-content: space-between; gap: 16px; min-height: 44px; color: var(--text); cursor: pointer; }
+.settings-switch { position: relative; display: inline-flex; width: 38px; height: 22px; flex: 0 0 38px; }
+.settings-switch input { position: absolute; inset: 0; z-index: 1; width: 100%; height: 100%; margin: 0; opacity: 0; cursor: pointer; }
+.settings-switch-track { position: absolute; inset: 0; border: 1px solid #59655d; border-radius: 11px; background: #303b33; transition: background-color 160ms ease, border-color 160ms ease; }
+.settings-switch-track::after { position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: #d0d8d2; content: ""; transition: transform 160ms ease, background-color 160ms ease; }
+.settings-switch input:checked + .settings-switch-track { border-color: var(--accent); background: #1f5b38; }
+.settings-switch input:checked + .settings-switch-track::after { background: #eafff1; transform: translateX(16px); }
+.settings-switch input:focus-visible + .settings-switch-track { outline: 2px solid var(--accent-strong); outline-offset: 3px; }
+.settings-description, .settings-notice { margin: 4px 0 0; color: var(--muted); font-size: 13px; line-height: 1.5; }
+.settings-notice { margin: 0; padding-top: 16px; border-top: 1px solid var(--line); }
 
 /* Header 하단 1px 경계선 보정 */
 .app-body { display: flex; height: calc(100vh - var(--header-height) - 1px); min-height: 0; }
@@ -250,7 +286,7 @@ button:focus-visible { outline: 2px solid var(--accent-strong); outline-offset: 
 .inspector-original-signatures { margin-top: 12px; padding: 10px 0; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
 .inspector-original-signatures-title { color: var(--muted); cursor: pointer; font-size: 13px; }
 .inspector-original-signature { margin: 8px 0 0; color: var(--muted); font: 12px/1.5 ui-monospace, SFMono-Regular, Consolas, monospace; overflow-wrap: anywhere; }
-@media (prefers-reduced-motion: reduce) { .request-flow-dot { transition: none; } }
+@media (prefers-reduced-motion: reduce) { .request-flow-dot, .settings-panel, .settings-switch-track, .settings-switch-track::after { transition: none; } }
 .inspector-link { display: block; width: 100%; margin: 5px 0; padding: 8px 9px; border: 1px solid var(--line); border-radius: 3px; color: var(--text); background: transparent; cursor: pointer; text-align: left; font-size: 13px; overflow-wrap: anywhere; }
 .inspector-link:hover { border-color: var(--accent); color: var(--accent-strong); }
 @media (max-width: 1279px) {

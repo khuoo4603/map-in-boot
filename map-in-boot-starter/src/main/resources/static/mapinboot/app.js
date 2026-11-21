@@ -53,9 +53,11 @@
   const settingsButton = document.querySelector("#settings-button");
   const helpPanel = document.querySelector("#help-panel");
   const settingsPanel = document.querySelector("#settings-panel");
+  const settingsCloseButton = document.querySelector("#settings-close");
   const showAreasSetting = document.querySelector("#setting-show-areas");
   const showEdgeLabelsSetting = document.querySelector("#setting-show-edge-labels");
   const showMinimapSetting = document.querySelector("#setting-show-minimap");
+  const showDetailFlowSetting = document.querySelector("#setting-show-detail-flow");
   const flowClient = window.MapInBootFlow;
   const requestFlowClient = window.MapInBootRequestFlow;
   const graphRenderer = window.MapInBootGraph;
@@ -87,6 +89,7 @@
   const requestFlowEducation = document.querySelector("#request-flow-education");
   const requestFlowDot = document.querySelector("#request-flow-dot");
   let noticeTimer = null;
+  let settingsPanelTimer = null;
   const state = {
     view: "all-flow",
     status: null,
@@ -115,7 +118,7 @@
     allEndpointQuery: "",
     featureEndpointQuery: "",
     featureEndpointOptionIndex: -1,
-    display: { areas: true, edgeLabels: true, minimap: true },
+    display: { areas: true, edgeLabels: true, minimap: true, detailedFlow: false },
     loading: false,
     selection: null,
     inspectorDismissed: false,
@@ -973,10 +976,16 @@
 
   function applyDisplaySettings() {
     if (graphAreas) setHidden(graphAreas, !state.display.areas);
-    if (graphFlowProjection) setHidden(graphFlowProjection, !state.display.areas);
     if (graphGuides) setHidden(graphGuides, !state.display.areas);
     if (graphCanvas) graphCanvas.dataset.showEdgeLabels = String(state.display.edgeLabels);
     if (navigation && navigation.setMiniMapVisible) navigation.setMiniMapVisible(state.display.minimap);
+    [[showAreasSetting, state.display.areas], [showEdgeLabelsSetting, state.display.edgeLabels],
+      [showMinimapSetting, state.display.minimap], [showDetailFlowSetting, state.display.detailedFlow]]
+      .forEach(([setting, checked]) => {
+        if (!setting) return;
+        setting.checked = checked;
+        setting.setAttribute("aria-checked", String(checked));
+      });
   }
 
   function setPanel(panel, button, open) {
@@ -985,15 +994,71 @@
     button.setAttribute("aria-expanded", String(open));
   }
 
+  function isSettingsPanelOpen() {
+    return Boolean(settingsPanel && settingsPanel.dataset.open === "true");
+  }
+
+  function finishSettingsPanelClose() {
+    if (isSettingsPanelOpen() || !settingsPanel) return;
+    if (settingsPanelTimer !== null) {
+      clearTimeout(settingsPanelTimer);
+      settingsPanelTimer = null;
+    }
+    settingsPanel.hidden = true;
+  }
+
+  function setSettingsPanel(open, restoreFocus = true) {
+    if (!settingsPanel || !settingsButton) return;
+    const wasOpen = isSettingsPanelOpen();
+    if (settingsPanelTimer !== null) {
+      clearTimeout(settingsPanelTimer);
+      settingsPanelTimer = null;
+    }
+    settingsButton.setAttribute("aria-expanded", String(open));
+    if (open) {
+      settingsPanel.hidden = false;
+      settingsPanel.inert = false;
+      settingsPanel.dataset.open = "true";
+      settingsPanel.setAttribute("aria-hidden", "false");
+      if (settingsCloseButton && settingsCloseButton.focus) settingsCloseButton.focus();
+      return;
+    }
+
+    settingsPanel.dataset.open = "false";
+    settingsPanel.inert = true;
+    settingsPanel.setAttribute("aria-hidden", "true");
+    const reducedMotion = window.matchMedia
+      && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    if (wasOpen && !reducedMotion) settingsPanelTimer = setTimeout(finishSettingsPanelClose, 180);
+    else settingsPanel.hidden = true;
+    if (wasOpen && restoreFocus && settingsButton.focus) settingsButton.focus();
+  }
+
   function closeHeaderPanels() {
     setPanel(helpPanel, helpButton, false);
-    setPanel(settingsPanel, settingsButton, false);
+    setSettingsPanel(false, false);
   }
 
   function toggleHeaderPanel(panel, button, otherPanel, otherButton) {
-    const open = Boolean(panel && panel.hidden);
-    setPanel(otherPanel, otherButton, false);
-    setPanel(panel, button, open);
+    const open = panel === settingsPanel ? !isSettingsPanelOpen() : Boolean(panel && panel.hidden);
+    if (otherPanel === settingsPanel) setSettingsPanel(false, false);
+    else setPanel(otherPanel, otherButton, false);
+    if (panel === settingsPanel) setSettingsPanel(open);
+    else setPanel(panel, button, open);
+  }
+
+  function settingsFocusableElements() {
+    return [settingsCloseButton, showAreasSetting, showEdgeLabelsSetting, showMinimapSetting, showDetailFlowSetting]
+      .filter((element) => element && !element.disabled);
+  }
+
+  function isWithinElement(element, container) {
+    let current = element;
+    while (current) {
+      if (current === container) return true;
+      current = current.parentNode;
+    }
+    return false;
   }
 
   function capturedTime(value) {
@@ -1973,6 +2038,7 @@
     findingModal.addEventListener("keydown", (event) => {
       if (event.key === "Escape") {
         event.preventDefault();
+        event.stopPropagation();
         closeFindingModal();
         return;
       }
@@ -2000,6 +2066,35 @@
   settingsButton.addEventListener("click", () => {
     toggleHeaderPanel(settingsPanel, settingsButton, helpPanel, helpButton);
   });
+  if (settingsCloseButton) settingsCloseButton.addEventListener("click", () => setSettingsPanel(false));
+  if (settingsPanel) settingsPanel.addEventListener("transitionend", (event) => {
+    if (event.propertyName === "transform") finishSettingsPanelClose();
+  });
+  // Drawer 내부의 Escape와 Tab 순환을 다른 Graph 단축키와 분리
+  if (settingsPanel) settingsPanel.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      event.stopPropagation();
+      setSettingsPanel(false);
+      return;
+    }
+    if (event.key !== "Tab") return;
+    const focusable = settingsFocusableElements();
+    if (focusable.length === 0) {
+      event.preventDefault();
+      if (settingsPanel.focus) settingsPanel.focus();
+      return;
+    }
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    if (event.shiftKey && event.target === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && event.target === last) {
+      event.preventDefault();
+      first.focus();
+    }
+  });
   refreshButton.addEventListener("click", loadStatus);
   if (filterToggle && filterPanel) filterToggle.addEventListener("click", () => {
     setFilterPanel(filterPanel.hidden);
@@ -2014,6 +2109,10 @@
   });
   if (showMinimapSetting) showMinimapSetting.addEventListener("change", () => {
     state.display.minimap = showMinimapSetting.checked;
+    applyDisplaySettings();
+  });
+  if (showDetailFlowSetting) showDetailFlowSetting.addEventListener("change", () => {
+    state.display.detailedFlow = showDetailFlowSetting.checked;
     applyDisplaySettings();
   });
   if (endpointSearch) endpointSearch.addEventListener("input", () => {
@@ -2116,6 +2215,12 @@
     if (isDetailView()) requestFlowController.pause();
   });
   if (document.addEventListener) document.addEventListener("click", (event) => {
+    if (isSettingsPanelOpen()) {
+      const target = event && event.target;
+      if (!isWithinElement(target, settingsButton) && !isWithinElement(target, settingsPanel)) {
+        setSettingsPanel(false);
+      }
+    }
     if (!filterPanel || filterPanel.hidden) return;
     const target = event && event.target;
     if (target && target.closest
@@ -2131,6 +2236,11 @@
   });
   if (document.addEventListener) document.addEventListener("keydown", (event) => {
     if (event.key === "Escape") {
+      if (isSettingsPanelOpen()) {
+        event.preventDefault();
+        setSettingsPanel(false);
+        return;
+      }
       closeHeaderPanels();
       hideGraphHover();
       clearSelection();

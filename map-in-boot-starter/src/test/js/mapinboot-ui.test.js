@@ -116,7 +116,7 @@ function createElement(tagName = "div") {
 function loadUi({ fetchImpl, timers, animationClock, clipboard } = {}) {
   const ids = [
     "view-title", "view-state", "shell-notice", "help-button", "settings-button", "refresh-button",
-    "help-panel", "settings-panel", "setting-show-areas", "setting-show-edge-labels", "setting-show-minimap",
+    "help-panel", "settings-panel", "settings-close", "setting-show-areas", "setting-show-edge-labels", "setting-show-minimap", "setting-show-detail-flow",
     "graph-canvas",
     "graph-empty", "graph-state-message", "graph-svg", "graph-viewport", "graph-areas", "graph-flow-projection", "graph-guides",
     "graph-edges", "graph-nodes", "graph-finding-section-titles", "service-name", "snapshot-time", "endpoint-search", "endpoint-filter-label", "endpoint-filter-label-text",
@@ -137,6 +137,17 @@ function loadUi({ fetchImpl, timers, animationClock, clipboard } = {}) {
   }
   elements.get("help-panel").hidden = true;
   elements.get("settings-panel").hidden = true;
+  elements.get("settings-button").append(createElement("span"));
+  elements.get("setting-show-areas").checked = true;
+  elements.get("setting-show-edge-labels").checked = true;
+  elements.get("setting-show-minimap").checked = true;
+  elements.get("settings-panel").append(
+    elements.get("settings-close"),
+    elements.get("setting-show-areas"),
+    elements.get("setting-show-edge-labels"),
+    elements.get("setting-show-minimap"),
+    elements.get("setting-show-detail-flow")
+  );
   elements.get("map-filter-panel").hidden = true;
   elements.get("endpoint-options").hidden = true;
   elements.get("request-flow-controls").hidden = true;
@@ -182,6 +193,9 @@ function loadUi({ fetchImpl, timers, animationClock, clipboard } = {}) {
       return createElement(tagName);
     },
   });
+  elements.get("settings-panel").parentNode = document;
+  elements.get("settings-button").parentNode = document;
+  elements.get("finding-modal").parentNode = document;
   let activeFetch = fetchImpl || (() => new Promise(() => {}));
   const window = Object.assign(createEventTarget(), {});
   window.navigator = { clipboard: clipboard || { writeText: async () => {} } };
@@ -1224,6 +1238,77 @@ test("도움말·설정 패널과 실제 Graph 표시 설정이 동작하고 새
   elements.get("setting-show-minimap").checked = false;
   elements.get("setting-show-minimap").dispatchEvent({ type: "change" });
   assert.equal(ui.navigation.state.minimapVisible, false);
+});
+
+test("설정 Drawer는 표시 옵션을 독립 적용하고 Escape에서 Graph 선택을 보존함", async () => {
+  const { ui, elements, document } = loadUi();
+  ui.renderGraph(graphFixture());
+  ui.selectView("security-flow");
+  await ui.layoutGraph();
+  ui.selectGraphElement("node", "node-2");
+
+  assert.equal(ui.state.display.areas, true);
+  assert.equal(ui.state.display.edgeLabels, true);
+  assert.equal(ui.state.display.minimap, true);
+  assert.equal(ui.state.display.detailedFlow, false);
+  elements.get("settings-button").children[0].dispatchEvent({ type: "click" });
+  assert.equal(elements.get("settings-panel").hidden, false);
+  assert.equal(elements.get("settings-panel").dataset.open, "true");
+  assert.equal(elements.get("settings-close").focused, true);
+  assert.equal(elements.get("setting-show-detail-flow").checked, false);
+
+  elements.get("setting-show-detail-flow").checked = true;
+  elements.get("setting-show-detail-flow").dispatchEvent({ type: "change" });
+  assert.equal(ui.state.display.detailedFlow, true);
+  assert.equal(elements.get("setting-show-detail-flow").getAttribute("aria-checked"), "true");
+  document.dispatchEvent({ type: "click", target: elements.get("setting-show-detail-flow") });
+  assert.equal(elements.get("settings-panel").hidden, false);
+
+  elements.get("settings-panel").dispatchEvent({
+    type: "keydown", key: "Tab", shiftKey: true, target: elements.get("settings-close")
+  });
+  assert.equal(elements.get("setting-show-detail-flow").focused, true);
+  elements.get("settings-panel").dispatchEvent({
+    type: "keydown", key: "Tab", target: elements.get("setting-show-detail-flow")
+  });
+  assert.equal(elements.get("settings-close").focused, true);
+
+  elements.get("setting-show-areas").checked = false;
+  elements.get("setting-show-areas").dispatchEvent({ type: "change" });
+  assert.equal(elements.get("graph-areas").hasAttribute("hidden"), true);
+  assert.equal(elements.get("graph-flow-projection").hasAttribute("hidden"), false);
+
+  const selected = { ...ui.state.selection };
+  elements.get("setting-show-detail-flow").dispatchEvent({ type: "keydown", key: "Escape" });
+  assert.equal(elements.get("settings-panel").hidden, false);
+  assert.equal(elements.get("settings-panel").getAttribute("aria-hidden"), "true");
+  assert.equal(elements.get("settings-button").getAttribute("aria-expanded"), "false");
+  assert.equal(elements.get("settings-button").focused, true);
+  assert.equal(ui.state.selection.kind, selected.kind);
+  assert.equal(ui.state.selection.id, selected.id);
+  assert.equal(elements.get("inspector").hidden, false);
+  elements.get("settings-panel").dispatchEvent({ type: "transitionend", propertyName: "transform" });
+  assert.equal(elements.get("settings-panel").hidden, true);
+
+  elements.get("settings-button").dispatchEvent({ type: "click" });
+  elements.get("settings-close").dispatchEvent({ type: "click" });
+  assert.equal(elements.get("settings-panel").hidden, false);
+  assert.equal(elements.get("settings-button").focused, true);
+  elements.get("settings-panel").dispatchEvent({ type: "transitionend", propertyName: "transform" });
+  assert.equal(elements.get("settings-panel").hidden, true);
+
+  elements.get("settings-button").dispatchEvent({ type: "click" });
+  document.dispatchEvent({ type: "click", target: elements.get("graph-canvas") });
+  elements.get("settings-panel").dispatchEvent({ type: "transitionend", propertyName: "transform" });
+  assert.equal(elements.get("settings-panel").hidden, true);
+  elements.get("settings-button").children[0].dispatchEvent({ type: "click" });
+  elements.get("settings-button").children[0].dispatchEvent({ type: "click" });
+  assert.equal(elements.get("settings-panel").dataset.open, "false");
+  elements.get("settings-panel").dispatchEvent({ type: "transitionend", propertyName: "transform" });
+  assert.equal(elements.get("settings-panel").hidden, true);
+  ui.selectView("all-flow");
+  ui.selectView("feature-flow");
+  assert.equal(ui.state.display.detailedFlow, true);
 });
 
 test("실행 단계와 HTTP 상태를 사용자 문구로 구분함", () => {
@@ -4911,9 +4996,13 @@ test("Finding 섹션 배경과 제목은 Modal을 열고 Node·Edge Inspector와
   assert.equal(navigation.panY, before.panY);
   assert.equal(layoutCalls.length, before.layoutCount);
 
+  elements.get("settings-button").dispatchEvent({ type: "click" });
   elements.get("finding-modal").dispatchEvent({ type: "keydown", key: "Escape" });
   assert.equal(section.focused, true);
   assert.equal(elements.get("finding-modal").hidden, true);
+  assert.equal(elements.get("settings-panel").dataset.open, "true");
+  elements.get("settings-button").dispatchEvent({ type: "click" });
+  elements.get("settings-panel").dispatchEvent({ type: "transitionend", propertyName: "transform" });
   titleHit.dispatchEvent({ type: "click" });
   assert.equal(elements.get("finding-modal").hidden, false);
   elements.get("finding-modal").dispatchEvent({ type: "keydown", key: "Escape" });
