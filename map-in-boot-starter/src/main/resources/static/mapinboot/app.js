@@ -10,6 +10,7 @@
   const title = document.querySelector("#view-title");
   const viewState = document.querySelector("#view-state");
   const graphCanvas = document.querySelector("#graph-canvas");
+  const mapToolbar = document.querySelector(".map-toolbar");
   const graphEmpty = document.querySelector("#graph-empty");
   const graphStateMessage = document.querySelector("#graph-state-message");
   const graphSvg = document.querySelector("#graph-svg");
@@ -26,6 +27,7 @@
   const findingModalTitle = document.querySelector("#finding-modal-title");
   const findingModalClose = document.querySelector("#finding-modal-close");
   const graphPopover = document.querySelector("#graph-popover");
+  const graphMinimap = document.querySelector("#graph-minimap");
   const endpointSearch = document.querySelector("#endpoint-search");
   const endpointFilter = document.querySelector("#endpoint-filter-label");
   const endpointFilterLabel = document.querySelector("#endpoint-filter-label-text");
@@ -2142,13 +2144,393 @@
       }
     });
   }
+  function findUiElement(roots, predicate) {
+    const candidates = Array.isArray(roots) ? roots : [roots];
+    for (const root of candidates) {
+      if (!root) continue;
+      const visit = (element) => {
+        if (predicate(element)) return element;
+        for (const child of Array.from(element.children || [])) {
+          const match = visit(child);
+          if (match) return match;
+        }
+        return null;
+      };
+      const match = visit(root);
+      if (match) return match;
+    }
+    return null;
+  }
+
+  function findUiElements(root, predicate) {
+    const found = [];
+    if (!root) return found;
+    const visit = (element) => {
+      if (predicate(element)) found.push(element);
+      Array.from(element.children || []).forEach(visit);
+    };
+    visit(root);
+    return found;
+  }
+
+  function hasUiClass(element, className) {
+    return Boolean(element && element.getAttribute && (element.getAttribute("class") || "")
+      .split(/\s+/).includes(className));
+  }
+
+  function graphNodeTarget(id) {
+    return findUiElement(graphNodes, (element) => hasUiClass(element, "graph-node")
+      && element.getAttribute("data-node-id") === id);
+  }
+
+  function graphEdgeTarget(id) {
+    return findUiElement(graphEdges, (element) => hasUiClass(element, "graph-edge")
+      && (element.getAttribute("data-edge-id") === id
+        || (element.getAttribute("data-edge-ids") || "").split(",").includes(id)));
+  }
+
+  function firstTutorialGraphNode() {
+    const nodes = state.visibleGraph && state.visibleGraph.nodes || [];
+    const preferred = ["ENDPOINT", "SECURITY_CHAIN", "FILTER"];
+    const ordered = [...nodes.filter((node) => preferred.includes(node.type)), ...nodes];
+    return ordered.map((node) => graphNodeTarget(node.id)).find(Boolean) || null;
+  }
+
+  function firstInspectorEvidence() {
+    if (!inspector || inspector.hidden || !state.selection || !state.graph
+      || !["node", "edge"].includes(state.selection.kind)) return null;
+    const collection = state.selection.kind === "node" ? state.graph.nodes : state.graph.edges;
+    const item = collection.find((candidate) => candidate.id === state.selection.id);
+    const ids = item && Array.isArray(item.evidenceIds) ? item.evidenceIds : [];
+    const evidence = new Set((state.snapshot && Array.isArray(state.snapshot.evidence) ? state.snapshot.evidence : [])
+      .map((item) => item && item.id).filter((id) => id !== undefined && id !== null).map(String));
+    const index = ids.findIndex((id) => evidence.has(String(id)));
+    if (index < 0) return null;
+    return findUiElements(inspector, (element) => hasUiClass(element, "inspector-evidence"))[index] || null;
+  }
+
+  function temporaryFilterHooks(target) {
+    let wasOpen = null;
+    return {
+      target,
+      prepare: ({ target: element }) => {
+        if (!filterPanel || !isWithinElement(element, filterPanel)) return true;
+        wasOpen = !filterPanel.hidden;
+        if (!wasOpen) {
+          // 상세 화면의 검색 목록·입력·선택 위치를 임시 패널 개방 전 상태로 복원
+          const endpointState = isDetailView() && endpointOptions && endpointSearch ? {
+            hidden: endpointOptions.hidden,
+            expanded: endpointSearch.getAttribute("aria-expanded"),
+            value: endpointSearch.value,
+            optionIndex: state.featureEndpointOptionIndex,
+            options: Array.from(endpointOptions.children || [])
+          } : null;
+          setFilterPanel(true, false);
+          if (endpointState) {
+            endpointOptions.replaceChildren(...endpointState.options);
+            setHidden(endpointOptions, endpointState.hidden);
+            if (endpointState.expanded === null) endpointSearch.removeAttribute("aria-expanded");
+            else endpointSearch.setAttribute("aria-expanded", endpointState.expanded);
+            endpointSearch.value = endpointState.value;
+            state.featureEndpointOptionIndex = endpointState.optionIndex;
+          }
+        }
+        return !filterPanel.hidden;
+      },
+      cleanup: () => {
+        if (wasOpen === null) return;
+        setFilterPanel(wasOpen, false);
+        wasOpen = null;
+      }
+    };
+  }
+
+  function selectedTutorialFinding() {
+    return state.findingIndex.find((entry) => entry.finding.id === state.selectedFindingId) || null;
+  }
+
+  function findingHasEvidence(entry) {
+    const evidence = new Set((state.snapshot && Array.isArray(state.snapshot.evidence) ? state.snapshot.evidence : [])
+      .map((item) => item && item.id).filter((id) => id !== undefined && id !== null).map(String));
+    return Boolean(entry && Array.isArray(entry.finding.evidenceIds)
+      && entry.finding.evidenceIds.some((id) => evidence.has(String(id))));
+  }
+
+  function findingHasLocation(entry) {
+    if (!entry || !state.graph) return false;
+    const nodeIds = new Set(state.graph.nodes.map((node) => node.id));
+    const edgeIds = new Set(state.graph.edges.map((edge) => edge.id));
+    return entry.nodeIds.some((id) => nodeIds.has(id)) || entry.edgeIds.some((id) => edgeIds.has(id));
+  }
+
+  function findingInspectorAvailable(entry) {
+    if (!entry || !isFindingDetailView() || state.inspectorDismissed) return false;
+    if (!state.selection) return true;
+    if (state.selection.kind === "node") return entry.nodeIds.includes(state.selection.id);
+    if (state.selection.kind === "edge") return entry.edgeIds.includes(state.selection.id);
+    return false;
+  }
+
+  // 실제 Finding Inspector를 임시 표시하고 학습 단계 이탈 시 기존 화면 복원
+  function findingInspectorStep(titleText, description, targetRegion, isAvailable) {
+    let previewOpened = false;
+    let previousScroll = 0;
+    const entry = () => selectedTutorialFinding();
+    const isCurrentFinding = (current) => current && inspector
+      && inspector.getAttribute("data-selection-kind") === "finding"
+      && inspector.getAttribute("data-selection-id") === current.finding.id;
+    const regionTarget = (current) => {
+      if (!isCurrentFinding(current)) return inspector;
+      if (targetRegion === "header") return findUiElement(inspector, (element) => hasUiClass(element, "inspector-header"));
+      if (targetRegion === "evidence") {
+        const ids = current.finding.evidenceIds || [];
+        const evidence = new Set((state.snapshot && Array.isArray(state.snapshot.evidence) ? state.snapshot.evidence : [])
+          .map((item) => item && item.id).filter((id) => id !== undefined && id !== null).map(String));
+        const index = ids.findIndex((id) => evidence.has(String(id)));
+        return index < 0 ? null : findUiElements(inspector, (element) => hasUiClass(element, "inspector-evidence"))[index] || null;
+      }
+      if (targetRegion === "guide") {
+        const guides = findUiElements(inspector, (element) => hasUiClass(element, "inspector-help"));
+        return guides[guides.length - 1] || null;
+      }
+      if (targetRegion === "location") {
+        return findUiElement(inspector, (element) => (hasUiClass(element, "inspector-link")
+          && (element.getAttribute("data-node-id") || element.getAttribute("data-edge-id")))
+          || (hasUiClass(element, "inspector-detail-action") && element.getAttribute("data-endpoint-id")));
+      }
+      return inspector;
+    };
+    return {
+      title: titleText,
+      description,
+      target: () => regionTarget(entry()),
+      valid: () => findingInspectorAvailable(entry()) && isAvailable(entry()),
+      prepare: () => {
+        const current = entry();
+        if (!current || !inspectorClient || !inspector) return false;
+        if (isCurrentFinding(current)) return true;
+        if (!findingInspectorAvailable(current)) return false;
+        previousScroll = inspector.scrollTop;
+        inspectorClient.renderFinding({
+          graph: state.graph,
+          snapshot: state.snapshot,
+          entry: current,
+          displayIds: state.displayIds,
+          onReturn: () => selectView("security-flow"),
+          onOpenEndpoint: (endpointId) => openEndpointDetail(endpointId, current.finding.id)
+        });
+        previewOpened = true;
+        return !inspector.hidden;
+      },
+      cleanup: () => {
+        if (!previewOpened) return;
+        previewOpened = false;
+        if (isFindingDetailView()) renderGraphView(state.layout ? "elk" : "initial", true);
+        if (inspector) inspector.scrollTop = previousScroll;
+      }
+    };
+  }
+
+  function findingMarker(entry) {
+    if (!entry) return null;
+    return findUiElement([graphFindingSections, graphFindingSectionTitles, graphNodes, graphEdges], (element) =>
+      hasUiClass(element, "finding-marker") && element.getAttribute("data-finding-id") === entry.finding.id);
+  }
+
+  function findingListItem(entry) {
+    if (!entry) return null;
+    return findUiElement(findingList, (element) => element.tagName === "button"
+      && element.getAttribute("data-finding-id") === entry.finding.id);
+  }
+
+  function firstVisibleFinding() {
+    return state.findingIndex.find((entry) => findingMarker(entry) || findingListItem(entry)) || null;
+  }
+
+  function findingAreaTarget(entry) {
+    if (!entry) return null;
+    const nodeIds = new Set(entry.nodeIds);
+    const relatedNode = findUiElement(graphNodes, (element) => hasUiClass(element, "graph-node")
+      && element.getAttribute("data-has-finding") === "true" && nodeIds.has(element.getAttribute("data-node-id")));
+    return relatedNode || findingMarker(entry) || findingListItem(entry);
+  }
+
+  function findingRelatedGraphTarget(entry) {
+    if (!entry || !state.visibleGraph) return null;
+    for (const id of entry.nodeIds) {
+      if (state.visibleGraph.nodes.some((node) => node.id === id)) {
+        const target = graphNodeTarget(id);
+        if (target) return target;
+      }
+    }
+    for (const id of entry.edgeIds) {
+      if (state.visibleGraph.edges.some((edge) => edge.id === id)) {
+        const target = graphEdgeTarget(id);
+        if (target) return target;
+      }
+    }
+    return null;
+  }
+
+  function confirmedChainTarget() {
+    if (!isDetailView() || !state.selectedEndpointId || !state.flowIndex
+      || typeof state.flowIndex.firstMatchedChain !== "function") return null;
+    const match = state.flowIndex.firstMatchedChain(state.selectedEndpointId);
+    if (!match || match.status !== "CONFIRMED" || !match.chain) return null;
+    const chain = graphNodeTarget(match.chain.id);
+    if (chain) return chain;
+    if (!state.flowIndex.securityFiltersForChain) return null;
+    const registered = state.flowIndex.securityFiltersForChain(match.chain.id);
+    for (const edge of registered && registered.edges || []) {
+      const filter = state.flowIndex.nodeById.get(edge.targetId);
+      if (filter && filter.type === "FILTER" && filter.attributes.registrationKind === "SECURITY") {
+        const target = graphNodeTarget(filter.id);
+        if (target) return target;
+      }
+    }
+    return null;
+  }
+
+  // 현재 화면과 실제 데이터에 존재하는 Spotlight 단계 구성
+  function currentScreenTutorial() {
+    if (state.view === "all-flow") {
+      const filterHooks = temporaryFilterHooks(() => filterPanel);
+      return [
+        {
+          target: () => mapToolbar,
+          title: "그래프 탐색",
+          description: "축소·확대, 전체 맞춤, 보기 초기화, 필터로 Graph를 탐색합니다. Canvas를 드래그해 화면을 이동할 수 있습니다."
+        },
+        {
+          ...filterHooks,
+          title: "검색과 필터",
+          description: "Endpoint 검색, 노드 유형, 관계 유형으로 표시 대상을 좁히고 검색 초기화로 조건을 되돌립니다.",
+          valid: () => Boolean(filterPanel && endpointSearch && nodeFilter && edgeFilter)
+        },
+        {
+          target: firstTutorialGraphNode,
+          title: "보안 구성 요소",
+          description: "Endpoint는 API, Chain은 보안 체인, Filter는 등록된 필터 Node입니다. 미등록 표준 필터 참고 항목은 실제 등록 Node와 구분합니다.",
+          valid: () => Boolean(firstTutorialGraphNode())
+        },
+        {
+          target: () => inspector,
+          title: "상세 정보 확인",
+          description: "이미 선택한 Node의 Inspector에서 속성·연결·관계·Evidence를 확인합니다. 이 단계는 선택을 바꾸지 않습니다.",
+          valid: () => Boolean(state.selection && state.selection.kind === "node" && inspector && !inspector.hidden
+            && inspector.getAttribute("data-selection-id") === state.selection.id)
+        },
+        {
+          target: () => graphMinimap,
+          title: "전체 위치 파악",
+          description: "미니맵의 사각형은 현재 화면 위치이고 배경은 전체 Graph입니다. 표시 설정은 이 안내에서 바꾸지 않습니다.",
+          valid: () => Boolean(state.display.minimap && state.visibleGraph && state.visibleGraph.nodes.length > 0
+            && graphMinimap && !graphMinimap.hidden)
+        }
+      ];
+    }
+    if (state.view === "feature-flow") {
+      const filterHooks = temporaryFilterHooks(() => endpointSearch);
+      const endpointDescription = sortedEndpoints().length > 0
+        ? "필터 패널에서 Endpoint를 검색하고 실제 Snapshot 목록에서 선택합니다. 현재 선택된 API는 안내가 임의로 변경하지 않습니다."
+        : "현재 Snapshot에 선택 가능한 Endpoint가 없습니다. Endpoint 검색·선택 UI는 그대로 두며 임의의 API를 지정하지 않습니다.";
+      return [
+        {
+          ...filterHooks,
+          title: "분석할 API",
+          description: endpointDescription,
+          valid: () => isDetailView() && Boolean(endpointSearch)
+        },
+        {
+          target: confirmedChainTarget,
+          title: "적용된 보안 체인",
+          description: "확인된 첫 매칭 SecurityFilterChain과 등록된 Security Filter만 안내합니다. Servlet Filter 등록과 SecurityFilterChain 내부 Filter 구성은 구분하며, 미확인 순서는 확정 결과가 아닙니다.",
+          valid: () => Boolean(confirmedChainTarget())
+        },
+        {
+          target: () => requestFlowControls,
+          title: "요청 전달 과정",
+          description: "Request/Response 준비, Servlet Filter, 보안 위임, Handler의 일반 처리 흐름입니다. SecurityContext는 현재 Authentication을 담는 컨텍스트이고 HttpServletRequest는 HTTP 요청 객체이며 실제 요청별 Trace나 처리 결과가 아닙니다.",
+          valid: () => Boolean(requestFlowControls && !requestFlowControls.hidden && state.requestFlowSteps.length > 0)
+        },
+        {
+          target: () => requestFlowFilterEducation,
+          title: "필터 처리 단계",
+          description: "상세 교육 설명에서 입력·검사 조건·대표 처리와 가능한 결과를 확인합니다. 내용은 교육용 설명이며 실제 요청값이나 결과가 아닙니다.",
+          valid: () => Boolean(state.display.detailedFlow && requestFlowDetails && !requestFlowDetails.hidden
+            && requestFlowFilterEducation && !requestFlowFilterEducation.hidden)
+        },
+        {
+          target: firstInspectorEvidence,
+          title: "판단 근거",
+          description: "Evidence 카드에서 저장된 표시 ID(있을 때), 출처와 확인 위치를 확인합니다. 인증정보 조회 근거만으로 USES_FOR_AUTHORIZATION 인가 관계를 판단하지 않습니다.",
+          valid: () => Boolean(isDetailView() && state.selection && ["node", "edge"].includes(state.selection.kind)
+            && firstInspectorEvidence())
+        }
+      ];
+    }
+    if (state.view === "security-flow") {
+      const filterHooks = temporaryFilterHooks(() => findingFields);
+      const firstFinding = () => firstVisibleFinding();
+      const hasRuleAndConfidenceFilters = () => Boolean(findingRule && findingConfidence && findingFields && !findingFields.hidden);
+      return [
+        {
+          ...temporaryFilterHooks(() => {
+            const entry = firstFinding();
+            return entry && findingAreaTarget(entry);
+          }),
+          title: "발견된 보안 문제",
+          description: "실제 Finding 목록과 Graph 표시는 Snapshot 참조를 기준으로 확인합니다. 연결 위치가 없으면 별도 마커를 만들지 않습니다.",
+          valid: () => Boolean(firstFinding() && findingAreaTarget(firstFinding()))
+        },
+        {
+          ...filterHooks,
+          title: "판단 상태 구분",
+          description: "유형 7개와 CONFIRMED·LIKELY·UNKNOWN 필터를 사용합니다. CONFIRMED는 근거가 확인된 분석 판단, LIKELY는 검토 필요, UNKNOWN은 근거 부족이며 심각도나 실시간 탐지 수치가 아닙니다.",
+          valid: hasRuleAndConfidenceFilters
+        },
+        {
+          ...temporaryFilterHooks(() => {
+            const entry = firstFinding();
+            return findingMarker(entry) || findingListItem(entry);
+          }),
+          title: "취약점 선택",
+          description: "실제 Finding 항목을 선택하면 해당 Finding의 판단과 영향 대상을 확인할 수 있습니다. 이 안내는 항목을 대신 선택하지 않습니다.",
+          valid: () => Boolean(firstFinding() && (findingMarker(firstFinding()) || findingListItem(firstFinding())))
+        },
+        {
+          target: () => findingRelatedGraphTarget(firstFinding()),
+          title: "관계 확인",
+          description: "선택 Finding이 실제로 참조하는 Node 또는 Edge만 강조합니다. 연결이 없거나 현재 Graph에서 확인되지 않으면 이 단계는 제외됩니다.",
+          valid: () => Boolean(findingRelatedGraphTarget(firstFinding()))
+        }
+      ];
+    }
+    if (state.view === "security-detail") {
+      const hasGuide = (entry) => typeof entry.finding.guide === "string" && entry.finding.guide.trim().length > 0;
+      return [
+        findingInspectorStep("판단 내용", "실제 Finding의 제목·Rule ID·판단 신뢰도를 확인합니다. Confidence는 근거에 따른 판단 상태입니다.", "header", () => true),
+        findingInspectorStep("확인된 근거", "Evidence 카드의 저장된 표시 ID(있을 때), 출처와 코드·설정 위치를 확인합니다. 표시 ID를 임의로 만들지 않습니다.", "evidence", findingHasEvidence),
+        findingInspectorStep("개발자 점검 가이드", "Finding에 저장된 점검 가이드입니다. 안내만 제공하며 보안 정책이나 설정을 자동으로 바꾸지 않습니다.", "guide", hasGuide),
+        findingInspectorStep("관련 위치 이동", "실제 Finding이 참조하는 Node·Edge 또는 Endpoint 이동 항목을 확인합니다. 근거로 연결되지 않은 Graph 요소는 표시하지 않습니다.", "location", findingHasLocation)
+      ];
+    }
+    return [];
+  }
+
   helpButton.addEventListener("click", (event) => {
     if (spotlight && spotlight.isActive()) {
       event.stopPropagation();
       spotlight.restart();
       return;
     }
-    toggleHeaderPanel(helpPanel, helpButton, settingsPanel, settingsButton);
+    if (event && event.stopPropagation) event.stopPropagation();
+    if (helpPanel && !helpPanel.hidden) setPanel(helpPanel, helpButton, false);
+    if (!spotlight) {
+      toggleHeaderPanel(helpPanel, helpButton, settingsPanel, settingsButton);
+      return;
+    }
+    spotlight.start(currentScreenTutorial(), { trigger: helpButton });
   });
   settingsButton.addEventListener("click", () => {
     if (spotlight && spotlight.isActive()) spotlight.close({ restoreFocus: false });

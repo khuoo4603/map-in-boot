@@ -124,7 +124,7 @@ function loadUi({ fetchImpl, timers, animationClock, clipboard } = {}) {
   const ids = [
     "view-title", "view-state", "shell-notice", "help-button", "settings-button", "refresh-button",
     "help-panel", "settings-panel", "settings-close", "setting-show-areas", "setting-show-edge-labels", "setting-show-minimap", "setting-show-detail-flow",
-    "graph-canvas",
+    "graph-canvas", "map-toolbar",
     "graph-empty", "graph-state-message", "graph-svg", "graph-viewport", "graph-areas", "graph-flow-projection", "graph-guides",
     "graph-edges", "graph-nodes", "graph-finding-section-titles", "service-name", "snapshot-time", "endpoint-search", "endpoint-filter-label", "endpoint-filter-label-text",
     "endpoint-options", "node-filter-field", "node-filter", "edge-filter-field", "edge-filter", "unconnected-node-field", "include-unconnected-nodes", "finding-filter-fields", "finding-rule", "finding-confidence", "finding-list", "finding-api-fields", "finding-api-select", "finding-all-apis", "detail-finding-list", "search-reset", "filter-toggle", "map-filter-panel", "zoom-in", "zoom-out", "fit-graph",
@@ -198,7 +198,9 @@ function loadUi({ fetchImpl, timers, animationClock, clipboard } = {}) {
   const document = Object.assign(createEventTarget(), {
     body: createElement("body"),
     querySelector(selector) {
-      return selector.startsWith("#") ? elements.get(selector.slice(1)) : createElement();
+      if (selector.startsWith("#")) return elements.get(selector.slice(1));
+      if (selector === ".map-toolbar") return elements.get("map-toolbar");
+      return createElement();
     },
     querySelectorAll(selector) {
       return selector === ".header-nav-item" ? navigation : [];
@@ -214,6 +216,31 @@ function loadUi({ fetchImpl, timers, animationClock, clipboard } = {}) {
   elements.get("settings-panel").parentNode = document;
   elements.get("settings-button").parentNode = document;
   elements.get("finding-modal").parentNode = document;
+  const mapToolbar = elements.get("map-toolbar");
+  mapToolbar.setAttribute("class", "graph-tools map-toolbar");
+  const filterGroup = createElement("div");
+  filterGroup.setAttribute("class", "toolbar-tool-group map-filter-toggle");
+  filterGroup.append(elements.get("filter-toggle"), elements.get("map-filter-panel"));
+  mapToolbar.append(
+    elements.get("zoom-out"), elements.get("zoom-in"), elements.get("fit-graph"),
+    elements.get("reset-view"), filterGroup
+  );
+  elements.get("map-filter-panel").setAttribute("class", "map-filter-panel");
+  elements.get("map-filter-panel").append(
+    elements.get("endpoint-filter-label"), elements.get("node-filter-field"),
+    elements.get("edge-filter-field"), elements.get("unconnected-node-field"),
+    elements.get("finding-filter-fields"), elements.get("finding-api-fields")
+  );
+  elements.get("endpoint-filter-label").append(elements.get("endpoint-search"), elements.get("endpoint-options"));
+  elements.get("node-filter-field").append(elements.get("node-filter"));
+  elements.get("edge-filter-field").append(elements.get("edge-filter"));
+  elements.get("finding-filter-fields").append(
+    elements.get("finding-rule"), elements.get("finding-confidence"), elements.get("finding-list")
+  );
+  elements.get("finding-api-fields").append(
+    elements.get("finding-api-select"), elements.get("detail-finding-list")
+  );
+  document.body.appendChild(mapToolbar);
   let activeFetch = fetchImpl || (() => new Promise(() => {}));
   const window = Object.assign(createEventTarget(), {});
   window.navigator = { clipboard: clipboard || { writeText: async () => {} } };
@@ -481,6 +508,212 @@ test("Spotlight는 Finding 모달을 우선하고 Drawer를 닫으며 재시작 
   elements.get("finding-modal").hidden = true;
   assert.equal(document.listenerCount("keydown"), baselineKeydown);
   assert.equal(window.listenerCount("resize"), baselineResize);
+});
+
+test("도움말은 현재 화면의 Spotlight를 시작하고 빈 Graph 요소는 단계에서 제외함", () => {
+  const { ui, elements, window } = loadUi();
+  const spotlight = window.MapInBootSpotlight;
+  ui.renderGraph({ nodes: [], edges: [], evidence: [], findings: [] });
+
+  elements.get("help-button").dispatchEvent({ type: "click" });
+
+  assert.equal(spotlight.getState().active, true);
+  assert.equal(spotlight.getState().step.title, "그래프 탐색");
+  assert.equal(spotlight.getState().total, 2);
+  assert.equal(elements.get("help-panel").hidden, true);
+  spotlight.next();
+  assert.equal(spotlight.getState().step.title, "검색과 필터");
+  assert.equal(elements.get("map-filter-panel").hidden, false);
+  spotlight.close();
+  assert.equal(elements.get("map-filter-panel").hidden, true);
+
+  ui.selectView("feature-flow");
+  assert.equal(ui.state.selectedEndpointId, null);
+  elements.get("help-button").dispatchEvent({ type: "click" });
+  assert.equal(spotlight.getState().total, 1);
+  assert.equal(spotlight.getState().step.title, "분석할 API");
+  assert.match(spotlight.getState().step.description, /선택 가능한 Endpoint가 없습니다/);
+  assert.equal(ui.state.selectedEndpointId, null);
+  spotlight.close();
+  assert.equal(ui.state.selectedEndpointId, null);
+  assert.equal(elements.get("map-filter-panel").hidden, true);
+
+  ui.selectView("security-flow");
+  elements.get("help-button").dispatchEvent({ type: "click" });
+  assert.equal(spotlight.getState().total, 1);
+  assert.equal(spotlight.getState().step.title, "판단 상태 구분");
+  assert.equal(elements.get("map-filter-panel").hidden, false);
+  assert.equal(findAllByClass(elements.get("graph-nodes"), "finding-marker").length, 0);
+  spotlight.close();
+  assert.equal(elements.get("map-filter-panel").hidden, true);
+
+  ui.selectView("security-detail");
+  elements.get("help-button").dispatchEvent({ type: "click" });
+  assert.equal(spotlight.getState().active, false);
+  assert.equal(elements.get("finding-modal").hidden, true);
+});
+
+test("미니맵 표시 설정이 꺼진 경우 Spotlight가 설정을 바꾸지 않고 단계를 제외함", async () => {
+  const { ui, elements, window } = loadUi();
+  ui.renderGraph(graphFixture());
+  await ui.layoutGraph();
+  elements.get("setting-show-minimap").checked = false;
+  elements.get("setting-show-minimap").dispatchEvent({ type: "change" });
+
+  elements.get("help-button").dispatchEvent({ type: "click" });
+
+  assert.equal(window.MapInBootSpotlight.getState().total, 3);
+  assert.equal(ui.state.display.minimap, false);
+  assert.equal(ui.navigation.state.minimapVisible, false);
+  assert.equal(elements.get("graph-minimap").hidden, true);
+  window.MapInBootSpotlight.close();
+  assert.equal(ui.state.display.minimap, false);
+  assert.equal(elements.get("setting-show-minimap").checked, false);
+});
+
+test("화면별 Spotlight는 실제 Snapshot 대상을 강조하고 화면 전환에서 임시 상태를 복원함", async () => {
+  const { ui, elements, window } = loadUi();
+  const spotlight = window.MapInBootSpotlight;
+  const snapshot = standardFilterGraphFixture();
+  snapshot.findings = [{
+    id: "finding-ui26",
+    ruleId: "CHAIN_MISSING",
+    title: "체인 연결 판단",
+    description: "실제 Finding 설명",
+    confidence: "CONFIRMED",
+    nodeIds: ["endpoint-a"],
+    edgeIds: ["match-a"],
+    evidenceIds: ["evidence-endpoint-a"],
+    guide: "체인 설정과 매칭 경로를 확인하세요."
+  }];
+  const evidenceIds = new Set([...snapshot.nodes, ...snapshot.edges].flatMap((item) => item.evidenceIds || []));
+  snapshot.evidence = [...evidenceIds].map((id) => ({
+    id,
+    source: "RUNTIME",
+    summary: "UI-26 테스트 Snapshot 근거",
+    location: `orders://evidence/${id}`
+  }));
+  snapshot.evidenceDisplayCodes = { "evidence-endpoint-a": "EP-UI26-001" };
+  ui.renderGraph(snapshot);
+  await ui.layoutGraph();
+  ui.selectGraphElement("node", "endpoint-a");
+  elements.get("endpoint-search").value = "orders";
+
+  elements.get("help-button").dispatchEvent({ type: "click" });
+  assert.equal(spotlight.getState().total, 5);
+  assert.equal(spotlight.getState().step.title, "그래프 탐색");
+  assert.equal(elements.get("map-toolbar").children.length, 5);
+  spotlight.next();
+  assert.equal(elements.get("map-filter-panel").hidden, false);
+  spotlight.close();
+  assert.equal(elements.get("map-filter-panel").hidden, true);
+  assert.equal(elements.get("endpoint-search").value, "orders");
+  assert.equal(ui.state.selection.id, "endpoint-a");
+
+  ui.openEndpointDetail("endpoint-a");
+  await ui.layoutGraph();
+  elements.get("setting-show-detail-flow").checked = true;
+  elements.get("setting-show-detail-flow").dispatchEvent({ type: "change" });
+  const educationIndex = ui.state.requestFlowSteps.findIndex((step) => step.filterEducation);
+  assert.ok(educationIndex >= 0);
+  assert.equal(ui.requestFlow.seekToStep(educationIndex), true);
+  assert.equal(elements.get("request-flow-filter-education").hidden, false);
+  const endpointInputBefore = {
+    value: elements.get("endpoint-search").value,
+    expanded: elements.get("endpoint-search").getAttribute("aria-expanded"),
+    optionsHidden: elements.get("endpoint-options").hidden
+  };
+
+  elements.get("help-button").dispatchEvent({ type: "click" });
+  assert.equal(spotlight.getState().total, 5);
+  assert.equal(spotlight.getState().step.title, "분석할 API");
+  assert.equal(elements.get("map-filter-panel").hidden, false);
+  assert.equal(elements.get("endpoint-search").value, endpointInputBefore.value);
+  assert.equal(elements.get("endpoint-search").getAttribute("aria-expanded"), endpointInputBefore.expanded);
+  assert.equal(elements.get("endpoint-options").hidden, endpointInputBefore.optionsHidden);
+  spotlight.next();
+  assert.equal(spotlight.getState().step.title, "적용된 보안 체인");
+  assert.match(spotlight.getState().step.description, /Servlet Filter 등록과 SecurityFilterChain 내부 Filter 구성은 구분/);
+  assert.equal(elements.get("map-filter-panel").hidden, true);
+  spotlight.next();
+  assert.match(spotlight.getState().step.description, /SecurityContext는 현재 Authentication을 담는 컨텍스트이고 HttpServletRequest는 HTTP 요청 객체/);
+  assert.equal(ui.state.display.detailedFlow, true);
+  assert.equal(ui.state.selection.id, "endpoint-a");
+
+  elements.get("help-button").dispatchEvent({ type: "click" });
+  assert.equal(spotlight.getState().current, 1);
+  assert.equal(elements.get("map-filter-panel").hidden, false);
+
+  ui.selectView("security-flow");
+  assert.equal(spotlight.getState().active, false);
+  assert.equal(elements.get("map-filter-panel").hidden, true);
+  await ui.layoutGraph();
+  elements.get("help-button").dispatchEvent({ type: "click" });
+  assert.equal(spotlight.getState().total, 4);
+  assert.equal(spotlight.getState().step.title, "발견된 보안 문제");
+  spotlight.next();
+  assert.match(spotlight.getState().step.description, /CONFIRMED는 근거가 확인된 분석 판단/);
+  assert.match(spotlight.getState().step.description, /UNKNOWN은 근거 부족/);
+  elements.get("help-button").dispatchEvent({ type: "click" });
+  assert.equal(spotlight.getState().current, 1);
+  assert.equal(spotlight.getState().step.title, "발견된 보안 문제");
+  spotlight.close();
+
+  ui.selectView("security-detail");
+  await ui.layoutGraph();
+  ui.selectGraphElement("node", "endpoint-a");
+  elements.get("inspector").scrollTop = 52;
+  const viewportBefore = {
+    zoom: ui.state.navigation.state.zoom,
+    panX: ui.state.navigation.state.panX,
+    panY: ui.state.navigation.state.panY
+  };
+  elements.get("help-button").dispatchEvent({ type: "click" });
+  assert.equal(spotlight.getState().total, 4);
+  assert.equal(spotlight.getState().step.title, "판단 내용");
+  assert.equal(elements.get("inspector").getAttribute("data-selection-kind"), "finding");
+  spotlight.next();
+  const evidenceCard = findAllByClass(elements.get("inspector"), "inspector-evidence")[0];
+  assert.ok(evidenceCard);
+  assert.match(textOf(evidenceCard), /EP-UI26-001/);
+  spotlight.next();
+  assert.match(textOf(spotlight.getState().step.target()), /체인 설정과 매칭 경로/);
+  spotlight.next();
+  assert.ok(spotlight.getState().step.target().getAttribute("data-node-id")
+    || spotlight.getState().step.target().getAttribute("data-edge-id"));
+  spotlight.close();
+  assert.equal(elements.get("inspector").hidden, false);
+  assert.equal(elements.get("inspector").scrollTop, 52);
+  assert.equal(ui.state.selection.kind, "node");
+  assert.equal(ui.state.selection.id, "endpoint-a");
+  assert.equal(elements.get("inspector").getAttribute("data-selection-id"), "endpoint-a");
+  assert.equal(ui.state.display.detailedFlow, true);
+  assert.deepEqual({
+    zoom: ui.state.navigation.state.zoom,
+    panX: ui.state.navigation.state.panX,
+    panY: ui.state.navigation.state.panY
+  }, viewportBefore);
+});
+
+test("상세 Finding 도움말은 Evidence와 가이드가 없는 단계만 번호에서 제외함", async () => {
+  const { ui, elements, window } = loadUi();
+  const snapshot = graphFixture();
+  snapshot.evidence = [];
+  snapshot.findings[0].guide = "";
+  ui.renderGraph(snapshot);
+  ui.selectView("security-detail");
+  await ui.layoutGraph();
+
+  elements.get("help-button").dispatchEvent({ type: "click" });
+
+  assert.equal(window.MapInBootSpotlight.getState().total, 2);
+  assert.equal(window.MapInBootSpotlight.getState().step.title, "판단 내용");
+  window.MapInBootSpotlight.next();
+  assert.equal(window.MapInBootSpotlight.getState().current, 2);
+  assert.equal(window.MapInBootSpotlight.getState().total, 2);
+  assert.equal(window.MapInBootSpotlight.getState().step.title, "관련 위치 이동");
+  window.MapInBootSpotlight.close();
+  assert.equal(elements.get("inspector").hidden, true);
 });
 
 test("Finding 위치는 정규화된 원본 참조만 사용하고 유실 참조를 구분함", () => {
@@ -1427,7 +1660,7 @@ test("Finding 마커 포인터 입력은 Graph Pan을 시작하지 않음", () =
 
 test("도움말·설정 패널과 실제 Graph 표시 설정이 동작하고 새로고침 중복 요청을 막음", () => {
   const calls = [];
-  const { ui, elements } = loadUi({
+  const { ui, elements, window } = loadUi({
     fetchImpl: (url, options) => {
       calls.push({ url, options });
       return new Promise(() => {});
@@ -1440,9 +1673,11 @@ test("도움말·설정 패널과 실제 Graph 표시 설정이 동작하고 새
   assert.equal(calls.length, 1);
 
   elements.get("help-button").dispatchEvent({ type: "click" });
-  assert.equal(elements.get("help-panel").hidden, false);
+  assert.equal(window.MapInBootSpotlight.getState().active, true);
+  assert.equal(elements.get("help-panel").hidden, true);
   assert.equal(elements.get("help-button").getAttribute("aria-expanded"), "true");
   elements.get("settings-button").dispatchEvent({ type: "click" });
+  assert.equal(window.MapInBootSpotlight.getState().active, false);
   assert.equal(elements.get("help-panel").hidden, true);
   assert.equal(elements.get("settings-panel").hidden, false);
   assert.equal(elements.get("settings-button").getAttribute("aria-expanded"), "true");
