@@ -1764,6 +1764,33 @@ test("설정 Drawer는 표시 옵션을 독립 적용하고 Escape에서 Graph �
   assert.equal(ui.state.display.detailedFlow, true);
 });
 
+test("Spotlight의 Escape 종료는 설정 Drawer와 선택된 Inspector를 추가로 닫지 않음", async () => {
+  const { ui, elements, document, window } = loadUi();
+  ui.renderGraph(graphFixture());
+  await ui.layoutGraph();
+  ui.selectGraphElement("node", "node-2");
+  elements.get("inspector").scrollTop = 37;
+  const selectedId = ui.state.selection.id;
+
+  elements.get("settings-button").dispatchEvent({ type: "click" });
+  assert.equal(elements.get("settings-panel").dataset.open, "true");
+  elements.get("help-button").dispatchEvent({ type: "click" });
+
+  assert.equal(window.MapInBootSpotlight.getState().active, true);
+  assert.equal(elements.get("settings-panel").dataset.open, "false");
+  assert.equal(elements.get("inspector").hidden, false);
+  assert.equal(ui.state.selection.id, selectedId);
+  document.dispatchEvent({ type: "keydown", key: "Escape" });
+
+  assert.equal(window.MapInBootSpotlight.getState().active, false);
+  assert.equal(elements.get("settings-panel").dataset.open, "false");
+  assert.equal(elements.get("settings-button").getAttribute("aria-expanded"), "false");
+  assert.equal(ui.state.selection.id, selectedId);
+  assert.equal(elements.get("inspector").hidden, false);
+  assert.equal(elements.get("inspector").scrollTop, 37);
+  assert.equal(elements.get("help-button").focused, true);
+});
+
 test("실행 단계와 HTTP 상태를 사용자 문구로 구분함", () => {
   const { ui } = loadUi();
 
