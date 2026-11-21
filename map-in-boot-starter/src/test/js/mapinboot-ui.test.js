@@ -16,6 +16,13 @@ function createEventTarget() {
       entries.push(listener);
       listeners.set(type, entries);
     },
+    removeEventListener(type, listener) {
+      const entries = listeners.get(type) || [];
+      listeners.set(type, entries.filter((entry) => entry !== listener));
+    },
+    listenerCount(type) {
+      return (listeners.get(type) || []).length;
+    },
     dispatchEvent(event) {
       const current = event || {};
       if (!current.type) throw new Error("Event type is required");
@@ -189,6 +196,7 @@ function loadUi({ fetchImpl, timers, animationClock, clipboard } = {}) {
   }));
   navigation.forEach((item) => Object.assign(item, createEventTarget()));
   const document = Object.assign(createEventTarget(), {
+    body: createElement("body"),
     querySelector(selector) {
       return selector.startsWith("#") ? elements.get(selector.slice(1)) : createElement();
     },
@@ -202,6 +210,7 @@ function loadUi({ fetchImpl, timers, animationClock, clipboard } = {}) {
       return createElement(tagName);
     },
   });
+  document.body.parentNode = document;
   elements.get("settings-panel").parentNode = document;
   elements.get("settings-button").parentNode = document;
   elements.get("finding-modal").parentNode = document;
@@ -251,7 +260,7 @@ function loadUi({ fetchImpl, timers, animationClock, clipboard } = {}) {
     clearTimeout: timers ? timers.clearTimeout : clearTimeout,
     performance: animationClock ? { now: () => animationClock.now() } : undefined
   });
-  ["graph-flow.js", "request-flow-animation.js", "graph-standard-filters.js", "graph-renderer.js", "graph-inspector.js", "layout-client.js", "graph-navigation.js", "app.js"].forEach((file) => {
+  ["graph-flow.js", "request-flow-animation.js", "graph-standard-filters.js", "graph-renderer.js", "graph-inspector.js", "layout-client.js", "graph-navigation.js", "spotlight.js", "app.js"].forEach((file) => {
     vm.runInContext(
       readFileSync(`map-in-boot-starter/src/main/resources/static/mapinboot/${file}`, "utf8"),
       context
@@ -273,6 +282,206 @@ function loadUi({ fetchImpl, timers, animationClock, clipboard } = {}) {
 function textOf(element) {
   return [element.textContent || "", ...Array.from(element.children || [], textOf)].join(" ");
 }
+
+test("Spotlight는 유효한 실제 대상만 탐색하고 Escape에서 도움말로 포커스를 복귀함", () => {
+  const { ui, window, document, elements } = loadUi();
+  const spotlight = window.MapInBootSpotlight;
+  assert.ok(spotlight);
+
+  const hiddenTarget = createElement("button");
+  hiddenTarget.hidden = true;
+  elements.get("help-button").clientWidth = 100;
+  elements.get("help-button").clientHeight = 40;
+  elements.get("settings-button").clientWidth = 100;
+  elements.get("settings-button").clientHeight = 40;
+  assert.equal(spotlight.start([
+    { target: hiddenTarget, title: "숨겨진 항목", description: "표시하지 않음" },
+    { target: elements.get("help-button"), title: "도움말", description: "현재 요소" },
+    { target: elements.get("settings-button"), title: "설정", description: "다음 요소" }
+  ]), true);
+
+  assert.equal(spotlight.getState().current, 1);
+  assert.equal(spotlight.getState().total, 2);
+  const card = findAllByClass(document.body, "spotlight-card")[0];
+  assert.equal(card.getAttribute("role"), "dialog");
+  assert.equal(card.getAttribute("aria-modal"), "true");
+  assert.equal(card.getAttribute("aria-describedby"), "spotlight-description");
+  assert.equal(findAllByClass(card, "spotlight-step-count")[0].textContent, "1 / 2");
+  assert.equal(findAllByClass(card, "spotlight-previous")[0].disabled, true);
+  assert.equal(findAllByClass(card, "spotlight-next")[0].focused, true);
+  const nextButton = findAllByClass(card, "spotlight-next")[0];
+  const tab = { type: "keydown", key: "Tab", target: nextButton };
+  nextButton.dispatchEvent(tab);
+  assert.equal(tab.defaultPrevented, true);
+  assert.equal(findAllByClass(card, "spotlight-close")[0].focused, true);
+  const outsideTab = { type: "keydown", key: "Tab", target: elements.get("settings-button") };
+  elements.get("settings-button").dispatchEvent(outsideTab);
+  assert.equal(outsideTab.defaultPrevented, true);
+  assert.equal(findAllByClass(card, "spotlight-close")[0].focused, true);
+
+  nextButton.dispatchEvent({ type: "click" });
+  assert.equal(spotlight.getState().current, 2);
+  assert.equal(findAllByClass(card, "spotlight-next")[0].textContent, "완료");
+  findAllByClass(card, "spotlight-previous")[0].dispatchEvent({ type: "click" });
+  assert.equal(spotlight.getState().current, 1);
+  findAllByClass(card, "spotlight-skip")[0].dispatchEvent({ type: "click" });
+  assert.equal(spotlight.getState().active, false);
+  assert.equal(spotlight.restart(), true);
+  document.dispatchEvent({ type: "keydown", key: "Escape" });
+  assert.equal(spotlight.getState().active, false);
+  assert.equal(elements.get("help-button").focused, true);
+  assert.equal(elements.get("help-button").getAttribute("aria-pressed"), "false");
+
+  assert.equal(spotlight.restart(), true);
+  const completedNext = findAllByClass(document.body, "spotlight-next")[0];
+  completedNext.dispatchEvent({ type: "click" });
+  assert.equal(spotlight.getState().current, 2);
+  completedNext.dispatchEvent({ type: "click" });
+  assert.equal(spotlight.getState().active, false);
+  assert.equal(spotlight.restart(), true);
+  findAllByClass(document.body, "spotlight-close")[0].dispatchEvent({ type: "click" });
+  assert.equal(spotlight.getState().active, false);
+  assert.equal(spotlight.restart(), true);
+  ui.selectView("security-flow");
+  assert.equal(spotlight.getState().active, false);
+});
+
+test("Spotlight는 Resize에서 실제 화면 좌표를 갱신하고 작은 Viewport 안에 카드를 둠", () => {
+  const { window, document, elements } = loadUi();
+  const spotlight = window.MapInBootSpotlight;
+  assert.ok(spotlight);
+  window.innerWidth = 800;
+  window.innerHeight = 600;
+  const bounds = { left: 160, top: 120, right: 260, bottom: 160, width: 100, height: 40 };
+  const target = elements.get("help-button");
+  target.getBoundingClientRect = () => ({ ...bounds });
+  assert.equal(spotlight.start([{ target, title: "도움말", description: "화면 좌표로 강조" }]), true);
+
+  const frame = findAllByClass(document.body, "spotlight-frame")[0];
+  const card = findAllByClass(document.body, "spotlight-card")[0];
+  card.clientWidth = 340;
+  card.clientHeight = 200;
+  spotlight.refresh();
+  const firstLeft = frame.style.left;
+  Object.assign(bounds, { left: 730, top: 560, right: 780, bottom: 590, width: 50, height: 30 });
+  window.dispatchEvent({ type: "resize" });
+
+  assert.notEqual(frame.style.left, firstLeft);
+  assert.equal(frame.style.left, "722px");
+  const cardLeft = Number.parseFloat(card.style.left);
+  const cardTop = Number.parseFloat(card.style.top);
+  assert.ok(cardLeft >= 12 && cardLeft + 340 <= 788);
+  assert.ok(cardTop >= 12 && cardTop + 200 <= 588);
+  spotlight.close();
+
+  const firstTarget = elements.get("zoom-in");
+  const nextTarget = elements.get("settings-button");
+  assert.equal(spotlight.start([
+    { target: firstTarget, title: "확대", description: "실제 조작" },
+    { target: nextTarget, title: "설정", description: "유효한 다음 대상" }
+  ]), true);
+  firstTarget.hidden = true;
+  spotlight.refresh();
+  assert.equal(spotlight.getState().current, 1);
+  assert.equal(spotlight.getState().total, 1);
+  assert.equal(findAllByClass(document.body, "spotlight-card")[0].children[1].textContent, "설정");
+  firstTarget.hidden = false;
+  spotlight.close();
+});
+
+test("Spotlight 단계 Hook은 필터를 원래 상태로 돌리고 Inspector와 Viewport를 보존함", async () => {
+  const { ui, window, document, elements } = loadUi();
+  const spotlight = window.MapInBootSpotlight;
+  assert.ok(spotlight);
+  ui.renderGraph(graphFixture());
+  await ui.layoutGraph();
+  ui.selectGraphElement("node", "node-2");
+  elements.get("inspector").scrollTop = 84;
+  ui.state.navigation.panBy(31, -17);
+  ui.state.navigation.zoomBy(1.1, 400, 260);
+  const before = {
+    selection: { ...ui.state.selection },
+    inspectorScroll: elements.get("inspector").scrollTop,
+    zoom: ui.state.navigation.state.zoom,
+    panX: ui.state.navigation.state.panX,
+    panY: ui.state.navigation.state.panY
+  };
+  elements.get("endpoint-search").value = "get /orders";
+  const filterWasOpen = !elements.get("map-filter-panel").hidden;
+  assert.equal(filterWasOpen, false);
+
+  assert.equal(spotlight.start([{
+    target: () => elements.get("map-filter-panel"),
+    title: "검색 및 필터",
+    description: "필요한 조건을 입력합니다.",
+    prepare: () => ui.setFilterPanel(true, false),
+    cleanup: () => ui.setFilterPanel(filterWasOpen, false)
+  }, {
+    target: elements.get("help-button"),
+    title: "화면 안내",
+    description: "도움말을 다시 누르면 처음으로 돌아갑니다."
+  }]), true);
+  assert.equal(elements.get("map-filter-panel").hidden, false);
+  elements.get("help-button").dispatchEvent({ type: "click" });
+  assert.equal(spotlight.getState().current, 1);
+  assert.equal(elements.get("map-filter-panel").hidden, false);
+  findAllByClass(document.body, "spotlight-shield")[0].dispatchEvent({ type: "click" });
+  assert.equal(elements.get("map-filter-panel").hidden, false);
+  assert.equal(ui.state.selection.id, before.selection.id);
+  document.dispatchEvent({ type: "keydown", key: "Escape" });
+
+  assert.equal(elements.get("map-filter-panel").hidden, true);
+  assert.equal(elements.get("endpoint-search").value, "get /orders");
+  assert.equal(ui.state.selection.kind, before.selection.kind);
+  assert.equal(ui.state.selection.id, before.selection.id);
+  assert.equal(elements.get("inspector").hidden, false);
+  assert.equal(elements.get("inspector").scrollTop, before.inspectorScroll);
+  assert.equal(ui.state.navigation.state.zoom, before.zoom);
+  assert.equal(ui.state.navigation.state.panX, before.panX);
+  assert.equal(ui.state.navigation.state.panY, before.panY);
+});
+
+test("Spotlight는 Finding 모달을 우선하고 Drawer를 닫으며 재시작 리스너를 중복하지 않음", () => {
+  const { ui, window, document, elements } = loadUi();
+  const spotlight = window.MapInBootSpotlight;
+  assert.ok(spotlight);
+  const baselineKeydown = document.listenerCount("keydown");
+  const baselineResize = window.listenerCount("resize");
+  const steps = [
+    { target: elements.get("help-button"), title: "도움말", description: "첫 단계" },
+    { target: elements.get("settings-button"), title: "설정", description: "둘째 단계" }
+  ];
+
+  elements.get("settings-button").dispatchEvent({ type: "click" });
+  assert.equal(elements.get("settings-panel").dataset.open, "true");
+  assert.equal(spotlight.start(steps), true);
+  assert.equal(elements.get("settings-panel").dataset.open, "false");
+  assert.equal(elements.get("settings-panel").inert, true);
+  assert.equal(spotlight.getState().active, true);
+  assert.equal(elements.get("help-button").getAttribute("aria-expanded"), "true");
+  assert.equal(elements.get("help-button").getAttribute("aria-controls"), "spotlight-card");
+  assert.equal(document.listenerCount("keydown"), baselineKeydown + 1);
+  assert.equal(window.listenerCount("resize"), baselineResize + 1);
+
+  spotlight.next();
+  elements.get("help-button").dispatchEvent({ type: "click" });
+  assert.equal(spotlight.getState().current, 1);
+  assert.equal(document.listenerCount("keydown"), baselineKeydown + 1);
+  assert.equal(window.listenerCount("resize"), baselineResize + 1);
+  assert.ok(Number(elements.get("help-button").style.zIndex) > 60);
+
+  elements.get("settings-button").dispatchEvent({ type: "click" });
+  assert.equal(spotlight.getState().active, false);
+  assert.equal(elements.get("settings-panel").dataset.open, "true");
+  ui.closeSettingsPanel();
+
+  elements.get("finding-modal").hidden = false;
+  assert.equal(spotlight.start(steps), false);
+  assert.equal(spotlight.getState().active, false);
+  elements.get("finding-modal").hidden = true;
+  assert.equal(document.listenerCount("keydown"), baselineKeydown);
+  assert.equal(window.listenerCount("resize"), baselineResize);
+});
 
 test("Finding 위치는 정규화된 원본 참조만 사용하고 유실 참조를 구분함", () => {
   const { window } = loadUi();

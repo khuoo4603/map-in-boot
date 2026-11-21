@@ -52,6 +52,7 @@
   const helpButton = document.querySelector("#help-button");
   const settingsButton = document.querySelector("#settings-button");
   const helpPanel = document.querySelector("#help-panel");
+  const spotlight = window.MapInBootSpotlight;
   const settingsPanel = document.querySelector("#settings-panel");
   const settingsCloseButton = document.querySelector("#settings-close");
   const showAreasSetting = document.querySelector("#setting-show-areas");
@@ -976,6 +977,7 @@
   function selectView(view, preserveFeatureSelection = false) {
     if (!viewNames[view]) return;
     const viewChanged = state.view !== view;
+    if (viewChanged && spotlight && spotlight.isActive()) spotlight.close({ restoreFocus: false });
     if (viewChanged && navigation) navigation.setLocked(false);
     if (viewChanged) state.inspectorDismissed = false;
     if (view !== "security-detail") closeFindingModal(false);
@@ -1075,6 +1077,7 @@
 
   function setSettingsPanel(open, restoreFocus = true) {
     if (!settingsPanel || !settingsButton) return;
+    if (open && spotlight && spotlight.isActive()) spotlight.close({ restoreFocus: false });
     const wasOpen = isSettingsPanelOpen();
     if (settingsPanelTimer !== null) {
       clearTimeout(settingsPanelTimer);
@@ -1098,6 +1101,16 @@
     if (wasOpen && !reducedMotion) settingsPanelTimer = setTimeout(finishSettingsPanelClose, 180);
     else settingsPanel.hidden = true;
     if (wasOpen && restoreFocus && settingsButton.focus) settingsButton.focus();
+  }
+
+  function closeSettingsPanel() {
+    if (isSettingsPanelOpen()) setSettingsPanel(false, false);
+    else if (settingsPanel) {
+      settingsPanel.inert = true;
+      settingsPanel.setAttribute("aria-hidden", "true");
+    }
+    if (settingsButton) settingsButton.setAttribute("aria-expanded", "false");
+    finishSettingsPanelClose();
   }
 
   function closeHeaderPanels() {
@@ -1326,6 +1339,7 @@
   function openFindingModal(id, trigger = null, focus = true) {
     const entry = state.findingIndex.find((item) => item.finding.id === id);
     if (!findingModal || !inspectorClient || !entry) return null;
+    if (spotlight && spotlight.isActive()) spotlight.close({ restoreFocus: false });
     state.findingModalId = id;
     state.findingModalTrigger = trigger && trigger.parentNode ? trigger : findingTrigger(id) || state.findingModalTrigger || null;
     const scope = findingImpact(entry, isFindingDetailView() ? state.viewGraph : state.graph);
@@ -2128,10 +2142,16 @@
       }
     });
   }
-  helpButton.addEventListener("click", () => {
+  helpButton.addEventListener("click", (event) => {
+    if (spotlight && spotlight.isActive()) {
+      event.stopPropagation();
+      spotlight.restart();
+      return;
+    }
     toggleHeaderPanel(helpPanel, helpButton, settingsPanel, settingsButton);
   });
   settingsButton.addEventListener("click", () => {
+    if (spotlight && spotlight.isActive()) spotlight.close({ restoreFocus: false });
     toggleHeaderPanel(settingsPanel, settingsButton, helpPanel, helpButton);
   });
   if (settingsCloseButton) settingsCloseButton.addEventListener("click", () => setSettingsPanel(false));
@@ -2315,6 +2335,11 @@
   });
   if (document.addEventListener) document.addEventListener("keydown", (event) => {
     if (event.key === "Escape") {
+      if (spotlight && spotlight.isActive()) {
+        event.preventDefault();
+        spotlight.close();
+        return;
+      }
       if (isSettingsPanelOpen()) {
         event.preventDefault();
         setSettingsPanel(false);
@@ -2353,6 +2378,8 @@
     hideNotice,
     setInspectorTab,
     focusEndpoint: (nodeId) => navigation && navigation.focusNode(nodeId),
+    setFilterPanel,
+    closeSettingsPanel,
     navigation,
     inspector: inspectorClient
   };
