@@ -3,7 +3,7 @@
 
   const SVG_NS = "http://www.w3.org/2000/svg";
   const NODE_WIDTH = 260;
-  const NODE_HEIGHT = 96;
+  const NODE_HEIGHT = 120;
   const MIN_ZOOM = 0.2;
   const MAX_ZOOM = 2.5;
   const DEFAULT_CANVAS = { width: 960, height: 540 };
@@ -98,6 +98,7 @@
       graphBounds: null,
       visibleBounds: null,
       dragging: false,
+      locked: false,
       minimapVisible: true
     };
     let pointer = null;
@@ -216,6 +217,7 @@
     }
 
     function zoomAt(nextZoom, x, y, deferred = false) {
+      if (state.locked) return state;
       const pointX = finite(x, state.canvasWidth / 2);
       const pointY = finite(y, state.canvasHeight / 2);
       const fitZoom = state.visibleBounds ? Math.min(
@@ -235,7 +237,8 @@
       return zoomAt(state.zoom * factor, x, y, deferred);
     }
 
-    function fit() {
+    function fit(options = {}) {
+      if (state.locked && !options.allowLocked) return state;
       if (!state.visibleBounds) return apply();
       const padding = 32;
       const availableWidth = Math.max(1, state.canvasWidth - padding * 2);
@@ -256,6 +259,7 @@
     }
 
     function reset() {
+      if (state.locked) return state;
       state.zoom = 1;
       state.panX = 0;
       state.panY = 0;
@@ -268,12 +272,14 @@
     }
 
     function panBy(deltaX, deltaY, deferred = false) {
+      if (state.locked) return state;
       state.panX += finite(deltaX, 0);
       state.panY += finite(deltaY, 0);
       return deferred ? scheduleApply() : apply();
     }
 
     function focusNode(nodeId) {
+      if (state.locked) return state;
       const position = state.positions[nodeId];
       if (!position) return apply();
       state.panX = state.canvasWidth / 2 - (position.x + NODE_WIDTH / 2) * state.zoom;
@@ -281,10 +287,46 @@
       return apply();
     }
 
+    function syncLockControls() {
+      const pressed = String(state.locked);
+      if (options.lockToggle) {
+        options.lockToggle.setAttribute("aria-pressed", pressed);
+        options.lockToggle.setAttribute("data-locked", pressed);
+        options.lockToggle.setAttribute("aria-label", state.locked
+          ? "화면 고정 해제" : "화면 이동과 확대·축소 고정");
+        options.lockToggle.setAttribute("data-tooltip", state.locked
+          ? "화면 고정 해제" : "화면 이동과 확대·축소 고정");
+      }
+      [options.zoomIn, options.zoomOut, options.fit, options.reset].filter(Boolean).forEach((control) => {
+        control.setAttribute("aria-disabled", pressed);
+      });
+      if (surface) surface.setAttribute("data-navigation-locked", pressed);
+    }
+
+    function cancelPan() {
+      const pointerId = pointer ? pointer.pointerId : undefined;
+      pointer = null;
+      state.dragging = false;
+      if (pointerId !== undefined && pointerId !== null && typeof surface.releasePointerCapture === "function") {
+        surface.releasePointerCapture(pointerId);
+      }
+    }
+
+    function setLocked(locked) {
+      state.locked = Boolean(locked);
+      if (state.locked) cancelPan();
+      syncLockControls();
+      return state.locked;
+    }
+
     surface.addEventListener("pointerdown", (event) => {
       if (nodeTarget(event.target)) return;
+      if (state.locked) {
+        if (typeof event.preventDefault === "function") event.preventDefault();
+        return;
+      }
       const point = currentPoint(event);
-      pointer = { x: point.x, y: point.y };
+      pointer = { x: point.x, y: point.y, pointerId: event.pointerId };
       state.dragging = true;
       if (typeof surface.setPointerCapture === "function" && event.pointerId !== undefined) {
         surface.setPointerCapture(event.pointerId);
@@ -292,23 +334,28 @@
       if (typeof event.preventDefault === "function") event.preventDefault();
     });
     surface.addEventListener("pointermove", (event) => {
+      if (state.locked) return;
       if (!pointer) return;
       const point = currentPoint(event);
       panBy(point.x - pointer.x, point.y - pointer.y, true);
-      pointer = point;
+      pointer.x = point.x;
+      pointer.y = point.y;
       if (typeof event.preventDefault === "function") event.preventDefault();
     });
     const finishPan = (event) => {
+      const pointerId = pointer && pointer.pointerId !== undefined
+        ? pointer.pointerId : event && event.pointerId;
       pointer = null;
       state.dragging = false;
-      if (typeof surface.releasePointerCapture === "function" && event && event.pointerId !== undefined) {
-        surface.releasePointerCapture(event.pointerId);
+      if (typeof surface.releasePointerCapture === "function" && pointerId !== undefined) {
+        surface.releasePointerCapture(pointerId);
       }
     };
     surface.addEventListener("pointerup", finishPan);
     surface.addEventListener("pointercancel", finishPan);
     svg.addEventListener("wheel", (event) => {
       if (typeof event.preventDefault === "function") event.preventDefault();
+      if (state.locked) return;
       const point = currentPoint(event);
       zoomBy(event.deltaY < 0 ? 1.15 : 1 / 1.15, point.x, point.y, true);
     }, { passive: false });
@@ -316,6 +363,7 @@
     if (options.zoomOut) options.zoomOut.addEventListener("click", () => zoomBy(1 / 1.2));
     if (options.fit) options.fit.addEventListener("click", fit);
     if (options.reset) options.reset.addEventListener("click", reset);
+    if (options.lockToggle) options.lockToggle.addEventListener("click", () => setLocked(!state.locked));
     if (typeof window.addEventListener === "function") window.addEventListener("resize", apply);
     const ResizeObserverConstructor = typeof window !== "undefined" ? window.ResizeObserver : null;
     if (typeof ResizeObserverConstructor === "function" && surface) {
@@ -323,12 +371,14 @@
       resizeObserver.observe(surface);
     }
 
+    syncLockControls();
     return {
       state,
       setGraph,
       apply,
       fit,
       reset,
+      setLocked,
       setMiniMapVisible,
       panBy,
       focusNode,

@@ -9,6 +9,7 @@ class Element {
   constructor(tagName) {
     this.tagName = tagName;
     this.children = [];
+    this.attributes = {};
     this.listeners = {};
     this.dataset = {};
     this.classList = { toggle: () => {} };
@@ -29,6 +30,14 @@ class Element {
 
   addEventListener(type, listener) {
     this.listeners[type] = listener;
+  }
+
+  setAttribute(name, value) {
+    this.attributes[name] = String(value);
+  }
+
+  getAttribute(name) {
+    return this.attributes[name] || null;
   }
 
   click() {
@@ -150,7 +159,7 @@ function reportWithoutBusinessState() {
   return report;
 }
 
-function createHarness(report) {
+function createHarness(report, clipboard = { writeText: async () => {} }) {
   const elements = new Map();
   ["view-content", "refresh-button", "snapshot-download-button", "request-state", "service-name", "service-meta"]
     .forEach((id) => elements.set(id, new Element("div")));
@@ -173,10 +182,11 @@ function createHarness(report) {
     console,
     document,
     fetch: async () => ({ ok: true, json: async () => report }),
-    setTimeout
+    setTimeout,
+    navigator: { clipboard }
   };
   vm.runInNewContext(fs.readFileSync(scriptPath, "utf8"), context);
-  return { content: elements.get("view-content"), nav };
+  return { content: elements.get("view-content"), nav, requestState: elements.get("request-state") };
 }
 
 function findFirst(root, predicate) {
@@ -237,4 +247,69 @@ test("업무 보안 상태 대상 없음과 안전 판정 아님을 구분해 �
 
   assert.equal(harness.content.innerText.includes("현재 서비스에서 업무 보안 상태 분석 대상이 발견되지 않았습니다."), true);
   assert.equal(harness.content.innerText.includes("분석 대상 0건은 서비스가 안전하다는 의미가 아닙니다."), true);
+});
+
+test("개발 진단 Evidence가 Snapshot 저장 표시 코드를 사용하고 원본 ID 접기·복사를 지원함", async () => {
+  const copied = [];
+  const report = reportWithSharedEvidence();
+  const harness = createHarness(report, { writeText: async (text) => copied.push(text) });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  harness.nav.find((item) => item.dataset.view === "evidence").click();
+
+  const table = findFirst(harness.content, (item) => item.tagName === "table");
+  const body = table.children.find((item) => item.tagName === "tbody");
+  assert.match(body.children[0].innerText, /E-001/);
+  assert.doesNotMatch(body.children[0].innerText, /shared-evidence/);
+  body.children[0].click();
+
+  const inspector = findFirst(harness.content, (item) => item.className === "inspector");
+  assert.match(inspector.innerText, /E-001/);
+  const revealOriginal = findFirst(inspector, (item) => item.className === "evidence-id-toggle");
+  const originalPanel = findFirst(inspector, (item) => item.className === "evidence-id-original");
+  assert.equal(revealOriginal.getAttribute("aria-expanded"), "false");
+  assert.equal(originalPanel.hidden, true);
+  revealOriginal.click();
+  assert.equal(revealOriginal.getAttribute("aria-expanded"), "true");
+  assert.match(originalPanel.innerText, /shared-evidence/);
+  findFirst(originalPanel, (item) => item.className === "evidence-id-copy").click();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.deepEqual(copied, ["shared-evidence"]);
+  assert.equal(harness.requestState.textContent, "원본 식별자를 복사했습니다.");
+});
+
+test("개발 진단 구버전 Evidence 매핑은 설명 문구로 표시하고 원본 ID를 코드로 대체하지 않음", async () => {
+  const report = reportWithSharedEvidence();
+  report.evidenceDisplayCodes = {};
+  const copied = [];
+  const harness = createHarness(report, { writeText: async (text) => copied.push(text) });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  harness.nav.find((item) => item.dataset.view === "evidence").click();
+
+  const table = findFirst(harness.content, (item) => item.tagName === "table");
+  const row = table.children.find((item) => item.tagName === "tbody").children[0];
+  assert.match(row.innerText, /표시 ID가 저장되지 않은 근거입니다\./);
+  row.click();
+  const inspector = findFirst(harness.content, (item) => item.className === "inspector");
+  assert.match(inspector.innerText, /표시 ID가 저장되지 않은 근거입니다\./);
+  const revealOriginal = findFirst(inspector, (item) => item.className === "evidence-id-toggle");
+  assert.equal(revealOriginal.getAttribute("aria-expanded"), "false");
+  revealOriginal.click();
+  assert.equal(revealOriginal.getAttribute("aria-expanded"), "true");
+  assert.match(findFirst(inspector, (item) => item.className === "evidence-id-original").innerText, /shared-evidence/);
+  findFirst(inspector, (item) => item.className === "evidence-id-copy").click();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.deepEqual(copied, ["shared-evidence"]);
+});
+
+test("개발 진단에서 Evidence ID 참조가 비었을 때 누락 상태를 명시함", async () => {
+  const report = reportWithSharedEvidence();
+  report.facts[0].evidenceIds = [];
+  const harness = createHarness(report);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  harness.nav.find((item) => item.dataset.view === "object-authorization").click();
+
+  const table = findFirst(harness.content, (item) => item.tagName === "table");
+  table.children.find((item) => item.tagName === "tbody").children[0].click();
+  const inspector = findFirst(harness.content, (item) => item.className === "inspector");
+  assert.match(inspector.innerText, /연결된 근거가 없습니다\./);
 });

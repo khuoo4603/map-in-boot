@@ -3,9 +3,9 @@
 
   const SVG_NS = "http://www.w3.org/2000/svg";
   const NODE_WIDTH = 260;
-  const NODE_HEIGHT = 96;
+  const NODE_HEIGHT = 120;
   const NODE_GAP_X = 330;
-  const NODE_GAP_Y = 132;
+  const NODE_GAP_Y = 156;
   const NODE_PADDING = 48;
   const NODE_TYPES = Object.freeze([
     "APPLICATION", "SERVLET", "ENDPOINT", "HANDLER", "SECURITY_CHAIN",
@@ -15,12 +15,34 @@
     "FLOWS_TO", "MATCHED_BY", "FILTERED_BY", "SECURED_BY", "READS_SECURITY_DATA",
     "WRITES_SECURITY_DATA", "CONVERTS_TO_AUTHORITY", "USES_FOR_AUTHORIZATION", "SECURITY_STATE"
   ]);
+  const nodeDisplayPrefixes = Object.freeze({
+    APPLICATION: "AP-SERVICE",
+    SERVLET: "SV-SERVLET",
+    ENDPOINT: "EP-MAPPING",
+    HANDLER: "EP-HANDLER",
+    SECURITY_CHAIN: "SC-CHAIN",
+    AUTHENTICATION: "SC-AUTHN",
+    AUTHORIZATION: "SC-AUTH",
+    SECURITY_DATA: "SD-DATA",
+    BUSINESS_SECURITY_STATE: "BS-STATE"
+  });
+  const edgeDisplayPrefixes = Object.freeze({
+    FLOWS_TO: "RL-FLOW",
+    MATCHED_BY: "RL-MATCH",
+    FILTERED_BY: "RL-FILTER",
+    SECURED_BY: "RL-SECURITY",
+    READS_SECURITY_DATA: "RL-READ",
+    WRITES_SECURITY_DATA: "RL-WRITE",
+    CONVERTS_TO_AUTHORITY: "RL-AUTHORITY",
+    USES_FOR_AUTHORIZATION: "RL-AUTHZ",
+    SECURITY_STATE: "RL-STATE"
+  });
   const nodeTypeNames = {
     APPLICATION: "애플리케이션",
     SERVLET: "서블릿",
     ENDPOINT: "API",
     HANDLER: "핸들러",
-    SECURITY_CHAIN: "보안 체인",
+    SECURITY_CHAIN: "보안 필터 체인",
     FILTER: "필터",
     AUTHENTICATION: "인증",
     AUTHORIZATION: "인가",
@@ -35,9 +57,100 @@
     READS_SECURITY_DATA: "보안정보 읽기",
     WRITES_SECURITY_DATA: "보안정보 기록",
     CONVERTS_TO_AUTHORITY: "권한 변환",
-    USES_FOR_AUTHORIZATION: "인가 사용",
+    USES_FOR_AUTHORIZATION: "실제 인가 사용",
     SECURITY_STATE: "보안 상태"
   };
+  const nodeTypeLabel = (type) => nodeTypeNames[type] || "노드 유형 확인 불가";
+  const edgeTypeLabel = (type) => edgeTypeNames[type] || "관계 유형 확인 불가";
+  const findingRuleNames = Object.freeze({
+    CHAIN_MISSING: "보안 필터 체인 미적용",
+    CHAIN_ORDER: "보안 체인·매칭 우선순위 문제",
+    PUBLIC_ENDPOINT: "과도한 공개 접근 허용",
+    METHOD_MISMATCH: "URL·메서드 보안 불일치",
+    FILTER_ORDER: "필터 구성·순서 문제",
+    OBJECT_BINDING: "인증 주체와 대상 객체 권한 검증 문제",
+    STATE_BYPASS: "업무 보안 절차 우회 가능성"
+  });
+  const confidenceNames = Object.freeze({
+    CONFIRMED: "확정",
+    LIKELY: "검토 필요",
+    UNKNOWN: "판단 불가",
+    PARTIAL: "부분 분석"
+  });
+  const evidenceSourceNames = Object.freeze({
+    RUNTIME: "실행 환경",
+    SPRING_METADATA: "Spring 메타데이터",
+    CODE_PATTERN: "코드 분석",
+    DECLARATION: "선언 정보"
+  });
+  const analysisStatusNames = Object.freeze({
+    NOT_STARTED: "대기",
+    RUNNING: "실행 중",
+    COLLECTING: "수집 중",
+    ANALYZING: "분석 중",
+    PARTIAL: "부분 분석",
+    COMPLETED: "완료",
+    FAILED: "실패",
+    READY: "완료",
+    UNKNOWN: "판단 불가"
+  });
+
+  // 전체 Snapshot의 유형별 원본 식별자 집합에 고정된 화면 표시 코드
+  function createDisplayIds(graph) {
+    const makeCodes = (items, getPrefix, fallbackPrefix) => {
+      const prefixById = new Map();
+      (items || []).forEach((item) => {
+        if (!item || item.id === undefined || item.id === null) return;
+        const id = String(item.id);
+        const prefix = getPrefix(item) || fallbackPrefix;
+        const previous = prefixById.get(id);
+        prefixById.set(id, previous && previous !== prefix ? fallbackPrefix : prefix);
+      });
+
+      const groups = new Map();
+      Array.from(prefixById.entries()).forEach(([id, prefix]) => {
+        const ids = groups.get(prefix) || [];
+        ids.push(id);
+        groups.set(prefix, ids);
+      });
+
+      const codes = new Map();
+      groups.forEach((ids, prefix) => {
+        ids.sort().forEach((id, index) => codes.set(id, `${prefix}-${String(index + 1).padStart(3, "0")}`));
+      });
+      return codes;
+    };
+    const nodeIds = makeCodes(graph && graph.nodes, (node) => {
+      if (node.type === "FILTER") {
+        const registrationKind = node.attributes && node.attributes.registrationKind;
+        return registrationKind === "SECURITY" ? "SF-FILTER"
+          : registrationKind === "SERVLET" ? "SV-FILTER" : "FL-FILTER";
+      }
+      return nodeDisplayPrefixes[node.type];
+    }, "ND-UNKNOWN");
+    const edgeIds = makeCodes(graph && graph.edges, (edge) => edgeDisplayPrefixes[edge.type], "RL-UNKNOWN");
+    return {
+      node: (id) => nodeIds.get(String(id)) || "노드 확인 불가",
+      edge: (id) => edgeIds.get(String(id)) || "관계 확인 불가"
+    };
+  }
+
+  function findingRuleLabel(ruleId) {
+    return findingRuleNames[ruleId] || "진단 유형 확인 불가";
+  }
+
+  function confidenceLabel(confidence) {
+    return confidenceNames[confidence] || confidenceNames.UNKNOWN;
+  }
+
+  function evidenceSourceLabel(source) {
+    return evidenceSourceNames[source] || "출처 확인 불가";
+  }
+
+  function analysisStatusLabel(status) {
+    return analysisStatusNames[status] || analysisStatusNames.UNKNOWN;
+  }
+
   const nodeStyles = {
     APPLICATION: "#4ade80",
     SERVLET: "#67e8f9",
@@ -228,8 +341,37 @@
 
   function shortTypeNames(value) {
     return stringValue(value, "")
-      .replace(/\b(?:[a-zA-Z_$][\w$]*\.)+([A-Z_$][\w$]*)/g, "$1")
-      .replace(/L([\w/$]+);/g, (_match, name) => simpleClassName(name));
+      .replace(/L([\w/$]+);/g, (_match, name) => name.replace(/\//g, "."))
+      .replace(/(?:[\w$]+\.)+([\w$]+)/g, "$1")
+      .replace(/(?:[\w$]+\$)+([\w$]+)/g, "$1")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+
+  function shortHandlerSignature(value) {
+    const source = stringValue(value, "").trim();
+    const separator = source.indexOf("#");
+    const signature = separator >= 0 ? source.slice(separator + 1).trim() : source;
+    const open = signature.indexOf("(");
+    const close = signature.lastIndexOf(")");
+    if (open < 0 || close < open) return signature;
+    const name = signature.slice(0, open).trim();
+    const parameters = signature.slice(open + 1, close);
+    if (!parameters.trim()) return `${name}()`;
+
+    const types = [];
+    let depth = 0;
+    let start = 0;
+    for (let index = 0; index < parameters.length; index += 1) {
+      if (parameters[index] === "<") depth += 1;
+      else if (parameters[index] === ">") depth = Math.max(0, depth - 1);
+      else if (parameters[index] === "," && depth === 0) {
+        types.push(parameters.slice(start, index));
+        start = index + 1;
+      }
+    }
+    types.push(parameters.slice(start));
+    return `${name}(${types.map(shortTypeNames).join(", ")})`;
   }
 
   function handlerDisplay(value) {
@@ -238,10 +380,7 @@
     const hashIndex = text.indexOf("#");
     if (hashIndex < 0) return simpleClassName(text);
     const owner = simpleClassName(text.slice(0, hashIndex));
-    const methodText = shortTypeNames(text.slice(hashIndex + 1));
-    const methodName = methodText.split("(", 1)[0].trim();
-    const method = `${methodName}()`;
-    return `${owner}#${method}`;
+    return `${owner}#${shortHandlerSignature(text.slice(hashIndex + 1))}`;
   }
 
   function handlerParts(value) {
@@ -319,7 +458,7 @@
     }
     if (node.type === "HANDLER") {
       const parts = handlerParts(attributes.handler || node.label);
-      return { primary: parts.primary || "핸들러 확인 불가", detail: parts.detail || "메서드 확인 불가" };
+      return { primary: parts.detail || "메서드 확인 불가", detail: parts.primary || "핸들러 확인 불가" };
     }
     if (node.type === "FILTER") {
       const registration = attributes.registrationKind === "SECURITY" ? "보안" : attributes.registrationKind === "SERVLET" ? "서블릿" : "등록 확인 필요";
@@ -339,10 +478,12 @@
       };
     }
     if (node.type === "SECURITY_CHAIN") {
-      const order = attributes.chainOrder ? `${attributes.chainOrder}번` : "순서 확인 불가";
+      const chainName = stringValue(attributes.proxyBeanName, "");
+      const matcher = matcherDisplay(attributes.matcherCondition);
       return {
-        primary: `보안 체인 ${order}`,
-        detail: matcherDisplay(attributes.matcherCondition) || "조건 확인 불가"
+        primary: matcher || chainName || "보안 체인",
+        detail: [chainName && chainName !== matcher ? chainName : "", attributes.chainOrder ? `순서 ${attributes.chainOrder}` : ""]
+          .filter(Boolean).join(" · ") || "조건 확인 불가"
       };
     }
     if (node.type === "SERVLET") {
@@ -352,9 +493,11 @@
       };
     }
     if (node.type === "APPLICATION") {
+      const version = attributes.applicationVersion ? `버전 ${attributes.applicationVersion}` : "";
+      const serviceId = node.serviceId ? `서비스 ID ${node.serviceId}` : "";
       return {
-        primary: simpleClassName(attributes.applicationClass || node.label) || "애플리케이션",
-        detail: attributes.applicationVersion ? `버전 ${attributes.applicationVersion}` : "애플리케이션 진입"
+        primary: simpleClassName(attributes.applicationName || attributes.applicationClass || node.label) || "애플리케이션",
+        detail: [version, serviceId].filter(Boolean).join(" · ") || "애플리케이션 진입"
       };
     }
     if (node.type === "AUTHORIZATION") {
@@ -376,11 +519,30 @@
       };
     }
     if (node.type === "SECURITY_DATA") {
+      const dataKindNames = {
+        JWT: "JWT",
+        JWT_CLAIM: "JWT Claim",
+        SESSION_STATE: "Session 상태",
+        HEADER: "Header",
+        PRINCIPAL: "Principal",
+        AUTHORITY: "권한"
+      };
+      const dataKind = stringValue(attributes.dataKind, "");
+      if (dataKindNames[dataKind]) {
+        const detailValue = dataKind === "JWT_CLAIM" ? attributes.claimName
+          : dataKind === "PRINCIPAL" ? friendlyClassName(attributes.principalType)
+            : dataKind === "HEADER" ? attributes.headerName
+              : attributes.apiName;
+        const operationNames = { READ: "조회", CREATE: "생성", VERIFY_CONFIGURATION: "검증 구성", DECLARE: "선언" };
+        const detail = [detailValue, operationNames[attributes.operation]].filter(Boolean).join(" · ");
+        return { primary: dataKindNames[dataKind], detail };
+      }
       return securityDataDisplay(attributes, attributes.dataType || attributes.securityKind || "보안 정보");
     }
     if (node.type === "BUSINESS_SECURITY_STATE") {
       const kind = attributes.factType === "BUSINESS_STATE_EVALUATION" ? "업무 상태 검증"
-        : attributes.factType === "BUSINESS_STATE_REQUIREMENT" ? "업무 상태 요구" : "업무 보안 상태";
+        : attributes.factType === "BUSINESS_STATE_REQUIREMENT" || attributes.stateAction === "REQUIRES" ? "업무 상태 요구"
+          : attributes.stateAction === "PRODUCES" ? "업무 상태 생성" : "업무 보안 상태";
       return {
         primary: [kind, attributes.stateName].filter(Boolean).join(" · "),
         detail: attributes.pathOutcome === "BYPASS_PATH" ? "검증 경로 우회"
@@ -429,7 +591,7 @@
       segments.forEach((segment) => {
         const candidate = `${current}${segment}/`;
         if (current !== "/" && candidate.length > maxLength) {
-          parts.push(current);
+          parts.push(current.endsWith("/") ? current.slice(0, -1) : current);
           current = `/${segment}/`;
         } else {
           current = candidate;
@@ -463,7 +625,7 @@
     }
     let candidate = source;
     while (candidate.length > 1 && textElement.getComputedTextLength() > maxWidth) {
-      candidate = `${candidate.slice(0, -2)}…`;
+      candidate = candidate.length > 2 ? `${candidate.slice(0, -2).trimEnd()}…` : "…";
       textElement.textContent = candidate;
     }
     return textElement;
@@ -479,12 +641,38 @@
     return textElement;
   }
 
-  function controllerGroupDisplay(group) {
+  function ensureNodeTextClips(svg) {
+    if (!svg || Array.from(svg.children || []).some((child) => child.getAttribute("data-node-text-clips") === "true")) return;
+    const definitions = createElement("defs");
+    definitions.setAttribute("data-node-text-clips", "true");
+    [
+      { id: "graph-node-header-clip", className: "graph-node-header-clip", x: 108, y: 7, width: 140, height: 24 },
+      { id: "graph-node-content-clip", className: "graph-node-content-clip", x: 12, y: 34, width: 236, height: 78 }
+    ].forEach(({ id, className, x, y, width, height }) => {
+      const clipPath = createElement("clipPath");
+      clipPath.setAttribute("id", id);
+      clipPath.setAttribute("class", className);
+      clipPath.setAttribute("clipPathUnits", "userSpaceOnUse");
+      const rect = createElement("rect");
+      rect.setAttribute("x", String(x));
+      rect.setAttribute("y", String(y));
+      rect.setAttribute("width", String(width));
+      rect.setAttribute("height", String(height));
+      clipPath.appendChild(rect);
+      definitions.appendChild(clipPath);
+    });
+    svg.appendChild(definitions);
+  }
+
+  function controllerGroupDisplay(group, displayIds) {
     const methodCount = Array.isArray(group.handlerMethods) ? group.handlerMethods.length : 0;
     const endpointCount = Array.isArray(group.endpointIds) ? group.endpointIds.length : 0;
+    const memberIds = group.type ? group.nodeIds || [] : group.handlerIds || [];
+    const codes = memberIds.map((id) => displayIds.node(id)).sort();
     return {
       primary: group.controllerName || group.controllerFqcn,
-      detail: `API ${endpointCount}개 · 메서드 ${methodCount}개`
+      detail: `API ${endpointCount}개 · 메서드 ${methodCount}개`,
+      displayId: codes.length > 1 ? `${codes[0]} 외 ${codes.length - 1}개` : codes[0] || "표시 ID 확인 불가"
     };
   }
 
@@ -603,24 +791,22 @@
       const relatedEdgeIds = options.related && options.related.edgeIds instanceof Set
         ? options.related.edgeIds : new Set();
       const requested = shouldShowEdgeLabel(edge, options, relatedEdgeIds);
-      const label = edgeTypeNames[edge.type] || edge.type;
+      const label = edgeTypeLabel(edge.type);
       const width = Math.min(170, Math.max(54, label.length * 13));
       const height = 18;
       const base = edgeLabelPosition(source, target, 0, edgeRoutes && edgeRoutes[edge.id]);
-      const candidates = [0, -20, 20, -40, 40].map((offset) => ({
-        x: base.x,
-        y: base.y + offset,
-        width,
-        height
-      }));
-      const candidate = candidates.find((box) => !nodeBoxes.some((nodeBox) => boxesOverlap(box, nodeBox))
-        && !usedBoxes.some((usedBox) => boxesOverlap(box, usedBox))) || candidates[0];
-      const collision = nodeBoxes.some((nodeBox) => boxesOverlap(candidate, nodeBox))
-        || usedBoxes.some((usedBox) => boxesOverlap(candidate, usedBox));
-      const selected = options.selection && options.selection.kind === "edge" && options.selection.id === edge.id;
-      const visible = requested && (!collision || selected);
-      placed.set(edge.id, { x: candidate.x, y: candidate.y, visible, collision });
-      if (visible) usedBoxes.push(candidate);
+      const candidates = [0, -20, 20, -40, 40].map((offset) => {
+        const x = base.x;
+        const y = base.y + offset;
+        return { x, y, bounds: { x: x - width / 2, y: y - 14, width, height } };
+      });
+      const candidate = candidates.find(({ bounds }) => !nodeBoxes.some((nodeBox) => boxesOverlap(bounds, nodeBox))
+        && !usedBoxes.some((usedBox) => boxesOverlap(bounds, usedBox)));
+      const collision = !candidate;
+      const position = candidate || { x: base.x, y: base.y };
+      const visible = requested && !collision;
+      placed.set(edge.id, { x: position.x, y: position.y, visible, collision });
+      if (visible) usedBoxes.push(candidate.bounds);
     });
     return placed;
   }
@@ -907,7 +1093,7 @@
       card.setAttribute("class", "graph-projection-card");
       card.setAttribute("width", String(nodeWidth));
       card.setAttribute("height", String(nodeHeight));
-      card.setAttribute("rx", "6");
+      card.setAttribute("rx", "7");
       group.appendChild(card);
       addText(group, "graph-projection-type", 14, 22, "내부 처리 단계");
       addNodeText(group, "graph-projection-label", 14, 48, node.primary, nodeWidth - 28, 28);
@@ -990,8 +1176,7 @@
       group.setAttribute("tabindex", "0");
       group.setAttribute("role", "button");
       const confidence = section.finding.confidence || "UNKNOWN";
-      const confidenceLabel = { CONFIRMED: "확정", LIKELY: "검토 필요", UNKNOWN: "확인 불가" }[confidence] || "확인 불가";
-      const label = `${section.finding.title || section.finding.id} · ${confidenceLabel}`;
+      const label = `${section.finding.title || "진단 항목"} · ${confidenceLabel(confidence)}`;
       group.setAttribute("aria-label", `Finding 영향 범위 열기: ${label}`);
       const outline = createElement("rect");
       outline.setAttribute("class", "graph-area-box graph-finding-section-outline");
@@ -1052,7 +1237,9 @@
 
   function render(graph, layers, options = {}) {
     const findings = Array.isArray(options.findings) ? options.findings : [];
-    const confidenceNames = { CONFIRMED: "확정", LIKELY: "검토 필요", UNKNOWN: "확인 불가" };
+    const displayIds = options.displayIds || createDisplayIds(graph);
+    if (graph.nodes.length > 0 && layers.svg) layers.svg.removeAttribute("hidden");
+    ensureNodeTextClips(layers.svg);
     function appendMarkers(parent, entries, x, y) {
       entries.forEach(({ finding }, index) => {
         const marker = createElement("g");
@@ -1064,7 +1251,7 @@
         marker.setAttribute("data-confidence", finding.confidence || "UNKNOWN");
         marker.setAttribute("data-selected", String(finding.id === options.selectedFindingId));
         marker.setAttribute("aria-pressed", String(finding.id === options.selectedFindingId));
-        const label = `${finding.title || finding.id} · ${finding.ruleId || ""} · ${confidenceNames[finding.confidence] || "확인 불가"}`;
+        const label = `${finding.title || "진단 항목"} · ${findingRuleLabel(finding.ruleId)} · ${confidenceLabel(finding.confidence)}`;
         marker.setAttribute("aria-label", label);
         const title = createElement("title");
         title.textContent = label;
@@ -1180,7 +1367,7 @@
       path.setAttribute("data-evidence-ids", edge.evidenceIds.join(","));
       path.setAttribute("tabindex", "0");
       path.setAttribute("role", "button");
-      path.setAttribute("aria-label", `${edgeTypeNames[edge.type] || edge.type} ${edge.sourceId} → ${edge.targetId}`);
+      path.setAttribute("aria-label", `${edgeTypeLabel(edge.type)} · ${displayIds.node(edge.sourceId)} → ${displayIds.node(edge.targetId)}`);
       path.setAttribute("data-selected", String(Boolean(selection && selection.kind === "edge" && edgeIds.includes(selection.id))));
       path.setAttribute("data-related", String(!selection || edgeIds.some((id) => relatedEdgeIds.has(id))));
       path.setAttribute("stroke", style.color);
@@ -1227,12 +1414,12 @@
         && shouldShowEdgeLabel(edge, options, relatedEdgeIds)));
       label.setAttribute("data-collision", String(Boolean(labelPosition.collision)));
       label.setAttribute("fill", style.color);
-      label.textContent = edgeTypeNames[edge.type] || edge.type;
+      label.textContent = edgeTypeLabel(edge.type);
       layers.edgeLayer.appendChild(label);
       edgeLabelElements.push(label);
       const setHoveredLabel = (visible) => {
         if (options.displayEdgeLabels === false) return;
-        if (visible || (selection && selection.kind === "edge" && selection.id === edge.id)) {
+        if (!labelPosition.collision && (visible || (selection && selection.kind === "edge" && selection.id === edge.id))) {
           label.setAttribute("data-visible", "true");
         } else {
           label.setAttribute("data-visible", "false");
@@ -1263,7 +1450,7 @@
       group.setAttribute("data-related", String(!selection || relatedNodeIds.has(node.id)));
       group.setAttribute("tabindex", "0");
       group.setAttribute("role", "button");
-      group.setAttribute("aria-label", `${nodeTypeNames[node.type] || node.type} ${display.primary} ${display.detail}`);
+      group.setAttribute("aria-label", `${nodeTypeLabel(node.type)} ${display.primary} ${display.detail}`);
       if (options.onNodeClick) group.addEventListener("click", (event) => {
         if (event && event.stopPropagation) event.stopPropagation();
         options.onNodeClick(node.id, group);
@@ -1277,44 +1464,17 @@
         if (event.preventDefault) event.preventDefault();
         if (options.onNodeClick) options.onNodeClick(node.id, group);
       });
+      const nodeFindingEntries = findings.filter((entry) => entry.nodeIds.includes(node.id));
+      const cardTextWidth = NODE_WIDTH - (nodeFindingEntries.length ? 56 : 28);
+      const textFallbackLimit = nodeFindingEntries.length ? 26 : 28;
 
       const card = createElement("rect");
       card.setAttribute("class", "graph-node-card");
       card.setAttribute("width", String(NODE_WIDTH));
       card.setAttribute("height", String(NODE_HEIGHT));
-      card.setAttribute("rx", "6");
+      card.setAttribute("rx", "7");
       card.setAttribute("stroke", style);
       group.appendChild(card);
-      const mark = createElement("rect");
-      mark.setAttribute("class", "graph-node-mark");
-      mark.setAttribute("x", "14");
-      mark.setAttribute("y", "12");
-      mark.setAttribute("width", "8");
-      mark.setAttribute("height", "8");
-      mark.setAttribute("rx", "2");
-      mark.setAttribute("fill", style);
-      group.appendChild(mark);
-      addText(group, "graph-node-type", 30, 23, nodeTypeNames[node.type] || node.type);
-      const primaryLines = semanticLines(display.primary, 28).slice(0, 2);
-      primaryLines.forEach((line, index) => addNodeText(
-        group,
-        "graph-node-label",
-        14,
-        48 + index * 16,
-        line,
-        NODE_WIDTH - 28,
-        28
-      ));
-      addNodeText(
-        group,
-        "graph-node-detail",
-        14,
-        primaryLines.length > 1 ? 84 : 76,
-        display.detail,
-        NODE_WIDTH - 28,
-        40
-      );
-
       const input = createElement("circle");
       input.setAttribute("class", "graph-port graph-port-in");
       input.setAttribute("cx", "0");
@@ -1330,14 +1490,41 @@
       output.setAttribute("data-port", "out");
       group.appendChild(output);
       layers.nodeLayer.appendChild(group);
-      appendMarkers(layers.nodeLayer, findings.filter((entry) => entry.nodeIds.includes(node.id)), position.x + NODE_WIDTH - 14, position.y + 14);
+
+      const badge = createElement("rect");
+      badge.setAttribute("class", "graph-node-type-badge");
+      badge.setAttribute("x", "12");
+      badge.setAttribute("y", "9");
+      badge.setAttribute("width", "92");
+      badge.setAttribute("height", "20");
+      badge.setAttribute("rx", "4");
+      group.appendChild(badge);
+      addText(group, "graph-node-type", 20, 23, nodeTypeLabel(node.type));
+      const displayCode = addNodeText(group, "graph-node-display-id", 248, 23,
+        displayIds.node(node.id), 138, 22);
+      displayCode.setAttribute("text-anchor", "end");
+      displayCode.setAttribute("clip-path", "url(#graph-node-header-clip)");
+
+      const primaryLines = semanticLines(display.primary, 28).slice(0, 2);
+      primaryLines.forEach((line, index) => {
+        const title = addNodeText(group, "graph-node-label", 14, 56 + index * 18, line, cardTextWidth, textFallbackLimit);
+        title.setAttribute("clip-path", "url(#graph-node-content-clip)");
+      });
+      const detail = node.type === "ENDPOINT" ? "" : display.detail;
+      if (detail) {
+        const detailText = addNodeText(group, "graph-node-detail", 14,
+          primaryLines.length > 1 ? 101 : 84, detail, cardTextWidth, textFallbackLimit);
+        detailText.setAttribute("clip-path", "url(#graph-node-content-clip)");
+      }
+      appendMarkers(layers.nodeLayer, nodeFindingEntries,
+        position.x + NODE_WIDTH - 14, position.y + NODE_HEIGHT - 14);
       nodeElements.push(group);
     });
 
     controllerGroups.forEach((groupDefinition) => {
       const position = displayPositions[groupDefinition.id];
       if (!position) return;
-      const display = controllerGroupDisplay(groupDefinition);
+      const display = controllerGroupDisplay(groupDefinition, displayIds);
       const group = createElement("g");
       group.setAttribute("class", groupDefinition.type ? "graph-node graph-support-group" : "graph-node graph-controller-group");
       group.setAttribute("transform", `translate(${position.x} ${position.y})`);
@@ -1367,26 +1554,18 @@
         if (event.preventDefault) event.preventDefault();
         if (options.onControllerGroupClick) options.onControllerGroupClick(groupDefinition.id, group);
       });
+      const groupFindingEntries = findings.filter((entry) => entry.nodeIds.some((id) =>
+        (groupDefinition.nodeIds || []).includes(id) || (groupDefinition.handlerIds || []).includes(id)));
+      const cardTextWidth = NODE_WIDTH - (groupFindingEntries.length ? 56 : 28);
+      const textFallbackLimit = groupFindingEntries.length ? 26 : 28;
 
       const card = createElement("rect");
       card.setAttribute("class", "graph-node-card graph-controller-group-card");
       card.setAttribute("width", String(NODE_WIDTH));
       card.setAttribute("height", String(NODE_HEIGHT));
-      card.setAttribute("rx", "6");
+      card.setAttribute("rx", "7");
       card.setAttribute("stroke", "#c4b5fd");
       group.appendChild(card);
-      const mark = createElement("rect");
-      mark.setAttribute("class", "graph-node-mark");
-      mark.setAttribute("x", "14");
-      mark.setAttribute("y", "12");
-      mark.setAttribute("width", "8");
-      mark.setAttribute("height", "8");
-      mark.setAttribute("rx", "2");
-      mark.setAttribute("fill", "#c4b5fd");
-      group.appendChild(mark);
-      addText(group, "graph-node-type", 30, 23, groupDefinition.type === "AUTHORIZATION" ? "인가 근거" : groupDefinition.type === "SECURITY_DATA" ? "보안정보 사용" : "Controller");
-      addNodeText(group, "graph-node-label", 14, 48, display.primary, NODE_WIDTH - 28, 28);
-      addNodeText(group, "graph-node-detail", 14, 76, groupDefinition.type ? `원본 Fact ${(groupDefinition.nodeIds || []).length}건` : display.detail, NODE_WIDTH - 28, 40);
       [0, NODE_WIDTH].forEach((x) => {
         const port = createElement("circle");
         port.setAttribute("class", x === 0 ? "graph-port graph-port-in" : "graph-port graph-port-out");
@@ -1398,7 +1577,30 @@
       });
       const groupedNodeIds = (groupDefinition.nodeIds || []).concat(groupDefinition.handlerIds || []);
       layers.nodeLayer.appendChild(group);
-      appendMarkers(layers.nodeLayer, findings.filter((entry) => entry.nodeIds.some((id) => groupedNodeIds.includes(id))), position.x + NODE_WIDTH - 14, position.y + 14);
+      const groupType = groupDefinition.type === "AUTHORIZATION" ? "인가 근거"
+        : groupDefinition.type === "SECURITY_DATA" ? "보안정보 사용" : "Controller";
+      const badge = createElement("rect");
+      badge.setAttribute("class", "graph-node-type-badge");
+      badge.setAttribute("x", "12");
+      badge.setAttribute("y", "9");
+      badge.setAttribute("width", "92");
+      badge.setAttribute("height", "20");
+      badge.setAttribute("rx", "4");
+      group.appendChild(badge);
+      addText(group, "graph-node-type", 20, 23, groupType);
+      const displayCode = addNodeText(group, "graph-node-display-id", 248, 23,
+        display.displayId, 138, 22);
+      displayCode.setAttribute("text-anchor", "end");
+      displayCode.setAttribute("clip-path", "url(#graph-node-header-clip)");
+      const title = addNodeText(group, "graph-node-label", 14, 56, display.primary, cardTextWidth, textFallbackLimit);
+      title.setAttribute("clip-path", "url(#graph-node-content-clip)");
+      const detail = groupDefinition.type ? `원본 Fact ${(groupDefinition.nodeIds || []).length}건` : display.detail;
+      if (detail) {
+        const detailText = addNodeText(group, "graph-node-detail", 14, 84, detail, cardTextWidth, textFallbackLimit);
+        detailText.setAttribute("clip-path", "url(#graph-node-content-clip)");
+      }
+      appendMarkers(layers.nodeLayer, groupFindingEntries,
+        position.x + NODE_WIDTH - 14, position.y + NODE_HEIGHT - 14);
       nodeElements.push(group);
     });
 
@@ -1522,12 +1724,23 @@
     edgeTypes: EDGE_TYPES,
     nodeTypeNames,
     edgeTypeNames,
-    nodeTypeLabel: (type) => nodeTypeNames[type] || type,
-    edgeTypeLabel: (type) => edgeTypeNames[type] || type,
+    nodeTypeLabel,
+    edgeTypeLabel,
+    findingRuleNames,
+    findingRuleLabel,
+    confidenceNames,
+    confidenceLabel,
+    evidenceSourceNames,
+    evidenceSourceLabel,
+    analysisStatusNames,
+    analysisStatusLabel,
+    createDisplayIds,
     shorten,
     simpleClassName,
     friendlyClassName,
     handlerDisplay,
+    shortHandlerSignature,
+    controllerGroupDisplay,
     securityDataDisplay,
     normalize,
     indexFindings,

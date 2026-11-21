@@ -4,6 +4,7 @@ import com.mapinboot.core.common.error.ErrorCode;
 import com.mapinboot.core.common.error.MapInBootException;
 import com.mapinboot.core.snapshot.Snapshot;
 import tools.jackson.core.JacksonException;
+import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
 
 // Snapshot 전용 Jackson 3 JSON 변환
@@ -37,8 +38,17 @@ public class SnapshotJsonCodec {
             throw new MapInBootException(ErrorCode.INVALID_SNAPSHOT, "Snapshot JSON이 없습니다.");
         }
         try {
-            Snapshot snapshot = mapper.readValue(json, Snapshot.class);
-            SnapshotAssembler.validateSnapshot(snapshot);
+            JsonNode payload = mapper.readTree(json);
+            if (payload == null || !payload.isObject()) {
+                throw new MapInBootException(ErrorCode.INVALID_SNAPSHOT, "Snapshot JSON 구조가 올바르지 않습니다.");
+            }
+            // 표시 코드 필드가 없는 schemaVersion 1 Snapshot의 읽기 호환 처리
+            boolean hasEvidenceDisplayCodes = payload.has("evidenceDisplayCodes");
+            if (hasEvidenceDisplayCodes && !payload.get("evidenceDisplayCodes").isObject()) {
+                throw new MapInBootException(ErrorCode.INVALID_SNAPSHOT, "Snapshot Evidence 표시 코드가 올바르지 않습니다.");
+            }
+            Snapshot snapshot = mapper.treeToValue(payload, Snapshot.class);
+            SnapshotAssembler.validateSnapshot(snapshot, !hasEvidenceDisplayCodes);
             return snapshot;
         } catch (MapInBootException exception) {
             if (exception.getErrorCode() == ErrorCode.INVALID_SNAPSHOT) {

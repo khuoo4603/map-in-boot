@@ -1,4 +1,4 @@
-package com.mapinboot.starter.web.ui;
+package com.mapinboot.starter.snapshot;
 
 import com.mapinboot.core.analysis.model.AnalysisReport;
 import com.mapinboot.core.collection.model.CollectionReport;
@@ -57,10 +57,12 @@ class EvidenceDisplayCodeResolverTest {
                 Map.of("policySource", "METHOD"), Confidence.LIKELY,
                 List.of(endpoint.id(), methodDeclaration.id(), methodCall.id()));
         AnalysisReport analysis = new AnalysisReport(
-                collection, List.of(methodRelation), List.of(methodCall, general),
+                collection, List.of(methodRelation),
+                List.of(endpoint, servlet, servletFilter, securityFilter, securityFilterCode, chain, policy,
+                        methodDeclaration, methodMetadata, methodRuntime, methodCall, general),
                 Map.of("analyzer", AnalysisStatus.READY), List.of());
 
-        Map<String, String> codes = new EvidenceDisplayCodeResolver().resolve(collection, analysis);
+        Map<String, String> codes = new EvidenceDisplayCodeResolver().resolve(collection, analysis, analysis.evidence());
 
         assertEquals("EP-MAPPING-001", codes.get(endpoint.id()));
         assertEquals("SV-SERVLET-001", codes.get(servlet.id()));
@@ -85,7 +87,7 @@ class EvidenceDisplayCodeResolverTest {
                         new Fact("fact-chain", "SECURITY_CHAIN", "chain", Map.of(), List.of(shared.id()))),
                 List.of(shared), AnalysisStatus.READY);
 
-        Map<String, String> codes = new EvidenceDisplayCodeResolver().resolve(collection, null);
+        Map<String, String> codes = new EvidenceDisplayCodeResolver().resolve(collection, null, collection.evidence());
 
         assertEquals("EV-GENERAL-001", codes.get(shared.id()));
     }
@@ -99,7 +101,7 @@ class EvidenceDisplayCodeResolverTest {
                 collection, List.of(), List.of(second), Map.of("analyzer", AnalysisStatus.READY), List.of());
 
         MapInBootException exception = assertThrows(MapInBootException.class,
-                () -> new EvidenceDisplayCodeResolver().resolve(collection, analysis));
+                () -> new EvidenceDisplayCodeResolver().resolve(collection, analysis, List.of(first, second)));
 
         assertEquals(ErrorCode.INVALID_CONFIG, exception.getErrorCode());
     }
@@ -125,8 +127,10 @@ class EvidenceDisplayCodeResolverTest {
                 secondCollection, List.of(), List.of(endpoint, general, chain),
                 Map.of("analyzer", AnalysisStatus.READY), List.of());
 
-        Map<String, String> firstCodes = new EvidenceDisplayCodeResolver().resolve(firstCollection, firstAnalysis);
-        Map<String, String> secondCodes = new EvidenceDisplayCodeResolver().resolve(secondCollection, secondAnalysis);
+        Map<String, String> firstCodes = new EvidenceDisplayCodeResolver()
+                .resolve(firstCollection, firstAnalysis, firstAnalysis.evidence());
+        Map<String, String> secondCodes = new EvidenceDisplayCodeResolver()
+                .resolve(secondCollection, secondAnalysis, secondAnalysis.evidence());
 
         assertEquals(firstCodes, secondCodes);
         assertEquals(3, firstCodes.size());

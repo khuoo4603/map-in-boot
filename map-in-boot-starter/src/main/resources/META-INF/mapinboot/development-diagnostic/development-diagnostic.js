@@ -110,23 +110,27 @@
     return sourceNames[code] ? `${sourceNames[code]} (${code})` : code;
   }
 
-  // 원본 Evidence ID를 표시 코드로 변환하고 미매핑 값은 원본 유지
+  // 현재 Snapshot에 저장된 표시 코드만 조회
   function evidenceCode(evidenceId) {
     const codes = state.report && state.report.evidenceDisplayCodes || {};
     return Object.prototype.hasOwnProperty.call(codes, evidenceId) && codes[evidenceId]
-      ? codes[evidenceId] : value(evidenceId, "없음");
+      ? codes[evidenceId] : null;
+  }
+
+  function evidenceCodeLabel(evidenceId) {
+    return evidenceCode(evidenceId) || "표시 ID가 저장되지 않은 근거입니다.";
   }
 
   // Evidence ID 목록의 표시 코드 변환
   function evidenceCodes(evidenceIds) {
     const ids = evidenceIds || [];
-    return ids.length ? ids.map(evidenceCode).join(", ") : "없음";
+    return ids.length ? ids.map(evidenceCodeLabel).join(", ") : "연결된 근거가 없습니다.";
   }
 
-  // Inspector용 표시 코드·원본 ID 병렬 출력
+  // 다른 진단 상세의 Evidence 참조를 저장 표시 코드로 출력
   function evidenceDetails(evidenceIds) {
     const ids = evidenceIds || [];
-    return [["근거 코드", evidenceCodes(ids)], ["원본 Evidence ID", ids.join(", ") || "없음"]];
+    return [["근거 표시 ID", evidenceCodes(ids)]];
   }
 
   function relationLabel(type) {
@@ -381,7 +385,8 @@
       columns.forEach((column) => appendCell(row, column, item));
       if (!canInspect || canInspect(item)) {
         row.addEventListener("click", () => {
-          inspector.replaceChildren(keyValues(details(item)));
+          const content = details(item);
+          inspector.replaceChildren(Array.isArray(content) ? keyValues(content) : content);
           inspector.hidden = false;
         });
       } else row.className = "not-selectable";
@@ -965,15 +970,71 @@
 
   function renderEvidence(parent) {
     renderList(parent, state.report.evidence || [], [
-      { label: "근거 코드", value: (item) => evidenceCode(item.id), code: true, truncate: true, width: "15%" },
+      { label: "근거 표시 ID", value: (item) => evidenceCodeLabel(item.id), code: true, truncate: true, width: "15%" },
       { label: "출처", value: (item) => item.source, display: sourceLabel, badge: true, width: "15%" },
       { label: "위치", value: (item) => item.location, truncate: true, width: "25%" },
       { label: "내용", value: (item) => policyEvidenceLabel(item.id, item.summary), truncate: true, width: "45%" }
     ], (item) => {
       const policies = policiesForEvidence(item.id);
       const policyValues = policies.length === 1 ? policies[0].attributes || {} : null;
-      return [["근거 코드", evidenceCode(item.id)], ["원본 Evidence ID", item.id], ["출처", sourceLabel(item.source)], ["위치", item.location], ["표시 내용", policyEvidenceLabel(item.id, item.summary)], ["원문 Summary", item.summary], ["Chain", policyValues && chainLabel(policyValues, factsOf("SECURITY_CHAIN"))], ["원문 Chain Key", policyValues && policyValues.chainKey], ["정책 Matcher", policyValues && policyValues.policyMatcherCondition], ["정책 순서", policyValues && policyValues.policyOrder], ["정책", policyValues && policyLabel(policyValues.policyKind)], ["연결", referencesForEvidence(item.id)]];
+      const details = keyValues([
+        ["근거 표시 ID", evidenceCodeLabel(item.id)],
+        ["근거 출처", sourceLabel(item.source)],
+        ["확인 위치", value(item.location, "확인 위치 정보 없음")],
+        ["확인 내용", policyEvidenceLabel(item.id, item.summary)],
+        ["원문 Summary", value(item.summary, "확인 내용 정보 없음")],
+        ["Chain", policyValues && chainLabel(policyValues, factsOf("SECURITY_CHAIN"))],
+        ["원문 Chain Key", policyValues && policyValues.chainKey],
+        ["정책 Matcher", policyValues && policyValues.policyMatcherCondition],
+        ["정책 순서", policyValues && policyValues.policyOrder],
+        ["정책", policyValues && policyLabel(policyValues.policyKind)],
+        ["연결", referencesForEvidence(item.id)]
+      ]);
+      const code = evidenceCode(item.id);
+      if (code) details.append(evidenceCopyButton("표시 ID 복사", code, "evidence-code-copy", "근거 표시 ID를 복사했습니다."));
+      details.append(evidenceIdDisclosure(item.id));
+      return details;
     }, null, "evidence-table");
+  }
+
+  function evidenceCopyButton(label, text, className, successMessage) {
+    const button = create("button", label, className);
+    button.setAttribute("type", "button");
+    button.addEventListener("click", async () => {
+      try {
+        const clipboard = typeof navigator === "undefined" ? null : navigator.clipboard;
+        if (!clipboard || typeof clipboard.writeText !== "function") throw new Error("clipboard-unavailable");
+        await clipboard.writeText(text);
+        setRequestState(successMessage, "success");
+      } catch (_error) {
+        setRequestState("클립보드 권한이 없어 복사하지 못했습니다.", "error");
+      }
+    });
+    return button;
+  }
+
+  let evidenceDisclosureIndex = 0;
+
+  function evidenceIdDisclosure(evidenceId) {
+    const control = create("div", undefined, "evidence-identity-controls");
+    const panelId = `evidence-original-${++evidenceDisclosureIndex}`;
+    const toggle = create("button", "원본 식별자 보기", "evidence-id-toggle");
+    toggle.setAttribute("type", "button");
+    toggle.setAttribute("aria-expanded", "false");
+    toggle.setAttribute("aria-controls", panelId);
+    const panel = create("div", undefined, "evidence-id-original");
+    panel.id = panelId;
+    panel.hidden = true;
+    const original = create("code", evidenceId, "evidence-id-value");
+    panel.append(original, evidenceCopyButton("원본 ID 복사", evidenceId, "evidence-id-copy", "원본 식별자를 복사했습니다."));
+    toggle.addEventListener("click", () => {
+      panel.hidden = !panel.hidden;
+      const expanded = !panel.hidden;
+      toggle.setAttribute("aria-expanded", String(expanded));
+      toggle.textContent = expanded ? "원본 식별자 숨기기" : "원본 식별자 보기";
+    });
+    control.append(toggle, panel);
+    return control;
   }
 
   function renderDiagnostics(parent) {

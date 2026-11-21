@@ -74,14 +74,18 @@
         <section class="graph-canvas" aria-labelledby="view-title">
           <div class="graph-surface" id="graph-canvas" data-graph-state="empty">
             <h1 id="view-title" class="sr-only">전체 Flow Map</h1>
-            <div class="graph-tools map-toolbar" aria-label="Graph 탐색 도구">
+              <div class="graph-tools map-toolbar" aria-label="그래프 탐색 도구">
               <div class="graph-navigation-tools" aria-label="화면 이동 도구">
-                <button class="graph-tool-button" id="zoom-out" type="button" aria-label="Graph 축소">−</button>
-                <button class="graph-tool-button" id="zoom-in" type="button" aria-label="Graph 확대">+</button>
-                <button class="graph-tool-button" id="fit-graph" type="button">화면 맞춤</button>
-                <button class="graph-tool-button" id="reset-view" type="button">보기 초기화</button>
-                <div class="map-filter-toggle">
-                  <button class="graph-tool-button map-filter-button" id="filter-toggle" type="button" aria-label="필터 열기" aria-expanded="false" aria-controls="map-filter-panel">
+                <button class="graph-tool-button" id="zoom-out" type="button" aria-label="그래프 축소" data-tooltip="그래프 축소"><span aria-hidden="true">−</span></button>
+                <button class="graph-tool-button" id="zoom-in" type="button" aria-label="그래프 확대" data-tooltip="그래프 확대"><span aria-hidden="true">+</span></button>
+                <button class="graph-tool-button" id="fit-graph" type="button" aria-label="전체 그래프 맞춤" data-tooltip="전체 그래프 맞춤">
+                  <svg class="toolbar-icon fit-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M8 3H3v5m13-5h5v5M3 16v5h5m13-5v5h-5M8 8l-5-5m13 5 5-5M8 16l-5 5m13-5 5 5"></path></svg>
+                </button>
+                <button class="graph-tool-button" id="reset-view" type="button" aria-label="보기 초기화" data-tooltip="보기 초기화">
+                  <svg class="toolbar-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M4 11a8 8 0 1 1 2.2 5.5M4 5v6h6"></path></svg>
+                </button>
+                <div class="toolbar-tool-group map-filter-toggle">
+                  <button class="graph-tool-button map-filter-button" id="filter-toggle" type="button" aria-label="필터 열기" data-tooltip="검색 및 그래프 필터" aria-expanded="false" aria-controls="map-filter-panel">
                     <svg class="filter-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
                       <path d="M4 6h4m4 0h8M4 12h8m4 0h4M4 18h2m4 0h10"></path>
                       <circle cx="10" cy="6" r="1.5"></circle>
@@ -110,10 +114,15 @@
                       미연결 노드 포함
                     </label>
                     <div id="finding-filter-fields" hidden>
-                      <label>Finding 유형<select id="finding-rule">
+                      <label>진단 유형<select id="finding-rule">
                         <option value="">모든 유형</option>
-                        <option>CHAIN_MISSING</option><option>CHAIN_ORDER</option><option>PUBLIC_ENDPOINT</option>
-                        <option>METHOD_MISMATCH</option><option>FILTER_ORDER</option><option>OBJECT_BINDING</option><option>STATE_BYPASS</option>
+                        <option value="CHAIN_MISSING">보안 필터 체인 미적용</option>
+                        <option value="CHAIN_ORDER">보안 체인·매칭 우선순위 문제</option>
+                        <option value="PUBLIC_ENDPOINT">과도한 공개 접근 허용</option>
+                        <option value="METHOD_MISMATCH">URL·메서드 보안 불일치</option>
+                        <option value="FILTER_ORDER">필터 구성·순서 문제</option>
+                        <option value="OBJECT_BINDING">인증 주체와 대상 객체 권한 검증 문제</option>
+                        <option value="STATE_BYPASS">업무 보안 절차 우회 가능성</option>
                       </select></label>
                       <label>판단 신뢰도<select id="finding-confidence">
                         <option value="">모든 상태</option><option value="CONFIRMED">확정</option>
@@ -130,6 +139,16 @@
                     <button class="map-filter-reset" id="search-reset" type="button">검색 초기화</button>
                     <span class="graph-filter-status sr-only" id="graph-filter-status" role="status" aria-live="polite">Graph 없음</span>
                   </div>
+                </div>
+                <div class="toolbar-tool-group map-lock-toggle">
+                  <button class="graph-tool-button map-lock-button" id="screen-lock-toggle" type="button" aria-label="화면 이동과 확대·축소 고정" data-tooltip="화면 이동과 확대·축소 고정" aria-pressed="false" data-locked="false">
+                    <svg class="toolbar-icon lock-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                      <rect x="4.5" y="10" width="15" height="11" rx="2"></rect>
+                      <path class="lock-shackle-open" d="M8 10V7a4 4 0 0 1 7.6-1.7"></path>
+                      <path class="lock-shackle-closed" d="M8 10V7a4 4 0 0 1 8 0v3"></path>
+                      <circle cx="12" cy="15.5" r="1"></circle>
+                    </svg>
+                  </button>
                 </div>
               </div>
             </div>
@@ -183,7 +202,13 @@
       <div class="finding-modal" id="finding-modal" role="dialog" aria-modal="true" aria-labelledby="finding-modal-title" hidden>
         <section class="finding-modal-panel">
           <header class="finding-modal-header">
-            <h2 id="finding-modal-title">Finding</h2>
+            <div class="finding-modal-heading">
+              <h2 id="finding-modal-title">Finding</h2>
+              <div class="finding-modal-meta">
+                <span class="finding-modal-confidence" id="finding-modal-confidence" data-confidence="UNKNOWN">판단 불가 (UNKNOWN)</span>
+                <span class="finding-modal-rule" id="finding-modal-rule">Rule ID 확인 불가</span>
+              </div>
+            </div>
             <button class="finding-modal-close" id="finding-modal-close" type="button" aria-label="Finding 상세 닫기">닫기</button>
           </header>
           <div class="finding-modal-content" id="finding-modal-content"></div>

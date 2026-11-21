@@ -32,6 +32,7 @@ public class SnapshotAssembler {
     private static final String SDK_VERSION_RESOURCE = "META-INF/map-in-boot-version.properties";
     private final GraphBuilder graphBuilder = new GraphBuilder();
     private final GraphFingerprintGenerator fingerprintGenerator = new GraphFingerprintGenerator();
+    private final EvidenceDisplayCodeResolver evidenceDisplayCodeResolver = new EvidenceDisplayCodeResolver();
     private final List<FindingEvaluator> findingEvaluators;
     private final String schemaVersion;
     private final String sdkVersion;
@@ -63,6 +64,8 @@ public class SnapshotAssembler {
         List<Finding> findings = evaluateFindings(report, graph);
         Map<String, AnalysisStatus> analysisStatus = mergeStatuses(report.collectionReport(), report);
         validateSnapshotContents(graph, report.evidence(), findings, analysisStatus);
+        Map<String, String> evidenceDisplayCodes = evidenceDisplayCodeResolver.resolve(
+                report.collectionReport(), report, report.evidence());
 
         Snapshot snapshot = new Snapshot(
                 UUID.randomUUID().toString(),
@@ -77,12 +80,17 @@ public class SnapshotAssembler {
                 graph.edges(),
                 report.evidence(),
                 findings,
-                analysisStatus);
+                analysisStatus,
+                evidenceDisplayCodes);
         validateSnapshot(snapshot);
         return snapshot;
     }
 
     static void validateSnapshot(Snapshot snapshot) {
+        validateSnapshot(snapshot, false);
+    }
+
+    static void validateSnapshot(Snapshot snapshot, boolean allowLegacyMissingEvidenceDisplayCodes) {
         if (snapshot == null || isBlank(snapshot.snapshotId()) || snapshot.capturedAt() == null
                 || isBlank(snapshot.schemaVersion()) || isBlank(snapshot.sdkVersion())
                 || isBlank(snapshot.serviceId()) || isBlank(snapshot.instanceId())
@@ -96,8 +104,33 @@ public class SnapshotAssembler {
             }
         }
         validateSnapshotContents(graph, snapshot.evidence(), snapshot.findings(), snapshot.analysisStatus());
+        if (!allowLegacyMissingEvidenceDisplayCodes || !snapshot.evidenceDisplayCodes().isEmpty()) {
+            validateEvidenceDisplayCodes(snapshot.evidence(), snapshot.evidenceDisplayCodes());
+        }
         if (!snapshot.graphFingerprint().equals(new GraphFingerprintGenerator().generate(graph))) {
             invalidSnapshot("Snapshot Graph Fingerprint가 일치하지 않습니다.");
+        }
+    }
+
+    // 저장 Evidence 집합과 표시 코드 Map의 일대일 구조 검증
+    private static void validateEvidenceDisplayCodes(List<Evidence> evidence, Map<String, String> displayCodes) {
+        Set<String> evidenceIds = new HashSet<>();
+        for (Evidence item : evidence) {
+            evidenceIds.add(item.id());
+        }
+        if (displayCodes == null || !displayCodes.keySet().equals(evidenceIds)) {
+            invalidSnapshot("Snapshot Evidence 표시 코드가 저장 Evidence와 일치하지 않습니다.");
+        }
+
+        Set<String> uniqueCodes = new HashSet<>();
+        for (Map.Entry<String, String> entry : displayCodes.entrySet()) {
+            String evidenceId = entry.getKey();
+            String code = entry.getValue();
+            if (isBlank(evidenceId) || isBlank(code)
+                    || !code.matches("[A-Z]{2}-[A-Z][A-Z0-9_]*-[0-9]{3,}")
+                    || !uniqueCodes.add(code)) {
+                invalidSnapshot("Snapshot Evidence 표시 코드가 중복되거나 올바르지 않습니다.");
+            }
         }
     }
 
