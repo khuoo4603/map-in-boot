@@ -125,7 +125,13 @@ function loadUi({ fetchImpl, timers, animationClock, clipboard } = {}) {
     "graph-minimap-nodes", "graph-minimap-viewport", "graph-finding-sections", "finding-modal", "finding-modal-title", "finding-modal-close", "finding-modal-content", "inspector", "graph-popover",
     "finding-modal-confidence", "finding-modal-rule",
     "request-flow-controls", "request-flow-start", "request-flow-pause", "request-flow-reset",
-    "request-flow-status", "request-flow-education", "request-flow-dot"
+    "request-flow-status", "request-flow-education", "request-flow-dot", "request-flow-details",
+    "request-flow-step-count", "request-flow-step-kind", "request-flow-step-title", "request-flow-step-description",
+    "request-flow-filter-education", "request-flow-filter-status", "request-flow-filter-name",
+    "request-flow-filter-fqcn", "request-flow-filter-description", "request-flow-filter-role",
+    "request-flow-filter-input", "request-flow-filter-condition", "request-flow-filter-processing",
+    "request-flow-filter-outcomes", "request-flow-filter-cautions", "request-flow-filter-source",
+    "request-flow-navigation", "request-flow-previous", "request-flow-next"
   ];
   const elements = new Map(ids.map((id) => [id, createElement()]));
   const ruleOptions = indexHtml.match(/<select id="finding-rule">([\s\S]*?)<\/select>/)?.[1] || "";
@@ -151,6 +157,9 @@ function loadUi({ fetchImpl, timers, animationClock, clipboard } = {}) {
   elements.get("map-filter-panel").hidden = true;
   elements.get("endpoint-options").hidden = true;
   elements.get("request-flow-controls").hidden = true;
+  elements.get("request-flow-details").hidden = true;
+  elements.get("request-flow-filter-education").hidden = true;
+  elements.get("request-flow-navigation").hidden = true;
   elements.get("finding-modal").hidden = true;
   elements.get("finding-modal-title").tagName = "h2";
   elements.get("finding-modal-close").tagName = "button";
@@ -2252,8 +2261,13 @@ test("Request 교육 단계가 확정 Chain·Filter 순서·Handler만 실제 An
   assert.deepEqual(actualAnchors, ["servlet-filter-1", "chain-a", "security-filter-1", "security-filter-2", "security-filter-3", "servlet-1", "endpoint-a", "handler-a"]);
   assert.equal(steps.some((step) => step.label.includes("HTTP 요청 수신")), true);
   assert.equal(steps.some((step) => step.label.includes("동기 처리 스레드")), true);
-  assert.equal(steps.some((step) => step.label.includes("응답 복귀")), false);
-  assert.equal(steps.some((step) => step.id === "education-response-return"), false);
+  const responseReturn = steps.at(-1);
+  assert.equal(responseReturn.id, "education-response-return");
+  assert.equal(responseReturn.kind, "education");
+  assert.equal(responseReturn.anchorId, null);
+  assert.equal(responseReturn.transition, null);
+  assert.match(responseReturn.description, /호출 체인|응답/);
+  assert.equal(steps.some((step) => step.label.includes("응답 복귀")), true);
   assert.equal(steps.some((step) => step.anchorId === "chain-b"), false);
   assert.equal(steps.some((step) => step.anchorId === "other-chain-filter"), false);
   assert.equal(steps.some((step) => step.label.includes("Thread ID")), false);
@@ -2294,6 +2308,41 @@ test("Request 교육 단계가 확정 Chain·Filter 순서·Handler만 실제 An
     positions: {}
   });
   assert.equal(unselectedSteps.some((step) => step.id === "endpoint-mapping"), false);
+});
+
+test("Request 교육 표준 Filter 단계는 기존 교육 메타데이터와 Snapshot 분류 상태를 사용함", () => {
+  const { window } = loadUi();
+  const snapshot = standardFilterGraphFixture();
+  snapshot.edges.push({
+    id: "custom-filtered-by-chain-a",
+    sourceId: "chain-a",
+    targetId: "custom-csrf-filter",
+    type: "FILTERED_BY",
+    attributes: { registrationKind: "SECURITY", filterOrder: "3" },
+    confidence: "CONFIRMED",
+    evidenceIds: ["evidence-custom-filtered-by-chain-a"]
+  });
+  const graph = window.MapInBootGraph.normalize(snapshot);
+  const steps = window.MapInBootRequestFlow.buildSteps({
+    graph,
+    index: window.MapInBootFlow.createIndex(graph),
+    endpointId: "endpoint-a",
+    positions: {},
+    snapshot
+  });
+  const csrfStep = steps.find((step) => step.anchorId === "security-filter-1");
+  const customStep = steps.find((step) => step.anchorId === "custom-csrf-filter");
+  const csrfReference = window.MapInBootStandardFilters.list()
+    .find((reference) => reference.fqcn === "org.springframework.security.web.csrf.CsrfFilter");
+  const csrfStatus = window.MapInBootStandardFilters.classify(snapshot, snapshot.analysisStatus, "chain-a")
+    .find((entry) => entry.fqcn === csrfReference.fqcn);
+
+  assert.equal(csrfStep.filterEducation.fqcn, csrfReference.fqcn);
+  assert.equal(csrfStep.filterEducation.input, csrfReference.input);
+  assert.equal(csrfStep.filterEducation.processing, csrfReference.processing);
+  assert.equal(csrfStep.filterEducation.status, csrfStatus.status);
+  assert.equal(csrfStep.filterEducation.statusLabel, csrfStatus.statusLabel);
+  assert.equal(customStep.filterEducation, null);
 });
 
 test("Request 교육은 Endpoint가 없거나 여러 개여도 선택 Endpoint 하나만 사용함", () => {
@@ -2393,6 +2442,184 @@ test("Request 교육 Controller가 Node 점등·Edge 이동·경로 불가·일�
   assert.equal(updates.some((state) => state.status === "complete"), true);
 });
 
+test("Request 교육 Controller의 단계 탐색은 경계·중간 재생·완료 상태를 보존함", () => {
+  const { window } = loadUi();
+  const clock = createFakeClock();
+  const controller = window.MapInBootRequestFlow.createController({
+    clock,
+    nodeHoldDuration: 100,
+    stepNoticeDuration: 80
+  });
+  controller.setSteps([
+    { id: "step-a", label: "A", kind: "actual", anchorId: "node-a" },
+    { id: "step-b", label: "B", kind: "education" },
+    { id: "step-c", label: "C", kind: "actual", anchorId: "node-c" }
+  ]);
+
+  assert.equal(controller.seekToStep(-1), false);
+  assert.equal(controller.seekToStep(3), false);
+  assert.equal(controller.state().status, "idle");
+  assert.equal(controller.state().stepIndex, 0);
+  controller.play();
+  assert.equal(controller.activeFrameCount(), 1);
+  assert.equal(controller.seekToStep(-1), false);
+  assert.equal(controller.state().status, "running");
+  assert.equal(controller.state().stepIndex, 0);
+  assert.equal(controller.activeFrameCount(), 1);
+  assert.equal(controller.seekToStep(1), true);
+  assert.equal(controller.state().status, "paused");
+  assert.equal(controller.state().stepIndex, 1);
+  assert.equal(controller.state().phase, "STEP_NOTICE");
+  assert.equal(controller.state().progress, 0);
+  assert.equal(controller.activeFrameCount(), 0);
+  clock.tick(500);
+  assert.equal(controller.state().stepIndex, 1);
+
+  controller.play();
+  assert.equal(controller.state().status, "running");
+  assert.equal(controller.state().stepIndex, 1);
+  assert.equal(controller.activeFrameCount(), 1);
+  controller.pause();
+  assert.equal(controller.state().status, "paused");
+  assert.equal(controller.state().stepIndex, 1);
+  assert.equal(controller.activeFrameCount(), 0);
+  assert.equal(controller.seekToStep(2), true);
+  assert.equal(controller.state().stepIndex, 2);
+  assert.equal(controller.state().phase, "NODE_HOLD");
+  assert.equal(controller.state().status, "paused");
+  controller.play();
+  clock.tick(100);
+  assert.equal(controller.state().status, "complete");
+  assert.equal(controller.state().stepIndex, 2);
+  assert.equal(controller.state().nextStep, null);
+  assert.equal(controller.activeFrameCount(), 0);
+
+  assert.equal(controller.seekToStep(0), true);
+  assert.equal(controller.state().status, "paused");
+  assert.equal(controller.state().phase, "NODE_HOLD");
+  assert.equal(controller.state().progress, 0);
+  controller.reset();
+  assert.equal(controller.state().status, "idle");
+  assert.equal(controller.state().stepIndex, 0);
+  assert.equal(controller.state().phase, null);
+  assert.equal(controller.activeFrameCount(), 0);
+});
+
+test("상세 처리 보기에서 단계·표준 Filter 설명·재생 조작을 같은 Controller 상태로 표시함", async () => {
+  const animationClock = createFakeClock();
+  const { ui, elements } = loadUi({ animationClock });
+  const snapshot = standardFilterGraphFixture();
+  ui.renderGraph(snapshot);
+  ui.openEndpointDetail("endpoint-a");
+  await ui.layoutGraph();
+  const steps = ui.state.requestFlowSteps;
+  const filterIndex = steps.findIndex((step) => step.anchorId === "security-filter-1");
+  const filterStep = steps[filterIndex];
+  const filterNode = findAllByClass(elements.get("graph-nodes"), "graph-node")
+    .find((node) => node.getAttribute("data-node-id") === "security-filter-1");
+  const nodeIds = Array.from(ui.state.graph.nodes, (node) => node.id);
+  const edgeIds = Array.from(ui.state.graph.edges, (edge) => edge.id);
+
+  assert.equal(elements.get("request-flow-details").hidden, true);
+  assert.equal(elements.get("request-flow-navigation").hidden, true);
+  elements.get("setting-show-detail-flow").checked = true;
+  elements.get("setting-show-detail-flow").dispatchEvent({ type: "change" });
+
+  assert.equal(elements.get("request-flow-controls").dataset.detailed, "true");
+  assert.equal(elements.get("request-flow-details").hidden, false);
+  assert.equal(elements.get("request-flow-step-count").textContent, `1 / ${steps.length}`);
+  assert.equal(elements.get("request-flow-step-kind").textContent, "교육용 설명");
+  assert.equal(ui.requestFlow.state().status, "idle");
+  assert.equal(elements.get("request-flow-previous").disabled, true);
+  assert.equal(elements.get("request-flow-next").disabled, false);
+
+  elements.get("request-flow-next").dispatchEvent({ type: "click" });
+  assert.equal(ui.requestFlow.state().stepIndex, 1);
+  assert.equal(ui.requestFlow.state().status, "paused");
+  assert.equal(elements.get("request-flow-step-count").textContent, `2 / ${steps.length}`);
+  assert.equal(elements.get("request-flow-previous").disabled, false);
+
+  assert.ok(filterStep.filterEducation);
+  assert.equal(ui.requestFlow.seekToStep(filterIndex), true);
+  assert.equal(elements.get("request-flow-step-kind").textContent, "확인된 구조");
+  assert.equal(elements.get("request-flow-step-title").textContent, filterStep.label);
+  assert.equal(elements.get("request-flow-filter-status").textContent, filterStep.filterEducation.statusLabel);
+  assert.equal(elements.get("request-flow-filter-role").textContent, filterStep.filterEducation.role);
+  assert.equal(elements.get("request-flow-filter-input").textContent, filterStep.filterEducation.input);
+  assert.equal(elements.get("request-flow-filter-condition").textContent, filterStep.filterEducation.condition);
+  assert.equal(elements.get("request-flow-filter-processing").textContent, filterStep.filterEducation.processing);
+  assert.equal(elements.get("request-flow-filter-outcomes").textContent, filterStep.filterEducation.outcomes);
+  assert.equal(elements.get("request-flow-filter-cautions").textContent, filterStep.filterEducation.cautions);
+  assert.equal(elements.get("request-flow-filter-source").textContent, filterStep.filterEducation.source);
+  assert.equal(elements.get("request-flow-filter-education").hidden, false);
+  assert.equal(elements.get("request-flow-filter-name").textContent, filterStep.filterEducation.name);
+  assert.equal(elements.get("request-flow-filter-fqcn").textContent, filterStep.filterEducation.fqcn);
+  assert.equal(elements.get("request-flow-filter-description").textContent, filterStep.filterEducation.description);
+  assert.equal(filterNode.getAttribute("data-request-flow-active"), "true");
+  assert.equal(ui.state.selection.id, "endpoint-a");
+  assert.deepEqual(Array.from(ui.state.graph.nodes, (node) => node.id), nodeIds);
+  assert.deepEqual(Array.from(ui.state.graph.edges, (edge) => edge.id), edgeIds);
+
+  elements.get("request-flow-start").dispatchEvent({ type: "click" });
+  assert.equal(ui.requestFlow.state().status, "running");
+  elements.get("request-flow-next").dispatchEvent({ type: "click" });
+  assert.equal(ui.requestFlow.state().status, "paused");
+  assert.equal(ui.requestFlow.state().stepIndex, filterIndex + 1);
+  assert.equal(ui.requestFlow.activeFrameCount(), 0);
+  assert.equal(elements.get("request-flow-filter-education").hidden,
+    !ui.requestFlow.state().step.filterEducation);
+  assert.equal(filterNode.getAttribute("data-request-flow-active"), null);
+
+  elements.get("request-flow-start").dispatchEvent({ type: "click" });
+  elements.get("request-flow-previous").dispatchEvent({ type: "click" });
+  assert.equal(ui.requestFlow.state().status, "paused");
+  assert.equal(ui.requestFlow.state().stepIndex, filterIndex);
+  assert.equal(ui.requestFlow.activeFrameCount(), 0);
+  assert.equal(filterNode.getAttribute("data-request-flow-active"), "true");
+
+  elements.get("setting-show-detail-flow").checked = false;
+  elements.get("setting-show-detail-flow").dispatchEvent({ type: "change" });
+  assert.equal(ui.requestFlow.state().stepIndex, filterIndex);
+  assert.equal(ui.requestFlow.state().status, "paused");
+  assert.equal(elements.get("request-flow-details").hidden, true);
+  elements.get("setting-show-detail-flow").checked = true;
+  elements.get("setting-show-detail-flow").dispatchEvent({ type: "change" });
+  assert.equal(ui.requestFlow.state().stepIndex, filterIndex);
+  assert.equal(ui.requestFlow.state().status, "paused");
+  assert.equal(elements.get("request-flow-details").hidden, false);
+
+  assert.equal(ui.requestFlow.seekToStep(steps.length - 1), true);
+  assert.equal(ui.requestFlow.state().step.id, "education-response-return");
+  assert.equal(ui.requestFlow.state().step.anchorId, null);
+  assert.equal(elements.get("request-flow-next").disabled, true);
+  assert.equal(elements.get("request-flow-previous").disabled, false);
+  assert.equal(findAllByClass(elements.get("graph-nodes"), "graph-node")
+    .some((node) => node.getAttribute("data-request-flow-active") === "true"), false);
+
+  elements.get("request-flow-reset").dispatchEvent({ type: "click" });
+  assert.equal(ui.requestFlow.state().status, "idle");
+  assert.equal(ui.requestFlow.state().stepIndex, 0);
+  assert.equal(elements.get("request-flow-previous").disabled, true);
+
+  ui.openEndpointDetail("endpoint-b");
+  await ui.layoutGraph();
+  assert.equal(ui.state.selectedEndpointId, "endpoint-b");
+  assert.equal(ui.requestFlow.state().status, "idle");
+  assert.equal(ui.requestFlow.state().stepIndex, 0);
+  assert.equal(ui.requestFlow.state().steps.some((step) => step.anchorId === "endpoint-b"), true);
+  assert.equal(filterNode.getAttribute("data-request-flow-active"), null);
+  assert.equal(elements.get("request-flow-step-count").textContent, `1 / ${ui.requestFlow.state().steps.length}`);
+
+  ui.returnToAllMap();
+  assert.equal(elements.get("request-flow-controls").hidden, true);
+  assert.equal(elements.get("request-flow-start").disabled, true);
+  assert.equal(elements.get("request-flow-pause").disabled, true);
+  assert.equal(elements.get("request-flow-reset").disabled, true);
+  assert.equal(elements.get("request-flow-previous").disabled, true);
+  assert.equal(elements.get("request-flow-next").disabled, true);
+  assert.equal(ui.requestFlow.state().status, "idle");
+});
+
 test("Request 교육 빛 점은 꺾인 SVG 경로의 실제 좌표를 사용함", () => {
   const { window } = loadUi();
   const path = {
@@ -2432,6 +2659,22 @@ test("Request 교육 reduced-motion은 RAF 없이 마지막 단계와 키보드 
   assert.equal(controller.state().progress, 1);
   assert.equal(controller.activeFrameCount(), 0);
   assert.equal(clock.activeCount(), 0);
+
+  const selectedController = window.MapInBootRequestFlow.createController({
+    clock,
+    reducedMotion: true
+  });
+  selectedController.setSteps([
+    { id: "step-a", label: "A", kind: "actual", anchorId: "node-a" },
+    { id: "step-b", label: "B", kind: "education" },
+    { id: "step-c", label: "C", kind: "actual", anchorId: "node-c" }
+  ]);
+  assert.equal(selectedController.seekToStep(1), true);
+  selectedController.play();
+  assert.equal(selectedController.state().status, "complete");
+  assert.equal(selectedController.state().stepIndex, 1);
+  assert.equal(selectedController.state().phase, "STEP_NOTICE");
+  assert.equal(selectedController.activeFrameCount(), 0);
 });
 
 test("Request 교육은 상세 MAP에서만 표시되고 View 복귀·문서 숨김·재조회 시 정리됨", async () => {

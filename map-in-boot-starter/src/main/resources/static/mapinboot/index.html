@@ -193,6 +193,29 @@
             <div class="request-flow-controls" id="request-flow-controls" role="region" aria-label="내부 처리 과정" hidden>
               <p class="request-flow-note">교육용 예시 · 실제 요청 추적 아님</p>
               <p class="request-flow-status" id="request-flow-status" role="status" aria-live="polite">교육용 예시 · 실제 요청 추적 아님 · 시작 전</p>
+              <section class="request-flow-details" id="request-flow-details" aria-label="현재 처리 단계" hidden>
+                <p class="request-flow-step-count" id="request-flow-step-count" role="status" aria-live="polite">0 / 0</p>
+                <p class="request-flow-step-kind" id="request-flow-step-kind">단계 없음</p>
+                <h3 class="request-flow-step-title" id="request-flow-step-title">표시할 단계가 없습니다.</h3>
+                <p class="request-flow-step-description" id="request-flow-step-description"></p>
+                <div class="request-flow-filter-education" id="request-flow-filter-education" aria-label="표준 필터 교육 설명" hidden>
+                  <p class="request-flow-filter-row"><strong>현재 경로 상태</strong><span id="request-flow-filter-status"></span></p>
+                  <p class="request-flow-filter-name" id="request-flow-filter-name"></p>
+                  <p class="request-flow-filter-fqcn" id="request-flow-filter-fqcn"></p>
+                  <p class="request-flow-filter-description" id="request-flow-filter-description"></p>
+                  <p class="request-flow-filter-row"><strong>역할</strong><span id="request-flow-filter-role"></span></p>
+                  <p class="request-flow-filter-row"><strong>입력</strong><span id="request-flow-filter-input"></span></p>
+                  <p class="request-flow-filter-row"><strong>확인 조건</strong><span id="request-flow-filter-condition"></span></p>
+                  <p class="request-flow-filter-row"><strong>대표 처리</strong><span id="request-flow-filter-processing"></span></p>
+                  <p class="request-flow-filter-row"><strong>가능한 결과</strong><span id="request-flow-filter-outcomes"></span></p>
+                  <p class="request-flow-filter-row"><strong>주의사항</strong><span id="request-flow-filter-cautions"></span></p>
+                  <p class="request-flow-filter-row"><strong>교육 출처</strong><span id="request-flow-filter-source"></span></p>
+                </div>
+                <div class="request-flow-navigation" id="request-flow-navigation" hidden>
+                  <button id="request-flow-previous" type="button" disabled>이전 단계</button>
+                  <button id="request-flow-next" type="button" disabled>다음 단계</button>
+                </div>
+              </section>
               <div class="request-flow-buttons">
                 <button id="request-flow-start" type="button">시작</button>
                 <button id="request-flow-pause" type="button">일시정지</button>

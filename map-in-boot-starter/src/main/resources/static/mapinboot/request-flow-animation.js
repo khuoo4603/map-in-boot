@@ -37,12 +37,13 @@
       kind: definition.kind || "education",
       anchorId: definition.anchorId || null,
       description: definition.description || "",
+      filterEducation: definition.filterEducation || null,
       position: copyPosition(definition.position),
       transition: definition.transition || null
     });
   }
 
-  function actualStep(steps, id, label, node, positions, description) {
+  function actualStep(steps, id, label, node, positions, description, filterEducation = null) {
     if (!node) return;
     appendStep(steps, {
       id,
@@ -50,6 +51,7 @@
       kind: "actual",
       anchorId: node.id,
       description,
+      filterEducation,
       position: positions && positions[node.id]
     });
   }
@@ -144,7 +146,7 @@
   }
 
   // 실제 Snapshot 관계와 교육 전용 개념 단계를 분리한 Request 흐름 생성
-  function buildSteps({ graph, index, endpointId, positions, projection } = {}) {
+  function buildSteps({ graph, index, endpointId, positions, projection, snapshot } = {}) {
     const source = graph && typeof graph === "object" ? graph : { nodes: [], edges: [] };
     const sourceNodes = Array.isArray(source.nodes) ? source.nodes : [];
     const nodes = nodeMap(source);
@@ -191,6 +193,25 @@
       );
       const filters = confirmedFilterSet(flowIndex, source, chain.id);
       if (filters.status === "CONFIRMED") {
+        const standardFilterClient = window.MapInBootStandardFilters;
+        const filterEducationByClass = new Map();
+        if (standardFilterClient && standardFilterClient.list && standardFilterClient.classify) {
+          const statusGraph = snapshot || source;
+          const statusEntries = standardFilterClient.classify(
+            statusGraph,
+            statusGraph.analysisStatus || {},
+            chain.id
+          );
+          const statusByClass = new Map(statusEntries.map((entry) => [entry.fqcn, entry]));
+          standardFilterClient.list().forEach((reference) => {
+            const status = statusByClass.get(reference.fqcn);
+            filterEducationByClass.set(reference.fqcn, {
+              ...reference,
+              status: status ? status.status : "UNKNOWN",
+              statusLabel: status ? status.statusLabel : standardFilterClient.statusLabel("UNKNOWN")
+            });
+          });
+        }
         filters.filters.forEach((filter, indexInChain) => {
           const edge = filters.edges[indexInChain];
           if (!edge || !edges.has(edge.id)) return;
@@ -200,7 +221,8 @@
             `Security Filter · ${filter.label}`,
             filter,
             positions,
-            `FILTERED_BY 및 filterOrder ${attributes(edge).filterOrder || attributes(filter).filterOrder} 확인`
+            `FILTERED_BY 및 filterOrder ${attributes(edge).filterOrder || attributes(filter).filterOrder} 확인`,
+            filterEducationByClass.get(attributes(filter).filterClass) || null
           );
         });
       } else {
@@ -252,6 +274,13 @@
         description: "속성 대응이 확인되지 않아 Handler 호출을 실제 사실로 표시하지 않음"
       });
     }
+
+    appendStep(steps, {
+      id: "education-response-return",
+      label: "교육용 응답 복귀",
+      kind: "education",
+      description: "일반적인 동기 호출 체인은 Handler 처리 뒤 호출자 방향으로 복귀할 수 있음. 비동기·ERROR·FORWARD 등은 다른 경로가 개입할 수 있어 같은 순서로 단정하지 않으며, 특정 Response 경로나 실제 응답 결과를 확인한 기록은 아님"
+    });
 
     return connectSteps(steps, source, projection);
   }
@@ -451,11 +480,13 @@
       if (destroyed || steps.length === 0 || status === "running") return;
       if (reducedMotion) {
         cancelFrame();
-        let lastAnchored = -1;
-        for (let index = 0; index < steps.length; index += 1) {
-          if (steps[index] && steps[index].anchorId) lastAnchored = index;
+        if (status !== "paused") {
+          let lastAnchored = -1;
+          for (let index = 0; index < steps.length; index += 1) {
+            if (steps[index] && steps[index].anchorId) lastAnchored = index;
+          }
+          stepIndex = lastAnchored >= 0 ? lastAnchored : steps.length - 1;
         }
-        stepIndex = lastAnchored >= 0 ? lastAnchored : steps.length - 1;
         phase = phaseForStep(steps[stepIndex]);
         progress = 1;
         phaseElapsed = phaseDuration() || 0;
@@ -483,6 +514,20 @@
       emitUpdate();
     }
 
+    // 재생 프레임을 정리하고 Controller가 소유한 현재 단계를 직접 선택
+    function seekToStep(index) {
+      if (destroyed || !Number.isInteger(index) || index < 0 || index >= steps.length) return false;
+      cancelFrame();
+      stepIndex = index;
+      phase = phaseForStep(steps[stepIndex]);
+      progress = 0;
+      startedAt = clock.now();
+      phaseElapsed = 0;
+      setStatus("paused");
+      emitUpdate();
+      return true;
+    }
+
     function reset() {
       if (destroyed) return;
       cancelFrame();
@@ -506,6 +551,7 @@
       setSteps,
       play,
       pause,
+      seekToStep,
       reset,
       destroy,
       state: snapshot,

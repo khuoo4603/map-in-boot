@@ -86,6 +86,26 @@
   const requestFlowPause = document.querySelector("#request-flow-pause");
   const requestFlowReset = document.querySelector("#request-flow-reset");
   const requestFlowStatus = document.querySelector("#request-flow-status");
+  const requestFlowDetails = document.querySelector("#request-flow-details");
+  const requestFlowStepCount = document.querySelector("#request-flow-step-count");
+  const requestFlowStepKind = document.querySelector("#request-flow-step-kind");
+  const requestFlowStepTitle = document.querySelector("#request-flow-step-title");
+  const requestFlowStepDescription = document.querySelector("#request-flow-step-description");
+  const requestFlowFilterEducation = document.querySelector("#request-flow-filter-education");
+  const requestFlowFilterStatus = document.querySelector("#request-flow-filter-status");
+  const requestFlowFilterName = document.querySelector("#request-flow-filter-name");
+  const requestFlowFilterFqcn = document.querySelector("#request-flow-filter-fqcn");
+  const requestFlowFilterDescription = document.querySelector("#request-flow-filter-description");
+  const requestFlowFilterRole = document.querySelector("#request-flow-filter-role");
+  const requestFlowFilterInput = document.querySelector("#request-flow-filter-input");
+  const requestFlowFilterCondition = document.querySelector("#request-flow-filter-condition");
+  const requestFlowFilterProcessing = document.querySelector("#request-flow-filter-processing");
+  const requestFlowFilterOutcomes = document.querySelector("#request-flow-filter-outcomes");
+  const requestFlowFilterCautions = document.querySelector("#request-flow-filter-cautions");
+  const requestFlowFilterSource = document.querySelector("#request-flow-filter-source");
+  const requestFlowNavigation = document.querySelector("#request-flow-navigation");
+  const requestFlowPrevious = document.querySelector("#request-flow-previous");
+  const requestFlowNext = document.querySelector("#request-flow-next");
   const requestFlowEducation = document.querySelector("#request-flow-education");
   const requestFlowDot = document.querySelector("#request-flow-dot");
   let noticeTimer = null;
@@ -257,11 +277,23 @@
     }) || null;
   }
 
+  // 실제 내용이 바뀐 단계 텍스트만 DOM과 접근성 트리에 반영
+  function setRequestFlowText(element, value) {
+    if (!element) return;
+    const nextText = value === null || value === undefined ? "" : String(value);
+    if (element.textContent !== nextText) element.textContent = nextText;
+  }
+
   // 교육용 빛 점과 현재 상태를 SVG Edge 경로에 맞춰 갱신
   function renderRequestFlowUpdate(flowState) {
     const currentState = flowState || { status: "idle", stepIndex: 0, progress: 0, step: null };
     const step = currentState.step;
     const nextStep = currentState.nextStep;
+    const steps = Array.isArray(currentState.steps) ? currentState.steps : state.requestFlowSteps;
+    const hasSteps = steps.length > 0;
+    const inDetail = isEndpointDetailView() && Boolean(state.selectedEndpointId || state.detailApiId);
+    const detailed = inDetail && Boolean(state.display.detailedFlow);
+    const filterEducation = step && step.filterEducation;
     const path = currentState.phase === "EDGE_TRAVEL" ? requestFlowPath(currentState.transition) : null;
     const point = path && requestFlowClient && requestFlowClient.pathPointAt
       ? requestFlowClient.pathPointAt(path, currentState.progress, currentState.transition.length)
@@ -281,11 +313,35 @@
           ? `완료${step && step.label ? ` · ${step.label}` : ""}`
           : "시작 전";
     const message = `교육용 예시 · 실제 요청 추적 아님 · ${statusLabel}`;
-    if (requestFlowStatus && requestFlowStatus.textContent !== message) requestFlowStatus.textContent = message;
-    if (requestFlowStart) requestFlowStart.disabled = currentState.status === "running";
+    setRequestFlowText(requestFlowStatus, message);
+    if (requestFlowControls) requestFlowControls.dataset.detailed = String(detailed);
+    setHidden(requestFlowDetails, !detailed);
+    setHidden(requestFlowNavigation, !detailed);
+    setHidden(requestFlowFilterEducation, !detailed || !filterEducation);
+    setRequestFlowText(requestFlowStepCount, hasSteps
+      ? `${currentState.stepIndex + 1} / ${steps.length}` : `0 / ${steps.length}`);
+    setRequestFlowText(requestFlowStepKind, step
+      ? step.kind === "actual" ? "확인된 구조" : "교육용 설명" : "단계 없음");
+    setRequestFlowText(requestFlowStepTitle, step && step.label || "표시할 단계가 없습니다.");
+    setRequestFlowText(requestFlowStepDescription, step && step.description || "");
+    if (filterEducation) {
+      setRequestFlowText(requestFlowFilterStatus, filterEducation.statusLabel);
+      setRequestFlowText(requestFlowFilterName, filterEducation.name);
+      setRequestFlowText(requestFlowFilterFqcn, filterEducation.fqcn);
+      setRequestFlowText(requestFlowFilterDescription, filterEducation.description);
+      setRequestFlowText(requestFlowFilterRole, filterEducation.role);
+      setRequestFlowText(requestFlowFilterInput, filterEducation.input);
+      setRequestFlowText(requestFlowFilterCondition, filterEducation.condition);
+      setRequestFlowText(requestFlowFilterProcessing, filterEducation.processing);
+      setRequestFlowText(requestFlowFilterOutcomes, filterEducation.outcomes);
+      setRequestFlowText(requestFlowFilterCautions, filterEducation.cautions);
+      setRequestFlowText(requestFlowFilterSource, filterEducation.source);
+    }
+    if (requestFlowStart) requestFlowStart.disabled = currentState.status === "running" || !hasSteps;
     if (requestFlowPause) requestFlowPause.disabled = currentState.status !== "running";
-    if (requestFlowReset) requestFlowReset.disabled = state.requestFlowSteps.length === 0;
-    const inDetail = isEndpointDetailView() && Boolean(state.selectedEndpointId || state.detailApiId);
+    if (requestFlowReset) requestFlowReset.disabled = !hasSteps;
+    if (requestFlowPrevious) requestFlowPrevious.disabled = !hasSteps || currentState.stepIndex <= 0;
+    if (requestFlowNext) requestFlowNext.disabled = !hasSteps || currentState.stepIndex >= steps.length - 1;
     setRequestFlowNode(inDetail && currentState.phase === "NODE_HOLD" && step ? step.anchorId : null);
     if (!requestFlowDot || !inDetail || !step || currentState.phase !== "EDGE_TRAVEL" || !point) {
       if (requestFlowDot) setHidden(requestFlowDot, true);
@@ -354,7 +410,8 @@
       index: state.flowIndex,
       endpointId: isFindingDetailView() ? state.detailApiId : state.selectedEndpointId,
       positions,
-      projection: state.layout.plan && state.layout.plan.projection
+      projection: state.layout.plan && state.layout.plan.projection,
+      snapshot: state.snapshot
     });
     steps.forEach((step) => {
       if (!step.transition) return;
@@ -2127,6 +2184,7 @@
     applyDisplaySettings();
     // 열린 Inspector에 상세 처리 보기 상태를 즉시 반영
     if (state.selection) renderGraphView(state.layout ? "elk" : "initial", true);
+    if (requestFlowController) renderRequestFlowSafely(requestFlowController.state());
   });
   if (endpointSearch) endpointSearch.addEventListener("input", () => {
     if (!isDetailView()) {
@@ -2216,6 +2274,14 @@
   if (requestFlowStart && requestFlowController) requestFlowStart.addEventListener("click", () => requestFlowController.play());
   if (requestFlowPause && requestFlowController) requestFlowPause.addEventListener("click", () => requestFlowController.pause());
   if (requestFlowReset && requestFlowController) requestFlowReset.addEventListener("click", () => requestFlowController.reset());
+  if (requestFlowPrevious && requestFlowController) requestFlowPrevious.addEventListener("click", () => {
+    const current = requestFlowController.state();
+    requestFlowController.seekToStep(current.stepIndex - 1);
+  });
+  if (requestFlowNext && requestFlowController) requestFlowNext.addEventListener("click", () => {
+    const current = requestFlowController.state();
+    requestFlowController.seekToStep(current.stepIndex + 1);
+  });
   if (document.addEventListener && requestFlowController) document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "hidden") requestFlowController.pause();
   });
