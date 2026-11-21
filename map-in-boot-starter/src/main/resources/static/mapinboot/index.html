@@ -74,7 +74,7 @@
         <section class="graph-canvas" aria-labelledby="view-title">
           <div class="graph-surface" id="graph-canvas" data-graph-state="empty">
             <h1 id="view-title" class="sr-only">전체 Flow Map</h1>
-            <div class="graph-tools map-toolbar" aria-label="Graph 탐색 도구">
+              <div class="graph-tools map-toolbar" aria-label="그래프 탐색 도구">
               <div class="graph-navigation-tools" aria-label="화면 이동 도구">
                 <button class="graph-tool-button" id="zoom-out" type="button" aria-label="그래프 축소" data-tooltip="그래프 축소"><span aria-hidden="true">−</span></button>
                 <button class="graph-tool-button" id="zoom-in" type="button" aria-label="그래프 확대" data-tooltip="그래프 확대"><span aria-hidden="true">+</span></button>
@@ -114,10 +114,15 @@
                       미연결 노드 포함
                     </label>
                     <div id="finding-filter-fields" hidden>
-                      <label>Finding 유형<select id="finding-rule">
+                      <label>진단 유형<select id="finding-rule">
                         <option value="">모든 유형</option>
-                        <option>CHAIN_MISSING</option><option>CHAIN_ORDER</option><option>PUBLIC_ENDPOINT</option>
-                        <option>METHOD_MISMATCH</option><option>FILTER_ORDER</option><option>OBJECT_BINDING</option><option>STATE_BYPASS</option>
+                        <option value="CHAIN_MISSING">보안 필터 체인 미적용</option>
+                        <option value="CHAIN_ORDER">보안 체인·매칭 우선순위 문제</option>
+                        <option value="PUBLIC_ENDPOINT">과도한 공개 접근 허용</option>
+                        <option value="METHOD_MISMATCH">URL·메서드 보안 불일치</option>
+                        <option value="FILTER_ORDER">필터 구성·순서 문제</option>
+                        <option value="OBJECT_BINDING">인증 주체와 대상 객체 권한 검증 문제</option>
+                        <option value="STATE_BYPASS">업무 보안 절차 우회 가능성</option>
                       </select></label>
                       <label>판단 신뢰도<select id="finding-confidence">
                         <option value="">모든 상태</option><option value="CONFIRMED">확정</option>

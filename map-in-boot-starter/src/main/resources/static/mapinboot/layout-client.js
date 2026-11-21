@@ -6,7 +6,7 @@
   const ELK_VERSION = "0.12.1";
   const WORKER_URL = "/mapinboot/vendor/elk-worker.min.js";
   const NODE_WIDTH = 260;
-  const NODE_HEIGHT = 96;
+  const NODE_HEIGHT = 120;
   const NODE_PADDING = 72;
   const COLUMN_STEP = 360;
   const SECTION_GAP = 96;
@@ -18,7 +18,7 @@
   const FINDING_TITLE_GAP = 22;
   const EDUCATION_AREA_TOP_PADDING = 48;
   const TOP_PADDING = 72;
-  const ROW_STEP = 156;
+  const ROW_STEP = 180;
   const CHAIN_GAP = 192;
   const GROUP_GAP = 48;
   const MAX_FILTER_COLUMNS = 4;

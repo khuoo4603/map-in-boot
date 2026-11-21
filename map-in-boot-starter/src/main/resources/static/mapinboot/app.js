@@ -7,15 +7,6 @@
     "security-flow": "전체 취약점 진단 Flow Map",
     "security-detail": "기능별 상세 취약점 확인"
   };
-  const phaseNames = {
-    NOT_STARTED: "대기",
-    RUNNING: "실행 중",
-    COLLECTING: "수집 중",
-    ANALYZING: "분석 중",
-    PARTIAL: "부분 완료",
-    COMPLETED: "완료",
-    FAILED: "실패"
-  };
   const title = document.querySelector("#view-title");
   const viewState = document.querySelector("#view-state");
   const graphCanvas = document.querySelector("#graph-canvas");
@@ -79,6 +70,11 @@
         select.appendChild(option);
       });
     });
+    if (findingRule) {
+      Array.from(findingRule.children).forEach((option) => {
+        if (option.value) option.textContent = graphRenderer.findingRuleLabel(option.value);
+      });
+    }
   }
   const layoutClient = window.MapInBootLayout;
   const navigationClient = window.MapInBootNavigation;
@@ -100,6 +96,7 @@
     statusError: null,
     snapshotError: null,
     graph: null,
+    displayIds: null,
     findingIndex: [],
     findingApiIndex: { endpointsByFinding: new Map(), findingsByEndpoint: new Map() },
     selectedFindingId: null,
@@ -184,7 +181,7 @@
     : null;
 
   function executionPhaseLabel(phase) {
-    return phaseNames[phase] || "확인 불가";
+    return graphRenderer ? graphRenderer.analysisStatusLabel(phase) : "확인 불가";
   }
 
   // SVG 표시 상태를 hidden 속성으로 동기화
@@ -570,8 +567,7 @@
       button.setAttribute("type", "button");
       button.setAttribute("data-finding-id", entry.finding.id);
       button.setAttribute("aria-pressed", String(entry.finding.id === state.selectedFindingId));
-      const confidence = { CONFIRMED: "확정", LIKELY: "검토 필요", UNKNOWN: "확인 불가" }[entry.finding.confidence] || "확인 불가";
-      button.textContent = `${entry.finding.title || entry.finding.id} · ${entry.finding.ruleId || ""} · ${confidence}`;
+      button.textContent = `${entry.finding.title || "진단 항목"} · ${graphRenderer.findingRuleLabel(entry.finding.ruleId)} · ${graphRenderer.confidenceLabel(entry.finding.confidence)}`;
       button.addEventListener("click", () => selectFinding(entry.finding.id));
       detailFindingList.appendChild(button);
     });
@@ -1207,6 +1203,7 @@
       graph: state.graph,
       snapshot: state.snapshot,
       entry,
+      displayIds: state.displayIds,
       apiLabel: endpoint ? endpointDetails(endpoint).label : "",
       nodeIds: scope.nodeIds,
       edgeIds: scope.edgeIds,
@@ -1255,8 +1252,7 @@
       const button = document.createElement("button");
       button.setAttribute("type", "button");
       button.setAttribute("data-finding-id", entry.finding.id);
-      const confidence = { CONFIRMED: "확정", LIKELY: "검토 필요", UNKNOWN: "확인 불가" }[entry.finding.confidence] || "확인 불가";
-      button.textContent = `${entry.finding.title || entry.finding.id} · ${entry.finding.ruleId || ""} · ${confidence} · 연결 위치 확인 불가`;
+      button.textContent = `${entry.finding.title || "진단 항목"} · ${graphRenderer.findingRuleLabel(entry.finding.ruleId)} · ${graphRenderer.confidenceLabel(entry.finding.confidence)} · 연결 위치 확인 불가`;
       button.addEventListener("click", () => selectFinding(entry.finding.id));
       findingList.appendChild(button);
     });
@@ -1327,7 +1323,7 @@
 
   function showGraphHover(kind, id, anchor) {
     if (!inspectorClient || !(state.viewGraph || state.graph)) return;
-    inspectorClient.showHover({ graph: state.viewGraph || state.graph, snapshot: state.snapshot, kind, id, anchor });
+    inspectorClient.showHover({ graph: state.viewGraph || state.graph, snapshot: state.snapshot, kind, id, anchor, displayIds: state.displayIds });
   }
 
   function hideGraphHover() {
@@ -1410,6 +1406,7 @@
           inspectorClient.renderFinding({
             graph: state.graph,
             snapshot: state.snapshot,
+            displayIds: state.displayIds,
             entry: state.findingIndex.find((item) => item.finding.id === state.selectedFindingId) || null,
             emptyPrompt: findingPrompt(),
             onReturn: () => selectView("security-flow"),
@@ -1421,6 +1418,7 @@
             graph: viewGraph || state.graph,
             visibleGraph: emptyGraph,
             snapshot: state.snapshot,
+            displayIds: state.displayIds,
             selection: null
           });
         }
@@ -1489,6 +1487,7 @@
       selection: state.selection,
       related,
       findings,
+      displayIds: state.displayIds,
       findingSections: findingSectionsForState(viewGraph),
       selectedFindingId: state.selectedFindingId,
       onFindingClick: (id, trigger) => selectFinding(id, trigger),
@@ -1521,12 +1520,13 @@
     if (requestFlowController) renderRequestFlowSafely(requestFlowController.state());
     if (inspectorClient) {
       if (isFindingDetailView() && !state.selection) {
-        inspectorClient.render({ graph: viewGraph, visibleGraph, snapshot: state.snapshot, selection: null });
+        inspectorClient.render({ graph: viewGraph, visibleGraph, snapshot: state.snapshot, selection: null, displayIds: state.displayIds });
       } else {
         inspectorClient.render({
           graph: viewGraph,
           visibleGraph,
           snapshot: state.snapshot,
+          displayIds: state.displayIds,
           selection: state.inspectorDismissed ? null : state.selection,
           view: state.view,
           findingId: isFindingDetailView() ? state.selectedFindingId : null,
@@ -1633,6 +1633,7 @@
     resetRequestFlow();
     state.snapshot = snapshot;
     state.graph = graph;
+    state.displayIds = graphRenderer.createDisplayIds(graph);
     state.flowIndex = flowClient ? flowClient.createIndex(graph, snapshot && snapshot.evidence) : null;
     state.findingIndex = graphRenderer.indexFindings(snapshot, graph);
     indexFindingApis();
@@ -1642,13 +1643,13 @@
     state.detailApiId = state.flowIndex && state.flowIndex.nodeById.has(previousDetailApiId)
       && state.flowIndex.nodeById.get(previousDetailApiId).type === "ENDPOINT" ? previousDetailApiId : "";
     if (findingRule) {
-      const knownRules = new Set(["CHAIN_MISSING", "CHAIN_ORDER", "PUBLIC_ENDPOINT", "METHOD_MISMATCH", "FILTER_ORDER", "OBJECT_BINDING", "STATE_BYPASS"]);
+      const knownRules = new Set(Object.keys(graphRenderer.findingRuleNames));
       Array.from(findingRule.children).filter((option) => option.dataset && option.dataset.extraRule).forEach((option) => option.remove());
       const extraRules = new Set(state.findingIndex.map(({ finding }) => finding.ruleId).filter((id) => id && !knownRules.has(id)));
-      extraRules.forEach((id) => {
+      Array.from(extraRules).sort().forEach((id, index) => {
         const option = document.createElement("option");
         option.value = id;
-        option.textContent = id;
+        option.textContent = `기타 진단 유형 ${index + 1}`;
         option.dataset.extraRule = "true";
         findingRule.appendChild(option);
       });

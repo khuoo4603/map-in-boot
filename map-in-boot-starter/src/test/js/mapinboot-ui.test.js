@@ -128,6 +128,13 @@ function loadUi({ fetchImpl, timers, animationClock, clipboard } = {}) {
     "request-flow-status", "request-flow-education", "request-flow-dot"
   ];
   const elements = new Map(ids.map((id) => [id, createElement()]));
+  const ruleOptions = indexHtml.match(/<select id="finding-rule">([\s\S]*?)<\/select>/)?.[1] || "";
+  for (const match of ruleOptions.matchAll(/<option(?:\s+value="([^"]*)")?>([^<]*)<\/option>/g)) {
+    const option = createElement("option");
+    option.value = match[1] || match[2];
+    option.textContent = match[2];
+    elements.get("finding-rule").appendChild(option);
+  }
   elements.get("help-panel").hidden = true;
   elements.get("settings-panel").hidden = true;
   elements.get("map-filter-panel").hidden = true;
@@ -285,7 +292,7 @@ test("복합 Finding 참조와 공유 Evidence는 원본 Node·Edge ID에만 연
   let nodeMarkers = findAllByClass(elements.get("graph-nodes"), "finding-marker");
   let edgeMarkers = findAllByClass(elements.get("graph-edges"), "finding-marker");
   assert.equal(nodeMarkers.filter((marker) => /복합 Finding/.test(marker.getAttribute("aria-label"))).length, 1);
-  assert.match(nodeMarkers[0].children.find((child) => child.tagName === "title").textContent, /복합 Finding.*CHAIN_ORDER.*검토 필요/);
+  assert.match(nodeMarkers[0].children.find((child) => child.tagName === "title").textContent, /복합 Finding.*보안 체인·매칭 우선순위 문제.*검토 필요/);
   assert.equal(edgeMarkers.filter((marker) => /복합 Finding/.test(marker.getAttribute("aria-label"))).length, 1);
   assert.equal(edgeMarkers.find((marker) => /복합 Finding/.test(marker.getAttribute("aria-label"))).getAttribute("data-confidence"), "LIKELY");
 
@@ -342,9 +349,9 @@ test("동일 Finding ID의 새 Snapshot 참조와 근거를 갱신하고 PARTIAL
   assert.equal(ui.state.snapshot.analysisStatus["security-chain"], "PARTIAL");
   assert.deepEqual(Array.from(ui.state.viewGraph.nodes, (node) => node.id), Array.from(ui.state.graph.nodes, (node) => node.id));
   assert.deepEqual(Array.from(ui.state.viewGraph.edges, (edge) => edge.id), Array.from(ui.state.graph.edges, (edge) => edge.id));
-  assert.match(textOf(elements.get("view-state")), /부분 완료.*보존 Snapshot 있음/);
+  assert.match(textOf(elements.get("view-state")), /부분 분석.*보존 Snapshot 있음/);
   const modalText = textOf(elements.get("finding-modal"));
-  ["갱신된 판단", "판단 불가 (UNKNOWN)", "갱신된 설명", "evidence-7", "runtime evidence 7", "갱신된 가이드"]
+  ["갱신된 판단", "판단 불가", "갱신된 설명", "runtime evidence 7", "갱신된 가이드"]
     .forEach((value) => assert.ok(modalText.includes(value), `${value} 표시`));
   ["이전 판단", "이전 설명", "이전 가이드", "runtime evidence 2"]
     .forEach((value) => assert.equal(modalText.includes(value), false, `${value} 잔존 금지`));
@@ -476,8 +483,8 @@ test("위치 없는 Finding도 보안 MAP에서 상세 Modal로 확인함", () =
   assert.equal(elements.get("finding-modal").hidden, false);
   assert.match(elements.get("finding-modal-title").textContent, /체인 점검/);
   assert.match(textOf(elements.get("finding-modal-content")), /판단 설명/);
-  assert.equal(elements.get("finding-modal-rule").textContent, "Rule ID · CHAIN_MISSING");
-  assert.equal(elements.get("finding-modal-confidence").textContent, "판단 불가 (UNKNOWN)");
+  assert.equal(elements.get("finding-modal-rule").textContent, "진단 유형 · 보안 필터 체인 미적용");
+  assert.equal(elements.get("finding-modal-confidence").textContent, "판단 불가");
   assert.match(textOf(elements.get("finding-modal-content")), /runtime evidence 2/);
   assert.match(textOf(elements.get("finding-modal-content")), /orders:\/\/node\/2/);
   assert.match(textOf(elements.get("finding-modal-content")), /근거 참조를 확인할 수 없습니다\./);
@@ -518,7 +525,8 @@ test("API를 확정할 수 없는 Finding은 보안 MAP을 유지하고 직접 �
   assert.match(elements.get("finding-modal-title").textContent, /Node 판단/);
   assert.match(textOf(elements.get("finding-modal-content")), /Node 설명/);
   assert.match(textOf(elements.get("finding-modal-content")), /Node 가이드/);
-  assert.match(textOf(elements.get("finding-modal-content")), /evidence-7/);
+  assert.doesNotMatch(textOf(elements.get("finding-modal-content")), /evidence-7/);
+  assert.match(textOf(elements.get("finding-modal-content")), /실행 환경/);
   assert.doesNotMatch(textOf(elements.get("finding-modal-content")), /Edge 판단|Edge 설명|Edge 가이드|evidence-3/);
   assert.match(textOf(elements.get("finding-modal-content")), /일부 Graph 참조를 확인할 수 없습니다/);
   assert.equal(JSON.stringify(snapshot), original);
@@ -612,7 +620,8 @@ test("API가 확인되지 않은 Finding의 Modal에서 실제 Node Inspector를
   assert.equal(ui.state.view, "security-flow");
   assert.equal(elements.get("finding-modal").hidden, false);
   assert.match(textOf(elements.get("finding-modal")), /OrderPolicy#check/);
-  assert.match(textOf(elements.get("finding-modal")), /CODE_PATTERN/);
+  assert.match(textOf(elements.get("finding-modal")), /코드 분석/);
+  assert.doesNotMatch(textOf(elements.get("finding-modal")), /CODE_PATTERN/);
   const originalNode = findAllByClass(elements.get("finding-modal"), "inspector-link")
     .find((button) => button.attributes["data-node-id"] === "authorization-a");
   assert.ok(originalNode);
@@ -620,8 +629,8 @@ test("API가 확인되지 않은 Finding의 Modal에서 실제 Node Inspector를
   assert.equal(ui.state.selection.kind, "node");
   assert.equal(ui.state.selection.id, "authorization-a");
   assert.equal(elements.get("finding-modal").hidden, false);
-  assert.match(textOf(elements.get("inspector")), /Node ID authorization-a/);
-  assert.match(textOf(elements.get("inspector")), /authorizationKind ROLE/);
+  assert.match(textOf(elements.get("inspector")), /노드 ID SC-AUTH-001/);
+  assert.match(textOf(elements.get("inspector")), /확인되지 않은 속성 1 ROLE/);
 });
 
 test("Snapshot 새로고침은 같은 Finding만 복원하고 사라진 ID는 폐기함", async () => {
@@ -674,7 +683,7 @@ test("같은 Node의 다중 Finding과 신뢰도 필터가 원본을 보존함",
   assert.equal(markers.length, 3);
   assert.equal(markers[1].getAttribute("tabindex"), "0");
   assert.equal(markers[1].getAttribute("role"), "button");
-  assert.match(markers[1].getAttribute("aria-label"), /판단 1.*CHAIN_MISSING.*검토 필요/);
+  assert.match(markers[1].getAttribute("aria-label"), /판단 1.*보안 필터 체인 미적용.*검토 필요/);
   assert.match(appCss, /\.finding-marker:focus-visible/);
   markers[1].dispatchEvent({ type: "keydown", key: " " });
   assert.equal(ui.state.selectedFindingId, "f1");
@@ -715,10 +724,10 @@ test("같은 Node의 다중 Finding과 신뢰도 필터가 원본을 보존함",
 });
 
 test("Finding 유형 필터는 원본 Rule ID를 구분하고 숨긴 위치를 알림", () => {
-  const { ui, elements } = loadUi();
+  const { ui, elements, window } = loadUi();
   const snapshot = graphFixture();
   const rules = ["CHAIN_MISSING", "CHAIN_ORDER", "PUBLIC_ENDPOINT", "METHOD_MISMATCH", "FILTER_ORDER", "OBJECT_BINDING", "STATE_BYPASS", "EXTRA_RULE"];
-  snapshot.findings = rules.map((ruleId) => ({ id: ruleId, title: ruleId, ruleId, confidence: "UNKNOWN", nodeIds: ["node-2"], edgeIds: [] }));
+  snapshot.findings = rules.map((ruleId) => ({ id: ruleId, title: "유형 확인", ruleId, confidence: "UNKNOWN", nodeIds: ["node-2"], edgeIds: [] }));
   const original = JSON.stringify(snapshot);
   ui.renderGraph(snapshot);
   ui.selectView("security-flow");
@@ -727,9 +736,13 @@ test("Finding 유형 필터는 원본 Rule ID를 구분하고 숨긴 위치를 �
     elements.get("finding-rule").dispatchEvent({ type: "change" });
     const markers = findAllByClass(elements.get("graph-nodes"), "finding-marker").filter((marker) => !marker.hidden);
     assert.equal(markers.length, 1);
-    assert.match(markers[0].getAttribute("aria-label"), new RegExp(ruleId));
+    const label = window.MapInBootGraph.findingRuleLabel(ruleId);
+    assert.match(markers[0].getAttribute("aria-label"), new RegExp(label));
+    assert.doesNotMatch(markers[0].getAttribute("aria-label"), new RegExp(ruleId));
   }
-  assert.ok(elements.get("finding-rule").children.some((option) => option.value === "EXTRA_RULE"));
+  const extraRule = elements.get("finding-rule").children.find((option) => option.value === "EXTRA_RULE");
+  assert.ok(extraRule);
+  assert.equal(extraRule.textContent, "기타 진단 유형 1");
   elements.get("node-filter").value = "FILTER";
   elements.get("node-filter").dispatchEvent({ type: "change" });
   elements.get("edge-filter").value = "FILTERED_BY";
@@ -740,7 +753,11 @@ test("Finding 유형 필터는 원본 Rule ID를 구분하고 숨긴 위치를 �
   assert.equal(elements.get("node-filter").value, "");
   assert.equal(elements.get("edge-filter").value, "");
   assert.equal(JSON.stringify(snapshot), original);
-  rules.slice(0, 7).forEach((ruleId) => assert.ok(indexHtml.includes(`<option>${ruleId}</option>`)));
+  rules.slice(0, 7).forEach((ruleId) => {
+    assert.ok(indexHtml.includes(`<option value="${ruleId}">`));
+    assert.equal(elements.get("finding-rule").children.find((option) => option.value === ruleId).textContent,
+      window.MapInBootGraph.findingRuleLabel(ruleId));
+  });
 });
 
 test("취약점 마커는 크게 표시되고 포인터 이동과 클릭 전파를 막음", () => {
@@ -813,7 +830,8 @@ test("상세 취약점 API 목록은 실제 Finding 연결만 보여줌", () => 
   assert.deepEqual(Array.from(ui.state.viewGraph.edges, (edge) => edge.id), []);
   assert.equal(elements.get("inspector").hidden, true);
   assert.match(elements.get("finding-modal-title").textContent, /Edge 연결/);
-  assert.match(textOf(elements.get("finding-modal")), /edge-2/);
+  assert.match(textOf(elements.get("finding-modal")), /RL-FILTER-001/);
+  assert.doesNotMatch(textOf(elements.get("finding-modal")), /edge-2/);
   elements.get("search-reset").dispatchEvent({ type: "click" });
   assert.equal(ui.state.selectedFindingId, "edge-linked");
   assert.equal(apiSelect.value, "node-2");
@@ -1006,9 +1024,15 @@ test("SVG Graph 표시 상태는 hidden 속성을 실제로 제거하고 재설�
 
 test("MAP 툴바는 좌측 상단에 기존 조작과 화면 고정만 노출하고 검색 결과 Select를 제거함", () => {
   assert.match(appCss, /--header-height:\s*clamp\(60px/);
-  assert.match(appCss, /\.map-toolbar\s*\{[^}]*top:\s*14px;[^}]*left:\s*18px;[^}]*background:\s*#363636/s);
+  assert.match(appCss, /\.map-toolbar\s*\{[^}]*top:\s*14px;[^}]*left:\s*18px;[^}]*background:\s*var\(--surface\);[^}]*box-shadow:/s);
   assert.doesNotMatch(appCss.match(/\.map-toolbar\s*\{[^}]*\}/s)[0], /backdrop-filter|background:\s*rgba\(/);
   assert.match(appCss, /\.graph-tool-button\s*\{[^}]*width:\s*34px;[^}]*height:\s*34px/);
+  assert.match(appCss, /\.graph-tool-button\s*\{[^}]*border:\s*1px solid transparent;[^}]*color:\s*var\(--accent-strong\);[^}]*background:\s*transparent/s);
+  assert.match(appCss, /\.graph-tool-button:hover:not\(\[aria-disabled="true"\]\)\s*\{[^}]*border-color:\s*rgba\(74, 222, 128, \.45\);[^}]*background:\s*rgba\(74, 222, 128, \.1\)/s);
+  assert.match(appCss, /\.graph-tool-button\[aria-disabled="true"\]\s*\{[^}]*color:\s*#718077/);
+  assert.match(appCss, /\.graph-tool-button:focus-visible\s*\{[^}]*outline:\s*2px solid var\(--accent-strong\)/);
+  assert.match(appCss, /\.map-lock-button\[aria-pressed="true"\]\s*\{[^}]*color:\s*var\(--accent-strong\);[^}]*background:\s*rgba\(74, 222, 128, \.16\)/);
+  assert.match(appCss, /\.map-filter-button\[data-active="true"\]\s*\{[^}]*color:\s*var\(--accent-strong\);[^}]*background:\s*rgba\(74, 222, 128, \.14\)/);
   assert.match(appCss, /\.graph-tool-button\[data-tooltip\]::after\s*\{[^}]*border:\s*1px solid #575757;[^}]*background:\s*#424242/);
   assert.match(indexHtml, /id="view-title" class="sr-only"/);
   assert.doesNotMatch(indexHtml, /class="map-toolbar-title"/);
@@ -1207,7 +1231,7 @@ test("실행 단계와 HTTP 상태를 사용자 문구로 구분함", () => {
 
   assert.equal(ui.executionPhaseLabel("NOT_STARTED"), "대기");
   assert.equal(ui.executionPhaseLabel("RUNNING"), "실행 중");
-  assert.equal(ui.executionPhaseLabel("PARTIAL"), "부분 완료");
+  assert.equal(ui.executionPhaseLabel("PARTIAL"), "부분 분석");
   assert.equal(ui.executionPhaseLabel("COMPLETED"), "완료");
   assert.equal(ui.executionPhaseLabel("FAILED"), "실패");
   assert.equal(ui.requestMessage(401, "status"), "인증 필요");
@@ -1511,7 +1535,7 @@ function routeLength(route) {
     + Math.abs(point.x - points[index].x) + Math.abs(point.y - points[index].y), 0);
 }
 
-function routeIntersectsPosition(route, position, width = 260, height = 96) {
+function routeIntersectsPosition(route, position, width = 260, height = 120) {
   const points = routePoints(route);
   return points.slice(1).some((point, index) => {
     const start = points[index];
@@ -1832,10 +1856,12 @@ test("상세 MAP의 실제 READS·USES 관계와 표준 Filter 판정을 분리 
   assert.equal(csrfStatus.registrations.some((registration) => registration.pathStatus === "CURRENT_PATH_NOT_APPLIED"), true);
 
   ui.selectGraphElement("edge", "reads-a");
-  assert.match(textOf(elements.get("inspector")), /reads-a/);
+  assert.match(textOf(elements.get("inspector")), new RegExp(ui.state.displayIds.edge("reads-a")));
+  assert.doesNotMatch(textOf(elements.get("inspector")), /reads-a/);
   assert.match(textOf(elements.get("inspector")), /보안정보 읽기/);
   ui.selectGraphElement("edge", "uses-a");
-  assert.match(textOf(elements.get("inspector")), /uses-a/);
+  assert.match(textOf(elements.get("inspector")), new RegExp(ui.state.displayIds.edge("uses-a")));
+  assert.doesNotMatch(textOf(elements.get("inspector")), /uses-a/);
   assert.match(textOf(elements.get("inspector")), /인가 사용/);
 
   elements.get("endpoint-search").value = "not-in-detail";
@@ -2705,7 +2731,7 @@ test("Graph 표시 라벨은 짧은 한글 타입과 의미 중심 이름을 사
   const nodeTexts = Array.from(elements.get("graph-nodes").children, textOf);
   const firstNodeCard = findAllByClass(elements.get("graph-nodes").children[0], "graph-node-card")[0];
   assert.equal(firstNodeCard.attributes.width, "260");
-  assert.equal(firstNodeCard.attributes.height, "96");
+  assert.equal(firstNodeCard.attributes.height, "120");
   assert.equal(firstNodeCard.attributes.rx, "7");
   assert.match(nodeTexts[0], /애플리케이션/);
   assert.match(nodeTexts[0], /OrderApplication/);
@@ -2715,13 +2741,13 @@ test("Graph 표시 라벨은 짧은 한글 타입과 의미 중심 이름을 사
   assert.match(nodeTexts[1], /DISPATCHER · \/?/);
   assert.match(nodeTexts[2], /API/);
   assert.match(nodeTexts[2], /GET \/mapinboot\/api\/status/);
-  assert.match(nodeTexts[2], /StatusController#status\(\)/);
+  assert.doesNotMatch(nodeTexts[2], /StatusController#status\(\)/);
   assert.doesNotMatch(nodeTexts[2], /com\.mapinboot/);
   assert.match(nodeTexts[3], /핸들러/);
   assert.match(nodeTexts[3], /StatusController/);
-  assert.match(nodeTexts[3], /status\(\)/);
+  assert.match(nodeTexts[3], /status\(HttpServletRequest\)/);
   const handlerDisplay = window.MapInBootGraph.nodeDisplay(snapshot.nodes[3]);
-  assert.equal(handlerDisplay.primary, "status()");
+  assert.equal(handlerDisplay.primary, "status(HttpServletRequest)");
   assert.equal(handlerDisplay.detail, "StatusController");
   assert.match(nodeTexts[4], /보안 필터 체인/);
   assert.match(window.MapInBootGraph.nodeDisplay(snapshot.nodes[4]).primary, /^제외 · GET \/api\/legacy\/account-summary/);
@@ -2766,7 +2792,8 @@ test("Node 카드는 간결한 Handler를 보이고 Inspector는 전체 FQCN 원
 
   const node = findAllByClass(elements.get("graph-nodes"), "graph-node")
     .find((item) => item.getAttribute("data-node-id") === "node-2");
-  assert.match(textOf(node), /AccountController#load\(\)/);
+  assert.equal(findAllByClass(node, "graph-node-detail").length, 0);
+  assert.ok(findAllByClass(node, "graph-node-display-id").length > 0);
   ui.selectGraphElement("node", "node-2");
   assert.ok(textOf(elements.get("inspector")).includes(handler));
 });
@@ -2981,7 +3008,7 @@ test("17개 API를 두 Endpoint 열에 보존하고 확인된 Chain·Handler만 
     .map((x) => endpoints.map((node) => ui.state.layout.positions[node.id])
       .filter((position) => position.x === x).sort((left, right) => left.y - right.y));
   assert.deepEqual(endpointColumns.map((column) => column.length), [9, 8]);
-  assert.equal(endpointColumns[1][0].y - endpointColumns[0][0].y, 78);
+  assert.equal(endpointColumns[1][0].y - endpointColumns[0][0].y, 90);
   assert.equal(ui.state.flowIndex.summary().matchedEndpointCount, 13);
   assert.equal(ui.state.flowIndex.summary().uncertainCount, 4);
   const endpointX = ui.state.layout.positions[endpoints[0].id].x;
@@ -3242,8 +3269,10 @@ test("Security Data 원본 구조 키를 의미 이름으로 축약하고 원문
   assert.match(textOf(node), /Claim sub/);
   assert.doesNotMatch(textOf(node), /jwt\|READ\|/);
   ui.selectGraphElement("node", "security-data-jwt");
-  assert.match(textOf(elements.get("inspector")), /작업/);
-  assert.match(textOf(elements.get("inspector")), /읽기 \(READ\)/);
+  assert.match(textOf(elements.get("inspector")), /수행 동작/);
+  assert.match(textOf(elements.get("inspector")), /읽기/);
+  assert.match(textOf(elements.get("inspector")), /JWT 정보 읽기/);
+  assert.doesNotMatch(textOf(elements.get("inspector")), /READ|SPRING_SECURITY_JWT/);
   assert.match(textOf(elements.get("inspector")), /코드 위치/);
   assert.equal(window.MapInBootGraph.friendlyClassName("org.springframework.security.web.SecurityContextHolderAwareRequestFilter"), "Security Context Holder Aware Request Filter");
 });
@@ -3762,21 +3791,25 @@ test("Hover 요약과 Node·Edge Inspector가 실제 ID·연결·Evidence를 사
   edge = findAllByClass(elements.get("graph-edges"), "graph-edge")[3];
 
   ui.setInspectorTab("connections");
-  assert.match(textOf(inspector), /edge-1|edge-2|edge-3/);
+  assert.ok(["edge-1", "edge-2", "edge-3"].some((id) => textOf(inspector).includes(ui.state.displayIds.edge(id))));
+  assert.doesNotMatch(textOf(inspector), /edge-1|edge-2|edge-3/);
   ui.setInspectorTab("relations");
   assert.match(textOf(inspector), /보호 근거/);
   const relationBlocks = findAllByClass(inspector, "inspector-relation");
   const findingReference = relationBlocks.at(-1);
-  assert.match(textOf(findingReference), /node-3/);
-  assert.match(textOf(findingReference), /node-4/);
+  assert.match(textOf(findingReference), new RegExp(ui.state.displayIds.node("node-3")));
+  assert.match(textOf(findingReference), new RegExp(ui.state.displayIds.node("node-4")));
+  assert.doesNotMatch(textOf(findingReference), /node-3|node-4|edge-3/);
   assert.doesNotMatch(textOf(findingReference), /들어옴|나감/);
 
   edge.dispatchEvent({ type: "click" });
   assert.equal(inspector.attributes["data-selection-kind"], "edge");
   assert.equal(inspector.attributes["data-selection-id"], "edge-3");
   ui.setInspectorTab("properties");
-  assert.match(textOf(inspector), /node-3/);
-  assert.match(textOf(inspector), /node-4/);
+  assert.match(textOf(inspector), new RegExp(ui.state.displayIds.edge("edge-3")));
+  assert.match(textOf(inspector), new RegExp(ui.state.displayIds.node("node-3")));
+  assert.match(textOf(inspector), new RegExp(ui.state.displayIds.node("node-4")));
+  assert.doesNotMatch(textOf(inspector), /edge-3|node-3|node-4/);
 
   const close = findAllByClass(inspector, "inspector-close")[0];
   close.dispatchEvent({ type: "click" });
@@ -3822,20 +3855,22 @@ test("Inspector 속성 순서·확실성 문구와 고정 헤더·본문 스크�
   const inspector = elements.get("inspector");
   const propertyRows = findAllByClass(inspector, "inspector-row");
   const labels = propertyRows.map((row) => row.children[0].textContent);
-  const endpointLabels = labels.filter((label) => ["HTTP Method", "경로", "핸들러"].includes(label));
-  assert.deepEqual(endpointLabels, ["HTTP Method", "경로", "핸들러"]);
+  const endpointLabels = labels.filter((label) => ["HTTP 메서드", "경로", "핸들러 원문 서명"].includes(label));
+  assert.deepEqual(endpointLabels, ["핸들러 원문 서명"]);
+  assert.match(textOf(inspector), /GET \/orders/);
   assert.match(textOf(inspector), /com\.example\.OrderController#list/);
 
   ui.selectGraphElement("node", filter.id);
-  assert.match(textOf(inspector), /서블릿 \(SERVLET\)/);
-  assert.match(textOf(inspector), /현재 경로 미적용 \(CURRENT_PATH_NOT_APPLIED\)/);
+  assert.match(textOf(inspector), /서블릿/);
+  assert.match(textOf(inspector), /확인되지 않은 속성 1 CURRENT_PATH_NOT_APPLIED/);
+  assert.doesNotMatch(textOf(inspector), /SERVLET|pathStatus/);
 
   ui.selectGraphElement("edge", "inspector-authorization-use");
   assert.match(textOf(inspector), /실제 인가 사용/);
   const confidenceRow = findAllByClass(inspector, "inspector-row")
     .find((row) => row.children[0].textContent === "판단 신뢰도");
   assert.ok(confidenceRow);
-  assert.equal(confidenceRow.children[1].textContent, "확인됨 (CONFIRMED)");
+  assert.equal(confidenceRow.children[1].textContent, "확정");
 
   assert.match(appCss, /\.inspector\s*\{[^}]*width:\s*clamp\(420px,\s*30vw,\s*480px\)[^}]*overflow:\s*hidden/s);
   assert.match(appCss, /\.inspector-header\s*\{[^}]*flex:\s*0\s+0\s+auto/s);
@@ -4091,11 +4126,11 @@ test("내부 처리 단계는 중앙 대역에서 실제 Node와 겹치지 않�
   assert.ok(actualPositions.some((position) => position.y > projectionTop));
   projection.nodes.forEach((node) => actualPositions.forEach((position) => {
     assert.ok(node.position.x + 260 <= position.x || position.x + 260 <= node.position.x
-      || node.position.y + 96 <= position.y || position.y + 96 <= node.position.y);
+      || node.position.y + 120 <= position.y || position.y + 120 <= node.position.y);
   }));
-  assert.ok(layout.height >= projectionTop + 96);
+  assert.ok(layout.height >= projectionTop + 120);
   projection.nodes.forEach((node) => {
-    assert.ok(layout.height >= node.position.y + 96);
+    assert.ok(layout.height >= node.position.y + 120);
     assert.ok(layout.width >= node.position.x + node.width,
       `${node.id}: layout.width=${layout.width}, node.x=${node.position.x}, node.width=${node.width}`);
   });
@@ -4119,7 +4154,7 @@ test("Endpoint 16개 이상은 정렬 목록을 두 열로 분할하고 둘째 �
     const secondColumn = positions.filter((position) => position.x === xs[1]).sort((left, right) => left.y - right.y);
     assert.equal(firstColumn.length, firstColumnCount);
     assert.equal(secondColumn.length, count - firstColumnCount);
-    assert.equal(secondColumn[0].y - firstColumn[0].y, 78);
+    assert.equal(secondColumn[0].y - firstColumn[0].y, 90);
     assert.ok(layout.plan.lanes.find((lane) => lane.id === "handler").x > xs[1] + 260);
   });
 });
@@ -4264,8 +4299,8 @@ test("보안 관계선은 Graph 하단을 우회하지 않고 목표 입력 Port
   const actualRoute = layout.edgeRoutes["secured-0"];
   const source = displayedPosition("first-handler-0");
   const target = displayedPosition("authorization-0");
-  const start = { x: source.x + 260, y: source.y + 48 };
-  const end = { x: target.x, y: target.y + 48 };
+  const start = { x: source.x + 260, y: source.y + 60 };
+  const end = { x: target.x, y: target.y + 60 };
   assert.equal(points[0].x, start.x);
   assert.equal(points[0].y, start.y);
   assert.equal(points[points.length - 1].x, end.x);
@@ -4280,7 +4315,7 @@ test("보안 관계선은 Graph 하단을 우회하지 않고 목표 입력 Port
     if (nodeId === sourceDisplayId || nodeId === targetDisplayId) return;
     assert.equal(routeIntersectsPosition(route, position), false, `${nodeId} 관통`);
   });
-  const actualBottom = Math.max(...Object.values(layout.positions).map((position) => position.y + 96));
+  const actualBottom = Math.max(...Object.values(layout.positions).map((position) => position.y + 120));
   assert.ok(Math.max(...points.map((point) => point.y)) < actualBottom,
     `경로가 실제 Node 하단 ${actualBottom} 아래로 내려감`);
   assert.ok(Math.max(...routePoints(actualRoute).map((point) => point.y)) < actualBottom);
@@ -4310,7 +4345,7 @@ test("Controller 50·60 API 규모에서도 보안 관계 Route를 유지하고 
     const points = routePoints(firstRoute);
     assert.equal(Object.keys(layout.plan.displayEdgeRoutes).filter((id) => id.startsWith("secured-")).length, count);
     assert.ok(points.length > 0, `${count}개 API의 첫 관계선 Route 없음`);
-    assert.ok(Math.max(...points.map((point) => point.y)) <= Math.max(source.y + 48, target.y + 48) + 48,
+    assert.ok(Math.max(...points.map((point) => point.y)) <= Math.max(source.y + 60, target.y + 60) + 60,
       `${count}개 API의 첫 관계선이 목표 주변을 벗어남`);
     assert.equal(layout.plan.routeDiagnostics.nodeOverlaps, 0, `${count}개 API Node 겹침`);
     assert.equal(layout.plan.routeDiagnostics.edgeNodeIntersections, 0, `${count}개 API 실제 Edge 충돌`);
@@ -4384,12 +4419,14 @@ test("API 안내선은 표시 Controller 카드의 실제 입력 포트에 도�
   const guide = elements.get("graph-guides").children.find((item) => item.attributes["data-endpoint-id"] === "endpoint-a");
   assert.ok(guide);
   const path = guide.attributes.d;
-  assert.match(path, new RegExp(`L ${group.position.x} ${group.position.y + 48}$`));
+  assert.match(path, new RegExp(`L ${group.position.x} ${group.position.y + 60}$`));
 });
 
 test("묶인 표시 관계에서 개별 Edge와 Evidence를 선택할 수 있음", async () => {
   const { ui, elements } = loadUi();
   const graph = detailGraphFixture();
+  graph.evidence = [{ id: "e-edge2", source: "RUNTIME", location: "OrderPolicy#check", summary: "추가 관계 근거" }];
+  graph.evidenceDisplayCodes = { "e-edge2": "EV-TEST-002" };
   graph.nodes.push({ id: "authorization-a2", type: "AUTHORIZATION", serviceId: "orders", label: "other policy",
     attributes: { authorizationKind: "OTHER" }, evidenceIds: ["e-auth2"] });
   graph.edges.push({ id: "secured-a2", sourceId: "handler-a", targetId: "authorization-a2", type: "SECURED_BY",
@@ -4408,7 +4445,8 @@ test("묶인 표시 관계에서 개별 Edge와 Evidence를 선택할 수 있음
   assert.ok(link);
   link.dispatchEvent({ type: "click" });
   assert.equal(ui.state.selection.id, "secured-a2");
-  assert.match(textOf(elements.get("inspector")), /e-edge2/);
+  assert.match(textOf(elements.get("inspector")), /EV-TEST-002/);
+  assert.doesNotMatch(textOf(elements.get("inspector")), /e-edge2/);
 });
 
 test("묶인 Edge의 Finding은 원본 Edge별로 따로 선택됨", async () => {
@@ -4442,12 +4480,13 @@ test("표시 그룹의 원본 Node 참조와 Snapshot 교체가 마커를 정확
   await ui.layoutGraph();
   const group = ui.state.layout.plan.displayModel.groups.find((item) => item.nodeIds.includes("authorization-a"));
   const marker = findAllByClass(elements.get("graph-nodes"), "finding-marker")[0];
-  assert.equal(marker.getAttribute("transform"), `translate(${group.position.x + 246} ${group.position.y + 14})`);
+  assert.equal(marker.getAttribute("transform"), `translate(${group.position.x + 246} ${group.position.y + 106})`);
   marker.dispatchEvent({ type: "click" });
   assert.equal(ui.state.selectedFindingId, "grouped");
   assert.equal(ui.state.view, "security-flow");
   assert.equal(elements.get("finding-modal").hidden, false);
-  assert.match(textOf(elements.get("finding-modal")), /authorization-a/);
+  assert.match(textOf(elements.get("finding-modal")), new RegExp(ui.state.displayIds.node("authorization-a")));
+  assert.doesNotMatch(textOf(elements.get("finding-modal")), /authorization-a/);
   ui.selectView("security-flow");
   assert.match(textOf(elements.get("finding-list")), /인가 판단/);
   const replacement = detailGraphFixture();
@@ -4474,16 +4513,16 @@ test("표시 그룹 관계 경로는 최종 카드 포트에서 시작하고 끝
     const target = position(edge.targetId);
     const section = route.sections[0];
     assert.ok([source.x, source.x + 260].includes(section.startPoint.x), id);
-    assert.equal(section.startPoint.y, source.y + 48, id);
+    assert.equal(section.startPoint.y, source.y + 60, id);
     assert.ok([target.x, target.x + 260].includes(section.endPoint.x), id);
-    assert.equal(section.endPoint.y, target.y + 48, id);
+    assert.equal(section.endPoint.y, target.y + 60, id);
   });
 });
 
 test("동일한 Snapshot의 표시 경로와 중앙 배치는 안정적으로 유지됨", () => {
   const { ui, layoutApi } = loadUi();
   const layout = layoutApi.semanticLayout(ui.normalizeGraph(detailGraphFixture()), { positions: {} });
-  assert.equal(layout.plan.guideRoutes["endpoint-a"], "M 5704 408 L 5752 408 L 5752 758 L 5800 758");
+  assert.equal(layout.plan.guideRoutes["endpoint-a"], "M 5704 420 L 5752 420 L 5752 794 L 5800 794");
 });
 
 test("소속을 확인할 수 없는 보안정보도 메인 영역 가까이 개별 표시함", () => {
@@ -4493,7 +4532,7 @@ test("소속을 확인할 수 없는 보안정보도 메인 영역 가까이 개
     attributes: { codeLocation: "unknown", operation: "READ" }, evidenceIds: [] });
   const layout = layoutApi.semanticLayout(ui.normalizeGraph(graph), { positions: {} });
   assert.equal(layout.plan.displayModel.nodeToDisplay.unowned, "unowned");
-  assert.ok(Math.abs(layout.positions.unowned.y + 48 - layout.plan.sectionAlignment.handler.centerY) < 300);
+  assert.ok(Math.abs(layout.positions.unowned.y + 60 - layout.plan.sectionAlignment.handler.centerY) < 300);
 });
 
 test("API 선택은 실제 상세 Graph의 Handler와 보안 근거를 함께 강조함", async () => {
@@ -4550,7 +4589,7 @@ test("Chain 그룹과 기술 영역은 실제 Node 범위와 동적 여백으로
   assert.ok(areaRects.some((rect) => Number(rect.attributes.height) < layout.height));
   groups.forEach((group) => group.nodeIds.forEach((id) => {
     const position = layout.positions[id];
-    assert.ok(position.y >= group.top && position.y + 96 <= group.bottom);
+    assert.ok(position.y >= group.top && position.y + 120 <= group.bottom);
   }));
 });
 
@@ -4678,7 +4717,7 @@ test("다수 보안정보 표시 카드와 교육 노드는 충돌하지 않음"
   const groups = (layout.plan.controllerGroups || []).concat(layout.plan.displayModel.groups || []);
   const cards = Object.values(layout.positions).concat(groups.map((group) => group.position));
   const education = layout.plan.projection.nodes.map((node) => node.position);
-  const overlap = (a, b) => a.x < b.x + 260 && a.x + 260 > b.x && a.y < b.y + 96 && a.y + 96 > b.y;
+  const overlap = (a, b) => a.x < b.x + 260 && a.x + 260 > b.x && a.y < b.y + 120 && a.y + 120 > b.y;
   for (const [index, position] of education.entries()) {
     assert.equal(cards.some((card) => overlap(position, card)), false, `실제 카드와 충돌: ${index}`);
     assert.equal(education.slice(index + 1).some((card) => overlap(position, card)), false, `교육 카드와 충돌: ${index}`);
@@ -4687,7 +4726,7 @@ test("다수 보안정보 표시 카드와 교육 노드는 충돌하지 않음"
 
 test("빈 Graph부터 다수 Endpoint까지 교육 카드의 실제 표시 Bounds가 겹치지 않음", () => {
   const { layoutApi, ui } = loadUi();
-  const toRect = (position, width = 260, height = 96) => ({
+  const toRect = (position, width = 260, height = 120) => ({
     left: position.x, top: position.y, right: position.x + width, bottom: position.y + height
   });
   const overlaps = (left, right, gap = 0) => left.left - gap < right.right && left.right + gap > right.left
@@ -4750,8 +4789,8 @@ test("빈 Graph부터 다수 Endpoint까지 교육 카드의 실제 표시 Bound
       const sourcePosition = source ? source.position : layout.positions[edge.sourceId];
       const targetPosition = target ? target.position : layout.positions[edge.targetId];
       if (!sourcePosition || !targetPosition) continue;
-      const sourceHeight = source ? source.height : 96;
-      const targetHeight = target ? target.height : 96;
+      const sourceHeight = source ? source.height : 120;
+      const targetHeight = target ? target.height : 120;
       const points = [];
       for (const [, command, first, second] of route.d.matchAll(/([MLHV])\s*(-?[\d.]+)(?:\s+(-?[\d.]+))?/g)) {
         const previous = points.at(-1);
@@ -4776,7 +4815,7 @@ test("빈 Graph부터 다수 Endpoint까지 교육 카드의 실제 표시 Bound
       assert.ok(section.bounds.left <= Math.min(...related.map((position) => position.x)) - 28);
       assert.ok(section.bounds.right >= Math.max(...related.map((position) => position.x + 260)) + 28);
       assert.ok(section.bounds.top <= Math.min(...related.map((position) => position.y)) - 48);
-      assert.ok(section.bounds.bottom >= Math.max(...related.map((position) => position.y + 96)) + 24);
+      assert.ok(section.bounds.bottom >= Math.max(...related.map((position) => position.y + 120)) + 24);
       assert.equal(cards.some((card) => overlaps(section.titleBounds, card, 4)), false,
         `${count}: Finding 제목과 실제 카드 충돌`);
       const technicalTitles = [...(layout.plan.lanes || []).map((lane) => lane.headerBounds),
@@ -4796,6 +4835,7 @@ test("Finding 섹션 배경과 제목은 Modal을 열고 Node·Edge Inspector와
   const { ui, elements, layoutCalls } = loadUi();
   const snapshot = detailGraphFixture();
   snapshot.evidence = [{ id: "finding-evidence", source: "STATIC", location: "OrderController#list", summary: "인가 관계 확인" }];
+  snapshot.evidenceDisplayCodes = { "finding-evidence": "EP-FINDING-001" };
   snapshot.findings = [{
     id: "section-modal", ruleId: "OBJECT_BINDING", title: "객체 인가 확인", description: "인가 대상 확인",
     confidence: "LIKELY", nodeIds: ["endpoint-a", "authorization-a"], edgeIds: ["secured-a"],
@@ -4927,8 +4967,8 @@ test("객체 인가 사실 유형은 구조 키 대신 역할을 표시함", () 
 test("교육 흐름 경로는 관련 없는 실제 카드 내부를 지나지 않음", () => {
   const { layoutApi, ui } = loadUi();
   const intersects = (a, b, p) => a.x === b.x
-    ? a.x > p.x && a.x < p.x + 260 && Math.max(a.y, b.y) > p.y && Math.min(a.y, b.y) < p.y + 96
-    : a.y === b.y && a.y > p.y && a.y < p.y + 96 && Math.max(a.x, b.x) > p.x && Math.min(a.x, b.x) < p.x + 260;
+    ? a.x > p.x && a.x < p.x + 260 && Math.max(a.y, b.y) > p.y && Math.min(a.y, b.y) < p.y + 120
+    : a.y === b.y && a.y > p.y && a.y < p.y + 120 && Math.max(a.x, b.x) > p.x && Math.min(a.x, b.x) < p.x + 260;
   for (const graph of [wrappedFilterGraph(5, 5), laneGraphFixture()]) {
   const layout = layoutApi.semanticLayout(ui.normalizeGraph(graph), { positions: {} });
   for (const edge of layout.plan.projection.edges) {
@@ -5061,6 +5101,7 @@ test("Finding 영향 섹션은 실제 참조만 감싸고 별도 Modal을 키보
   const { ui, elements, layoutCalls } = loadUi();
   const snapshot = detailGraphFixture();
   snapshot.evidence = [{ id: "finding-evidence", source: "STATIC", location: "OrderController#list", summary: "인가 관계 확인" }];
+  snapshot.evidenceDisplayCodes = { "finding-evidence": "EP-FINDING-001" };
   snapshot.findings = [{
     id: "endpoint-impact", ruleId: "OBJECT_BINDING", title: "객체 인가 확인", description: "인가 대상 확인",
     confidence: "LIKELY", nodeIds: ["endpoint-a", "authorization-a"], edgeIds: ["secured-a"],
@@ -5084,7 +5125,9 @@ test("Finding 영향 섹션은 실제 참조만 감싸고 별도 Modal을 키보
   assert.equal(elements.get("finding-modal").getAttribute("role"), "dialog");
   assert.equal(elements.get("finding-modal").getAttribute("aria-modal"), "true");
   assert.equal(elements.get("finding-modal-title").textContent, "객체 인가 확인");
-  assert.match(textOf(elements.get("finding-modal-content")), /finding-evidence/);
+  assert.match(textOf(elements.get("finding-modal-content")), /EP-FINDING-001/);
+  assert.match(textOf(elements.get("finding-modal-content")), /출처 확인 불가/);
+  assert.doesNotMatch(textOf(elements.get("finding-modal-content")), /finding-evidence|STATIC/);
   assert.match(textOf(elements.get("finding-modal-content")), /OrderController#list/);
   assert.match(textOf(elements.get("finding-modal-content")), /객체 소유자 검증/);
   assert.equal(elements.get("inspector").hidden, true);
@@ -5116,7 +5159,7 @@ test("Finding 영향 섹션은 실제 참조만 감싸고 별도 Modal을 키보
   assert.equal(ui.state.selectedFindingId, "endpoint-impact");
 });
 
-test("Finding 상세 Modal은 판단 상태·원문 Rule ID와 실제 정보 순서를 표시함", () => {
+test("Finding 상세 Modal은 한국어 진단 유형·상태와 실제 정보 순서를 표시함", () => {
   const { ui, elements } = loadUi();
   const snapshot = detailGraphFixture();
   const finding = {
@@ -5148,16 +5191,17 @@ test("Finding 상세 Modal은 판단 상태·원문 Rule ID와 실제 정보 순
   const confidence = elements.get("finding-modal-confidence");
   const rule = elements.get("finding-modal-rule");
   assert.ok(confidence);
-  assert.equal(confidence.textContent, "확인됨 (CONFIRMED)");
+  assert.equal(confidence.textContent, "확정");
   assert.equal(confidence.attributes["data-confidence"], "CONFIRMED");
   assert.ok(rule);
-  assert.equal(rule.textContent, "Rule ID · OBJECT_BINDING");
+  assert.equal(rule.textContent, "진단 유형 · 인증 주체와 대상 객체 권한 검증 문제");
   assert.equal(elements.get("finding-modal-title").textContent, finding.title);
   [
-    ["CONFIRMED", "확인됨 (CONFIRMED)"],
-    ["LIKELY", "검토 필요 (LIKELY)"],
-    ["UNKNOWN", "판단 불가 (UNKNOWN)"],
-    [undefined, "판단 불가 (UNKNOWN)"]
+    ["CONFIRMED", "확정"],
+    ["LIKELY", "검토 필요"],
+    ["UNKNOWN", "판단 불가"],
+    ["PARTIAL", "부분 분석"],
+    [undefined, "판단 불가"]
   ].forEach(([value, expected]) => {
     entry.finding.confidence = value;
     ui.inspector.renderFindingModal({ graph: snapshot, snapshot, entry, apiLabel: "GET /orders/{orderId}" });
@@ -5199,9 +5243,9 @@ test("Finding 상세 Modal은 판단 상태·원문 Rule ID와 실제 정보 순
 
   ui.inspector.renderFindingModal({ graph: null, snapshot, entry: null, apiLabel: "" });
   assert.equal(elements.get("finding-modal-title").textContent, "Finding 선택 필요");
-  assert.equal(confidence.textContent, "판단 불가 (UNKNOWN)");
+  assert.equal(confidence.textContent, "판단 불가");
   assert.equal(confidence.attributes["data-confidence"], "UNKNOWN");
-  assert.equal(rule.textContent, "Rule ID 확인 불가");
+  assert.equal(rule.textContent, "진단 유형 확인 불가");
 });
 
 test("HTMLCollection형 SVG 자식에서도 부분 Graph 갱신과 Node·Edge Inspector가 동작함", async () => {
@@ -5292,7 +5336,7 @@ test("Node 선택은 기존 SVG Node와 Edge DOM을 재사용함", () => {
   assert.equal(node.getAttribute("data-selected"), "true");
 });
 
-test("Node·Edge·Finding 근거가 저장 표시 코드를 공유하고 전체 원본 ID를 접어 복사함", async () => {
+test("Node·Edge·Finding 근거는 저장 표시 코드만 노출하고 원본 Evidence ID는 숨김", async () => {
   const copied = [];
   const { ui, elements } = loadUi({ clipboard: { writeText: async (text) => copied.push(text) } });
   const snapshot = graphFixture();
@@ -5311,22 +5355,14 @@ test("Node·Edge·Finding 근거가 저장 표시 코드를 공유하고 전체 
   const codeIn = (root) => findAllByClass(root, "inspector-evidence-code")[0].textContent;
   const nodeCard = findAllByClass(inspector, "inspector-evidence")[0];
   assert.equal(codeIn(nodeCard), "EP-MAPPING-001");
-  const originalPanel = findAllByClass(nodeCard, "inspector-evidence-original")[0];
-  const revealOriginal = findAllByClass(nodeCard, "inspector-evidence-toggle")[0];
-  assert.equal(originalPanel.hidden, true);
-  assert.equal(revealOriginal.attributes["aria-expanded"], "false");
+  assert.doesNotMatch(textOf(nodeCard), new RegExp(originalId));
+  assert.equal(findAllByClass(nodeCard, "inspector-evidence-original").length, 0);
+  assert.equal(findAllByClass(nodeCard, "inspector-evidence-toggle").length, 0);
+  assert.equal(findAllByClass(nodeCard, "inspector-evidence-copy-id").length, 0);
   findAllByClass(nodeCard, "inspector-evidence-copy-code")[0].dispatchEvent({ type: "click" });
   await new Promise((resolve) => setTimeout(resolve, 0));
   assert.deepEqual(copied, ["EP-MAPPING-001"]);
   assert.equal(elements.get("shell-notice").textContent, "표시 ID를 복사했습니다.");
-  revealOriginal.dispatchEvent({ type: "click" });
-  assert.equal(originalPanel.hidden, false);
-  assert.equal(revealOriginal.attributes["aria-expanded"], "true");
-  assert.equal(findAllByClass(originalPanel, "inspector-evidence-id")[0].textContent, originalId);
-  findAllByClass(nodeCard, "inspector-evidence-copy-id")[0].dispatchEvent({ type: "click" });
-  await new Promise((resolve) => setTimeout(resolve, 0));
-  assert.deepEqual(copied, ["EP-MAPPING-001", originalId]);
-  assert.equal(elements.get("shell-notice").textContent, "원본 식별자를 복사했습니다.");
 
   ui.selectGraphElement("edge", "edge-3");
   assert.equal(codeIn(findAllByClass(inspector, "inspector-evidence")[0]), "EP-MAPPING-001");
@@ -5359,14 +5395,9 @@ test("Evidence 누락·구버전 매핑·위치 누락을 구분하고 가짜 �
   assert.match(textOf(cards[1]), /근거 참조를 확인할 수 없습니다\./);
   assert.match(textOf(cards[2]), /표시 ID가 저장되지 않은 근거입니다\./);
   assert.doesNotMatch(textOf(cards[2]), /EV-[A-Z]+-[0-9]{3}/);
-  const originalPanel = findAllByClass(cards[2], "inspector-evidence-original")[0];
-  const revealOriginal = findAllByClass(cards[2], "inspector-evidence-toggle")[0];
-  assert.equal(originalPanel.hidden, true);
-  revealOriginal.dispatchEvent({ type: "click" });
-  assert.equal(findAllByClass(originalPanel, "inspector-evidence-id")[0].textContent, "legacy-evidence");
-  findAllByClass(originalPanel, "inspector-evidence-copy-id")[0].dispatchEvent({ type: "click" });
-  await new Promise((resolve) => setTimeout(resolve, 0));
-  assert.deepEqual(copied, ["legacy-evidence"]);
+  assert.doesNotMatch(textOf(cards[2]), /legacy-evidence/);
+  assert.equal(findAllByClass(cards[2], "inspector-evidence-toggle").length, 0);
+  assert.equal(findAllByClass(cards[2], "inspector-evidence-copy-id").length, 0);
 });
 
 test("Evidence 복사 권한 오류를 Inspector Toast로 알림", async () => {
@@ -5381,4 +5412,506 @@ test("Evidence 복사 권한 오류를 Inspector Toast로 알림", async () => {
 
   assert.equal(elements.get("shell-notice").dataset.kind, "error");
   assert.match(elements.get("shell-notice").textContent, /클립보드 권한/);
+});
+
+test("전체 Snapshot 기준 Node·Edge 표시 코드는 유형별 정렬에 고정됨", () => {
+  const { window } = loadUi();
+  const nodeTypes = [
+    ["app", "APPLICATION"], ["servlet", "SERVLET"], ["endpoint-a", "ENDPOINT"],
+    ["endpoint-b", "ENDPOINT"], ["handler", "HANDLER"], ["chain", "SECURITY_CHAIN"],
+    ["security-filter", "FILTER", { registrationKind: "SECURITY" }],
+    ["servlet-filter", "FILTER", { registrationKind: "SERVLET" }],
+    ["unknown-filter", "FILTER", {}], ["authentication", "AUTHENTICATION"],
+    ["authorization", "AUTHORIZATION"], ["security-data", "SECURITY_DATA"],
+    ["state", "BUSINESS_SECURITY_STATE"], ["unknown-node", "FUTURE_NODE"]
+  ];
+  const edgeTypes = [
+    ["flow", "FLOWS_TO"], ["matched", "MATCHED_BY"], ["filtered", "FILTERED_BY"],
+    ["secured", "SECURED_BY"], ["reads", "READS_SECURITY_DATA"],
+    ["writes", "WRITES_SECURITY_DATA"], ["authority", "CONVERTS_TO_AUTHORITY"],
+    ["authz", "USES_FOR_AUTHORIZATION"], ["state-edge", "SECURITY_STATE"],
+    ["unknown-edge", "FUTURE_EDGE"]
+  ];
+  const snapshot = {
+    nodes: nodeTypes.map(([id, type, attributes = {}]) => ({ id, type, attributes })),
+    edges: edgeTypes.map(([id, type]) => ({ id, type }))
+  };
+  const displayIds = window.MapInBootGraph.createDisplayIds(snapshot);
+  const expectedNodes = {
+    app: "AP-SERVICE-001",
+    servlet: "SV-SERVLET-001",
+    "endpoint-a": "EP-MAPPING-001",
+    "endpoint-b": "EP-MAPPING-002",
+    handler: "EP-HANDLER-001",
+    chain: "SC-CHAIN-001",
+    "security-filter": "SF-FILTER-001",
+    "servlet-filter": "SV-FILTER-001",
+    "unknown-filter": "FL-FILTER-001",
+    authentication: "SC-AUTHN-001",
+    authorization: "SC-AUTH-001",
+    "security-data": "SD-DATA-001",
+    state: "BS-STATE-001",
+    "unknown-node": "ND-UNKNOWN-001"
+  };
+  const expectedEdges = {
+    flow: "RL-FLOW-001",
+    matched: "RL-MATCH-001",
+    filtered: "RL-FILTER-001",
+    secured: "RL-SECURITY-001",
+    reads: "RL-READ-001",
+    writes: "RL-WRITE-001",
+    authority: "RL-AUTHORITY-001",
+    authz: "RL-AUTHZ-001",
+    "state-edge": "RL-STATE-001",
+    "unknown-edge": "RL-UNKNOWN-001"
+  };
+  Object.entries(expectedNodes).forEach(([id, code]) => assert.equal(displayIds.node(id), code));
+  Object.entries(expectedEdges).forEach(([id, code]) => assert.equal(displayIds.edge(id), code));
+  assert.equal(displayIds.node("missing"), "노드 확인 불가");
+  assert.equal(displayIds.edge("missing"), "관계 확인 불가");
+
+  const reversed = window.MapInBootGraph.createDisplayIds({
+    nodes: [...snapshot.nodes].reverse(),
+    edges: [...snapshot.edges].reverse()
+  });
+  Object.keys(expectedNodes).forEach((id) => assert.equal(reversed.node(id), displayIds.node(id)));
+  Object.keys(expectedEdges).forEach((id) => assert.equal(reversed.edge(id), displayIds.edge(id)));
+  assert.equal(new Set([...Object.values(expectedNodes), ...Object.values(expectedEdges)]).size,
+    Object.keys(expectedNodes).length + Object.keys(expectedEdges).length);
+});
+
+test("Inspector는 Endpoint·보안 정책 핵심 정보를 한 번씩 표시하고 속성명을 한국어로 변환함", () => {
+  const { ui, elements, window } = loadUi();
+  const endpointHandler = "com.example.orders.OrderController#getSubscriptions(java.lang.String, java.lang.Long)";
+  const snapshot = {
+    nodes: [
+      { id: "endpoint", type: "ENDPOINT", serviceId: "account-service", label: "GET /api/admin/subscriptions", attributes: {
+        httpMethod: "GET", path: "/api/admin/subscriptions", handler: endpointHandler,
+        handlerMapping: "requestMappingHandlerMapping", mvcPathPatternSettings: "DEFAULT"
+      }, evidenceIds: [] },
+      { id: "chain", type: "SECURITY_CHAIN", serviceId: "account-service", label: "mainSecurityChain", attributes: {
+        proxyBeanName: "mainSecurityChain", chainKey: "chain-0", chainOrder: "0",
+        matcherType: "METHOD_PATH", matcherCondition: "PATH /api/**", pathPatternSettings: "DEFAULT"
+      }, evidenceIds: [] },
+      { id: "authorization", type: "AUTHORIZATION", serviceId: "account-service", label: "인가", attributes: {
+        factType: "URL_AUTHORIZATION", policyKind: "AUTHORITY_REQUIRED", securityKind: "AUTHORIZATION",
+        policySource: "URL", policyMatcherType: "METHOD_PATH", policyMatcherCondition: "ANY",
+        policyOrder: "2", requiredAuthority: "ROLE_BANK_ADMIN"
+      }, evidenceIds: [] },
+      { id: "security-filter", type: "FILTER", serviceId: "account-service", label: "BearerTokenAuthenticationFilter", attributes: {
+        registrationKind: "SECURITY", filterClass: "org.springframework.security.web.authentication.BearerTokenAuthenticationFilter",
+        filterOrder: "3", filterRole: "AUTHENTICATION_PROVIDER", filterChainContinuation: "AFTER_AUTHENTICATION"
+      }, evidenceIds: [] }
+    ],
+    edges: [{ id: "edge", sourceId: "chain", targetId: "endpoint", type: "FILTERED_BY", attributes: {}, confidence: "CONFIRMED", evidenceIds: [] }],
+    findings: [],
+    evidence: []
+  };
+  ui.renderGraph(snapshot);
+  const graph = window.MapInBootGraph.normalize(snapshot);
+  const displayIds = window.MapInBootGraph.createDisplayIds(graph);
+  const renderNode = (id) => ui.inspector.render({
+    graph, visibleGraph: graph, snapshot, selection: { kind: "node", id }, displayIds
+  });
+
+  renderNode("endpoint");
+  let inspectorText = textOf(elements.get("inspector"));
+  assert.equal(inspectorText.split("GET /api/admin/subscriptions").length - 1, 1);
+  assert.equal(inspectorText.split(endpointHandler).length - 1, 1);
+  assert.match(inspectorText, /EP-MAPPING-001/);
+  assert.match(inspectorText, /핸들러 매핑 requestMappingHandlerMapping/);
+  assert.match(inspectorText, /MVC 경로 패턴 설정 기본 설정/);
+  assert.doesNotMatch(inspectorText, /API GET \/api\/admin\/subscriptions|HTTP Method|mvcPathPatternSettings/);
+  assert.doesNotMatch(inspectorText, /추가 속성 없음/);
+
+  renderNode("chain");
+  inspectorText = textOf(elements.get("inspector"));
+  assert.match(inspectorText, /요청 매칭 조건 PATH \/api\/\*\*/);
+  assert.match(inspectorText, /매칭 방식 HTTP 메서드·경로/);
+  assert.match(inspectorText, /보안 체인 순서 0/);
+  assert.doesNotMatch(inspectorText, /matcherCondition|matcherType|chainOrder|proxyBeanName/);
+
+  renderNode("authorization");
+  inspectorText = textOf(elements.get("inspector"));
+  assert.match(inspectorText, /권한 필요/);
+  assert.match(inspectorText, /정책 출처 URL 인가 정책/);
+  assert.match(inspectorText, /정책 매칭 방식 HTTP 메서드·경로/);
+  assert.match(inspectorText, /정책 매칭 조건 모든 요청/);
+  assert.match(inspectorText, /필요 권한 ROLE_BANK_ADMIN/);
+  assert.match(inspectorText, /보안 종류 인가/);
+  assert.doesNotMatch(inspectorText, /AUTHORITY_REQUIRED|policyMatcherCondition|policyMatcherType/);
+
+  renderNode("security-filter");
+  inspectorText = textOf(elements.get("inspector"));
+  assert.match(inspectorText, /SF-FILTER-001/);
+  assert.match(inspectorText, /등록 구분 보안/);
+  assert.match(inspectorText, /필터 역할 인증 제공 필터/);
+  assert.match(inspectorText, /필터 체인 진행 조건 인증 이후/);
+  assert.match(inspectorText, /org\.springframework\.security\.web\.authentication\.BearerTokenAuthenticationFilter/);
+  assert.doesNotMatch(inspectorText, /registrationKind|filterRole|filterChainContinuation/);
+
+  ui.inspector.render({ graph, visibleGraph: graph, snapshot, selection: { kind: "edge", id: "edge" }, displayIds });
+  inspectorText = textOf(elements.get("inspector"));
+  assert.match(inspectorText, /RL-FILTER-001/);
+  assert.match(inspectorText, /SC-CHAIN-001 → EP-MAPPING-001/);
+  assert.doesNotMatch(inspectorText, /출발 Node|도착 Node|나감|들어옴/);
+});
+
+test("10개 NodeType Inspector는 대표 정보를 중복하지 않고 원문 식별값을 보존함", () => {
+  const { ui, elements, window } = loadUi();
+  const handler = "com.example.orders.OrderController#getOrder(java.lang.String, java.lang.Long)";
+  const snapshot = {
+    nodes: [
+      { id: "application", type: "APPLICATION", serviceId: "orders", label: "OrdersApplication", attributes: {}, evidenceIds: [] },
+      { id: "servlet", type: "SERVLET", serviceId: "orders", label: "dispatcherServlet", attributes: {
+        servletName: "dispatcherServlet", servletClass: "org.springframework.web.servlet.DispatcherServlet",
+        servletKind: "DISPATCHER", urlPattern: "/"
+      }, evidenceIds: [] },
+      { id: "endpoint", type: "ENDPOINT", serviceId: "orders", label: "GET /api/orders/{id}", attributes: {
+        httpMethod: "GET", path: "/api/orders/{id}", handler,
+        handlerMapping: "requestMappingHandlerMapping", mvcPathPatternSettings: "DEFAULT"
+      }, evidenceIds: [] },
+      { id: "handler", type: "HANDLER", serviceId: "orders", label: handler, attributes: { handler }, evidenceIds: [] },
+      { id: "chain", type: "SECURITY_CHAIN", serviceId: "orders", label: "mainSecurityChain", attributes: {
+        proxyBeanName: "mainSecurityChain", matcherType: "METHOD_PATH", matcherCondition: "GET /api/**", chainOrder: "1"
+      }, evidenceIds: [] },
+      { id: "security-filter", type: "FILTER", serviceId: "orders", label: "AuthenticationFilter", attributes: {
+        registrationKind: "SECURITY", filterClass: "org.springframework.security.web.AuthenticationFilter", filterOrder: "2"
+      }, evidenceIds: [] },
+      { id: "servlet-filter", type: "FILTER", serviceId: "orders", label: "auditFilter", attributes: {
+        registrationKind: "SERVLET", registrationName: "auditFilter", filterClass: "com.example.AuditFilter", filterOrder: "3"
+      }, evidenceIds: [] },
+      { id: "authentication", type: "AUTHENTICATION", serviceId: "orders", label: "인증 처리", attributes: {}, evidenceIds: [] },
+      { id: "authorization", type: "AUTHORIZATION", serviceId: "orders", label: "권한 정책", attributes: {
+        factType: "URL_AUTHORIZATION", policyKind: "AUTHORITY_REQUIRED", policySource: "URL",
+        policyMatcherType: "METHOD_PATH", policyMatcherCondition: "ANY", requiredAuthority: "ROLE_STAFF"
+      }, evidenceIds: [] },
+      { id: "security-data", type: "SECURITY_DATA", serviceId: "orders", label: "JWT 데이터", attributes: {
+        apiType: "SPRING_SECURITY_JWT", apiName: "getClaim", apiOwner: "org.springframework.security.oauth2.jwt.Jwt",
+        apiDescriptor: "(Ljava/lang/String;)Ljava/lang/Object;", sourceKind: "JWT", operation: "READ",
+        observationKind: "CODE_PATTERN", claimName: "sub", codeLocation: "OrderController#readClaim"
+      }, evidenceIds: [] },
+      { id: "business-state", type: "BUSINESS_SECURITY_STATE", serviceId: "orders", label: "소유자 상태", attributes: {
+        factType: "BUSINESS_SECURITY_STATE", stateName: "OWNER", stateAction: "REQUIRES", handler,
+        requirementKey: "owner-check", pathOutcome: "UNGUARDED", coverage: "COMPLETE_SUPPORTED_PATH"
+      }, evidenceIds: [] }
+    ],
+    edges: [], findings: [], evidence: []
+  };
+  const graph = window.MapInBootGraph.normalize(snapshot);
+  const displayIds = window.MapInBootGraph.createDisplayIds(graph);
+  const count = (text, value) => text.split(value).length - 1;
+
+  graph.nodes.forEach((node) => {
+    ui.inspector.render({ graph, visibleGraph: graph, snapshot, selection: { kind: "node", id: node.id }, displayIds });
+    const inspectorText = textOf(elements.get("inspector"));
+    assert.equal(findAllByClass(elements.get("inspector"), "inspector-title")[0].textContent.length > 0, true,
+      `${node.type} 대표 이름 표시`);
+    assert.ok(inspectorText.includes(displayIds.node(node.id)), `${node.type} 표시 ID`);
+    assert.doesNotMatch(inspectorText, new RegExp(`(?:^|\\s)${node.id}(?:\\s|$)`), `${node.type} 원본 ID 숨김`);
+    assert.doesNotMatch(inspectorText, /Node ID|Service ID|Edge ID|HTTP Method|등록 유형|Filter 순서/);
+  });
+
+  ui.inspector.render({ graph, visibleGraph: graph, snapshot, selection: { kind: "node", id: "endpoint" }, displayIds });
+  let inspectorText = textOf(elements.get("inspector"));
+  assert.equal(count(inspectorText, "GET /api/orders/{id}"), 1);
+  assert.equal(count(inspectorText, handler), 1);
+  assert.match(inspectorText, /핸들러 매핑 requestMappingHandlerMapping/);
+
+  ui.inspector.render({ graph, visibleGraph: graph, snapshot, selection: { kind: "node", id: "handler" }, displayIds });
+  inspectorText = textOf(elements.get("inspector"));
+  assert.equal(count(inspectorText, handler), 1);
+
+  ui.inspector.render({ graph, visibleGraph: graph, snapshot, selection: { kind: "node", id: "security-data" }, displayIds });
+  inspectorText = textOf(elements.get("inspector"));
+  ["Spring Security JWT API", "getClaim", "org.springframework.security.oauth2.jwt.Jwt",
+    "(Ljava/lang/String;)Ljava/lang/Object;", "sub", "OrderController#readClaim"]
+    .forEach((value) => assert.ok(inspectorText.includes(value), `${value} 정보 보존`));
+  assert.doesNotMatch(inspectorText, /apiType|apiName|apiOwner|apiDescriptor|sourceKind|observationKind/);
+
+  ui.inspector.render({ graph, visibleGraph: graph, snapshot, selection: { kind: "node", id: "business-state" }, displayIds });
+  inspectorText = textOf(elements.get("inspector"));
+  ["OWNER", "업무 상태 요구", handler, "owner-check", "검증 없음", "지원 경로 전체"]
+    .forEach((value) => assert.ok(inspectorText.includes(value), `${value} 업무 상태 정보 보존`));
+});
+
+test("Edge 방향은 원본 source·target 순서를 따르고 참조가 빠지면 방향을 추측하지 않음", () => {
+  const { ui, elements, window } = loadUi();
+  const snapshot = {
+    nodes: [
+      { id: "target", type: "ENDPOINT", serviceId: "orders", label: "GET /orders", attributes: { httpMethod: "GET", path: "/orders" }, evidenceIds: [] }
+    ],
+    edges: [{ id: "missing-edge", sourceId: "missing-source", targetId: "target", type: "FLOWS_TO", attributes: {}, confidence: "CONFIRMED", evidenceIds: [] }],
+    findings: [], evidence: []
+  };
+  const graph = snapshot;
+  const displayIds = window.MapInBootGraph.createDisplayIds(graph);
+  ui.inspector.render({ graph, visibleGraph: graph, snapshot, selection: { kind: "edge", id: "missing-edge" }, displayIds });
+
+  const inspectorText = textOf(elements.get("inspector"));
+  assert.match(inspectorText, /연결 방향을 확인할 수 없습니다/);
+  assert.match(inspectorText, /RL-FLOW-001/);
+  assert.doesNotMatch(inspectorText, /노드 확인 불가 → EP-MAPPING-001|출발 Node|도착 Node/);
+});
+
+test("추가 속성이 없는 경우 빈 구역을 만들지 않고 미등록 키는 값만 중립적으로 보존함", () => {
+  const { ui, elements, window } = loadUi();
+  const snapshot = {
+    nodes: [{ id: "bare-endpoint", type: "ENDPOINT", serviceId: "orders", label: "GET /orders", attributes: {
+      httpMethod: "GET", path: "/orders"
+    }, evidenceIds: [] }],
+    edges: [],
+    findings: [],
+    evidence: []
+  };
+  const graph = window.MapInBootGraph.normalize(snapshot);
+  const displayIds = window.MapInBootGraph.createDisplayIds(graph);
+  ui.inspector.render({ graph, visibleGraph: graph, snapshot, selection: { kind: "node", id: "bare-endpoint" }, displayIds });
+  assert.doesNotMatch(textOf(elements.get("inspector")), /추가 속성|미등록 키/);
+
+  const unknownUi = loadUi();
+  const unknownSnapshot = {
+    ...snapshot,
+    nodes: [{ ...snapshot.nodes[0], attributes: {
+      ...snapshot.nodes[0].attributes,
+      futureInternalProperty: "확인 가능한 원본 값"
+    } }]
+  };
+  const unknownGraph = unknownUi.window.MapInBootGraph.normalize(unknownSnapshot);
+  const unknownDisplayIds = unknownUi.window.MapInBootGraph.createDisplayIds(unknownGraph);
+  unknownUi.ui.inspector.render({ graph: unknownGraph, visibleGraph: unknownGraph, snapshot: unknownSnapshot,
+    selection: { kind: "node", id: "bare-endpoint" }, displayIds: unknownDisplayIds });
+  const inspectorText = textOf(unknownUi.elements.get("inspector"));
+  assert.match(inspectorText, /확인되지 않은 속성 1/);
+  assert.match(inspectorText, /확인 가능한 원본 값/);
+  assert.doesNotMatch(inspectorText, /futureInternalProperty/);
+  const unknownRow = findAllByClass(unknownUi.elements.get("inspector"), "inspector-row")
+    .find((row) => row.attributes["data-attribute-key"] === "futureInternalProperty");
+  assert.ok(unknownRow, "내부 테스트 진단은 원본 키를 추적할 수 있음");
+});
+
+test("Inspector·Hover·Finding은 공통 한국어 표시와 원본 이벤트 ID를 함께 보존함", () => {
+  const { ui, elements } = loadUi();
+  const endpointId = "f".repeat(64);
+  const filterId = "0".repeat(64);
+  const edgeId = "e".repeat(64);
+  const findingId = "d".repeat(64);
+  const evidenceIds = ["1", "2", "3", "4"].map((digit) => digit.repeat(64));
+  const finding = {
+    id: findingId,
+    ruleId: "OBJECT_BINDING",
+    title: "요청자와 주문 소유자 검증",
+    description: "요청자 ID와 대상 객체의 소유자를 비교합니다.",
+    confidence: "PARTIAL",
+    nodeIds: [endpointId],
+    edgeIds: [edgeId],
+    evidenceIds,
+    guide: "소유자 비교 위치 확인"
+  };
+  const snapshot = {
+    nodes: [
+      { id: endpointId, type: "ENDPOINT", serviceId: "orders", label: "GET /orders", attributes: { httpMethod: "GET", path: "/orders", handler: "OrderController#list" }, evidenceIds: [evidenceIds[0]] },
+      { id: filterId, type: "FILTER", serviceId: "orders", label: "AuditFilter", attributes: { registrationKind: "SERVLET", filterClass: "com.example.AuditFilter" }, evidenceIds: [evidenceIds[1]] }
+    ],
+    edges: [{ id: edgeId, sourceId: endpointId, targetId: filterId, type: "SECURED_BY", confidence: "CONFIRMED", attributes: {}, evidenceIds: [evidenceIds[2]] }],
+    findings: [finding],
+    evidence: ["RUNTIME", "SPRING_METADATA", "CODE_PATTERN", "DECLARATION"].map((source, index) => ({
+      id: evidenceIds[index], source, location: `OrderPolicy#check${index}`, summary: `확인 근거 ${index + 1}`
+    })),
+    evidenceDisplayCodes: Object.fromEntries(evidenceIds.map((id, index) => [id, `EV-TEST-${String(index + 1).padStart(3, "0")}`]))
+  };
+  const originalIdentifiers = [endpointId, filterId, edgeId, findingId, ...evidenceIds];
+  const expectedRules = {
+    CHAIN_MISSING: "보안 필터 체인 미적용",
+    CHAIN_ORDER: "보안 체인·매칭 우선순위 문제",
+    PUBLIC_ENDPOINT: "과도한 공개 접근 허용",
+    METHOD_MISMATCH: "URL·메서드 보안 불일치",
+    FILTER_ORDER: "필터 구성·순서 문제",
+    OBJECT_BINDING: "인증 주체와 대상 객체 권한 검증 문제",
+    STATE_BYPASS: "업무 보안 절차 우회 가능성"
+  };
+  const expectedSources = ["실행 환경", "Spring 메타데이터", "코드 분석", "선언 정보"];
+
+  ui.renderGraph(snapshot);
+  const ruleOptions = elements.get("finding-rule").children;
+  Object.entries(expectedRules).forEach(([id, label]) => {
+    assert.ok(ruleOptions.some((option) => option.value === id && option.textContent === label), `${id} 표시`);
+  });
+
+  ui.selectGraphElement("edge", edgeId);
+  let inspector = elements.get("inspector");
+  assert.match(textOf(inspector), /RL-SECURITY-001/);
+  assert.match(textOf(inspector), /EP-MAPPING-001/);
+  assert.match(textOf(inspector), /SV-FILTER-001/);
+  assert.match(textOf(inspector), /확정/);
+  assert.doesNotMatch(textOf(inspector), /CONFIRMED|SECURED_BY/);
+  originalIdentifiers.forEach((id) => assert.equal(textOf(inspector).includes(id), false, "Inspector에 원본 ID 미노출"));
+  ui.inspector.setTab("connections");
+  const endpointButton = findAllByClass(inspector, "inspector-link").find((button) => button.attributes["data-node-id"] === endpointId);
+  assert.ok(endpointButton);
+  endpointButton.dispatchEvent({ type: "click" });
+  assert.equal(ui.state.selection.id, endpointId);
+
+  elements.get("node-filter").value = "ENDPOINT";
+  elements.get("node-filter").dispatchEvent({ type: "change" });
+  ui.selectGraphElement("node", endpointId);
+  ui.inspector.setTab("properties");
+  assert.match(textOf(inspector), /EP-MAPPING-001/);
+  ui.showGraphHover("node", endpointId, null);
+  assert.match(textOf(elements.get("graph-popover")), /EP-MAPPING-001/);
+  assert.doesNotMatch(textOf(elements.get("graph-popover")), new RegExp(endpointId));
+
+  const entry = ui.state.findingIndex[0];
+  for (const [confidence, label] of [["CONFIRMED", "확정"], ["LIKELY", "검토 필요"], ["UNKNOWN", "판단 불가"], ["PARTIAL", "부분 분석"], ["FUTURE_STATUS", "판단 불가"]]) {
+    finding.confidence = confidence;
+    ui.inspector.renderFindingModal({ graph: ui.state.graph, snapshot, entry, apiLabel: "GET /orders" });
+    assert.equal(elements.get("finding-modal-confidence").textContent, label);
+  }
+  finding.confidence = "PARTIAL";
+  ui.inspector.renderFindingModal({ graph: ui.state.graph, snapshot, entry, apiLabel: "GET /orders" });
+  const modalText = textOf(elements.get("finding-modal"));
+  assert.equal(elements.get("finding-modal-rule").textContent, `진단 유형 · ${expectedRules.OBJECT_BINDING}`);
+  assert.ok(expectedSources.every((source) => modalText.includes(source)));
+  assert.match(modalText, /EP-MAPPING-001/);
+  assert.match(modalText, /RL-SECURITY-001/);
+  assert.match(modalText, /EV-TEST-001/);
+  assert.doesNotMatch(modalText, /OBJECT_BINDING|RUNTIME|SPRING_METADATA|CODE_PATTERN|DECLARATION/);
+  originalIdentifiers.forEach((id) => assert.equal(modalText.includes(id), false, "Finding 상세에 원본 ID 미노출"));
+});
+
+test("Node 카드는 유형 배지·유형별 표시 ID와 SVG 텍스트 경계를 표시함", () => {
+  const { ui, elements, document, window } = loadUi();
+  const snapshot = graphFixture();
+  snapshot.nodes[2].attributes = {
+    httpMethod: "GET",
+    path: "/api/admin/assignments/with/a/very/long/resource/name/that/must/stay/inside/the/card",
+    handler: "com.example.AdminController#list(java.lang.String)"
+  };
+  snapshot.nodes[3].attributes.handler = "com.example.InternalAccountController#createApplication(com.example.InternalAccountController$LoanApplicationRequest,org.springframework.security.oauth2.jwt.Jwt)";
+  snapshot.nodes[3].label = snapshot.nodes[3].attributes.handler;
+
+  const createElementNS = document.createElementNS.bind(document);
+  let measuredNodeTexts = 0;
+  document.createElementNS = (namespace, tagName) => {
+    const element = createElementNS(namespace, tagName);
+    if (tagName === "text") {
+      element.getComputedTextLength = () => {
+        const className = element.getAttribute("class");
+        if (["graph-node-label", "graph-node-detail", "graph-node-display-id"].includes(className)) {
+          let current = element;
+          while (current && current !== elements.get("graph-nodes")) current = current.parentNode;
+          assert.ok(current, `${className}는 SVG 계층 연결 후 너비 측정`);
+          measuredNodeTexts += 1;
+        }
+        return (element.textContent || "").length * 8;
+      };
+    }
+    return element;
+  };
+
+  ui.renderGraph(snapshot);
+  const expectedCodes = [
+    "AP-SERVICE-001", "SV-SERVLET-001", "EP-MAPPING-001", "EP-HANDLER-001", "SC-CHAIN-001",
+    "SV-FILTER-001", "SC-AUTHN-001", "SC-AUTH-001", "SD-DATA-001", "BS-STATE-001"
+  ];
+  const renderedNodes = Array.from(elements.get("graph-nodes").children)
+    .filter((element) => element.getAttribute("data-node-id"));
+  assert.equal(renderedNodes.length, 10);
+  renderedNodes.forEach((node, index) => {
+    const type = snapshot.nodes[index].type;
+    const card = findAllByClass(node, "graph-node-card")[0];
+    const badge = findAllByClass(node, "graph-node-type")[0];
+    const badgeBackground = findAllByClass(node, "graph-node-type-badge")[0];
+    const displayId = findAllByClass(node, "graph-node-display-id")[0];
+    const titleLines = findAllByClass(node, "graph-node-label");
+    const details = findAllByClass(node, "graph-node-detail");
+
+    assert.equal(card.attributes.width, "260");
+    assert.equal(card.attributes.height, "120");
+    assert.equal(badge.textContent, window.MapInBootGraph.nodeTypeLabel(type));
+    assert.ok(badgeBackground);
+    assert.equal(displayId.textContent, expectedCodes[index]);
+    assert.equal(displayId.attributes["text-anchor"], "end");
+    assert.ok(titleLines.length <= 2);
+    assert.ok(details.length <= 1);
+    [...titleLines, ...details, displayId].forEach((text) => assert.ok(text.getAttribute("clip-path")));
+  });
+  const endpoint = renderedNodes.find((node) => node.getAttribute("data-node-id") === "node-2");
+  assert.equal(findAllByClass(endpoint, "graph-node-detail").length, 0);
+  assert.ok(measuredNodeTexts > 0);
+  assert.ok(findAllByClass(elements.get("graph-svg"), "graph-node-content-clip").length > 0);
+  assert.ok(findAllByClass(elements.get("graph-svg"), "graph-node-header-clip").length > 0);
+});
+
+test("Inspector 헤더는 유형 배지와 대표 이름만 표시하고 표시 ID는 속성에 보존함", () => {
+  const { ui, elements } = loadUi();
+  ui.renderGraph(graphFixture());
+
+  ui.selectGraphElement("node", "node-2");
+  let header = findAllByClass(elements.get("inspector"), "inspector-header")[0];
+  assert.equal(findAllByClass(header, "inspector-badge")[0].textContent, "API");
+  assert.equal(findAllByClass(header, "inspector-title")[0].textContent, "GET /orders/<script>alert(1)</script>");
+  assert.equal(findAllByClass(header, "inspector-subtitle").length, 0);
+  assert.ok(textOf(elements.get("inspector")).includes("EP-MAPPING-001"));
+
+  ui.selectGraphElement("edge", "edge-3");
+  header = findAllByClass(elements.get("inspector"), "inspector-header")[0];
+  assert.equal(findAllByClass(header, "inspector-badge")[0].textContent, "보호 근거");
+  assert.equal(findAllByClass(header, "inspector-title")[0].textContent, "RL-SECURITY-001");
+  assert.equal(findAllByClass(header, "inspector-subtitle").length, 0);
+  assert.match(textOf(elements.get("inspector")), /EP-HANDLER-001 → SC-CHAIN-001/);
+});
+
+test("Controller Group은 Handler 서명을 축약해 표시하고 전체 원문을 접어 보존함", async () => {
+  const { ui, elements } = loadUi();
+  const graph = detailGraphFixture();
+  const signatures = [
+    "com.mapinboot.demo.account.controller.LoanApplicationController#createApplication(com.mapinboot.demo.account.controller.LoanApplicationController$LoanApplicationRequest,org.springframework.security.oauth2.jwt.Jwt)",
+    "com.mapinboot.demo.account.controller.LoanApplicationController#getMyApplications(org.springframework.security.oauth2.jwt.Jwt)",
+    "com.mapinboot.demo.account.controller.LoanApplicationController#searchCustomers(java.lang.String,java.util.List<com.mapinboot.demo.account.controller.CustomerFilter>)"
+  ];
+  signatures.forEach((signature, index) => graph.nodes.push({
+    id: `loan-handler-${index}`, type: "HANDLER", serviceId: "orders", label: signature,
+    attributes: { handler: signature }, evidenceIds: []
+  }));
+
+  ui.state.includeUnconnectedNodes = true;
+  ui.renderGraph(graph);
+  await ui.layoutGraph();
+  const groups = ui.state.layout.plan.controllerGroups;
+  const group = groups.find((item) => item.controllerFqcn === "com.mapinboot.demo.account.controller.LoanApplicationController");
+  assert.ok(group, JSON.stringify(groups.map((item) => item.controllerFqcn)));
+  ui.selectGraphElement("controller-group", group.id);
+  const memberCodes = group.handlerIds.map((id) => ui.state.displayIds.node(id)).sort();
+  const groupCard = findAllByClass(elements.get("graph-nodes"), "graph-controller-group")
+    .find((card) => card.getAttribute("data-controller-group-id") === group.id);
+  const groupCode = findAllByClass(groupCard, "graph-node-display-id")[0].textContent;
+  assert.equal(groupCode, `${memberCodes[0]} 외 ${memberCodes.length - 1}개`);
+  ui.inspector.showHover({
+    graph: ui.state.viewGraph || ui.state.graph,
+    snapshot: graph,
+    kind: "controller-group",
+    id: group.id,
+    anchor: groupCard,
+    displayIds: ui.state.displayIds
+  });
+  assert.ok(textOf(elements.get("graph-popover")).includes(groupCode),
+    `그룹 Hover 표시 코드 ${groupCode}: ${textOf(elements.get("graph-popover"))}`);
+  ui.inspector.hideHover();
+  const inspector = elements.get("inspector");
+  const header = findAllByClass(inspector, "inspector-header")[0];
+  assert.equal(findAllByClass(header, "inspector-badge")[0].textContent, "Controller");
+  assert.equal(findAllByClass(header, "inspector-title")[0].textContent, "LoanApplicationController");
+  assert.equal(findAllByClass(header, "inspector-subtitle").length, 0);
+  assert.equal(findAllByClass(inspector, "inspector-row").some((row) => row.children[0].textContent === "유형"), false);
+  assert.deepEqual(findAllByClass(inspector, "inspector-handler-method-summary").map((element) => element.textContent), [
+    "createApplication(LoanApplicationRequest, Jwt)",
+    "getMyApplications(Jwt)",
+    "searchCustomers(String, List<CustomerFilter>)"
+  ]);
+  memberCodes.forEach((code) => assert.ok(textOf(inspector).includes(code)));
+  const originals = findAllByClass(inspector, "inspector-original-signatures")[0];
+  assert.ok(originals);
+  assert.equal(originals.hasAttribute("open"), false);
+  signatures.forEach((signature) => assert.ok(textOf(originals).includes(signature)));
 });

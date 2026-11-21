@@ -3,7 +3,7 @@
 
   const SVG_NS = "http://www.w3.org/2000/svg";
   const NODE_WIDTH = 260;
-  const NODE_HEIGHT = 96;
+  const NODE_HEIGHT = 120;
   const MIN_ZOOM = 0.2;
   const MAX_ZOOM = 2.5;
   const DEFAULT_CANVAS = { width: 960, height: 540 };
