@@ -61,6 +61,8 @@
   const showEdgeLabelsSetting = document.querySelector("#setting-show-edge-labels");
   const showMinimapSetting = document.querySelector("#setting-show-minimap");
   const showDetailFlowSetting = document.querySelector("#setting-show-detail-flow");
+  const flowNodeDurationSetting = document.querySelector("#setting-flow-node-duration");
+  const flowSpeedSetting = document.querySelector("#setting-flow-speed");
   const flowClient = window.MapInBootFlow;
   const requestFlowClient = window.MapInBootRequestFlow;
   const graphRenderer = window.MapInBootGraph;
@@ -142,6 +144,7 @@
     featureEndpointQuery: "",
     featureEndpointOptionIndex: -1,
     display: { areas: true, edgeLabels: true, minimap: true, detailedFlow: false },
+    requestFlowSettings: { nodeHoldDuration: 1500, speed: 1 },
     loading: false,
     selection: null,
     inspectorDismissed: false,
@@ -157,6 +160,7 @@
     findingModalTrigger: null,
     requestFlowSteps: [],
     requestFlowPositions: {},
+    requestFlowSignature: null,
     navigation: null
   };
   let requestFlowActiveNodeId = null;
@@ -166,6 +170,8 @@
 
   const requestFlowController = requestFlowClient && requestFlowControls
     ? requestFlowClient.createController({
+      nodeHoldDuration: state.requestFlowSettings.nodeHoldDuration,
+      speed: state.requestFlowSettings.speed,
       reducedMotion: Boolean(window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches),
       onUpdate: renderRequestFlowSafely
     })
@@ -287,11 +293,10 @@
     if (element.textContent !== nextText) element.textContent = nextText;
   }
 
-  // 교육용 빛 점과 현재 상태를 SVG Edge 경로에 맞춰 갱신
+  // 학습 흐름 빛 점과 현재 상태를 SVG Edge 경로에 맞춰 갱신
   function renderRequestFlowUpdate(flowState) {
     const currentState = flowState || { status: "idle", stepIndex: 0, progress: 0, step: null };
     const step = currentState.step;
-    const nextStep = currentState.nextStep;
     const steps = Array.isArray(currentState.steps) ? currentState.steps : state.requestFlowSteps;
     const hasSteps = steps.length > 0;
     const inDetail = isEndpointDetailView() && Boolean(state.selectedEndpointId || state.detailApiId);
@@ -302,21 +307,23 @@
       ? requestFlowClient.pathPointAt(path, currentState.progress, currentState.transition.length)
       : null;
     const isPathMissing = currentState.phase === "EDGE_TRAVEL" && !point;
-    const statusLabel = currentState.status === "running"
-      ? currentState.phase === "NODE_HOLD" ? `진행 중 · ${step && step.label || "단계"}`
-        : currentState.phase === "EDGE_TRAVEL" ? isPathMissing ? `경로 확인 불가 · ${nextStep && nextStep.label || "다음 단계"}`
-          : `이동 중 · ${nextStep && nextStep.label || "다음 단계"}`
-          : currentState.phase === "PATH_UNAVAILABLE" ? `경로 확인 불가 · ${nextStep && nextStep.label || "다음 단계"}`
-            : currentState.phase === "STEP_NOTICE" ? `진행 중 · ${step && step.label || "확인 단계"}` : "진행 중"
-      : currentState.status === "paused"
-        ? currentState.phase === "EDGE_TRAVEL" && isPathMissing
-          ? `일시정지 · 경로 확인 불가 · ${nextStep && nextStep.label || "다음 단계"}`
-          : `일시정지 · ${currentState.phase === "EDGE_TRAVEL" ? nextStep && nextStep.label || "다음 단계" : step && step.label || "현재 단계"}`
-        : currentState.status === "complete"
-          ? `완료${step && step.label ? ` · ${step.label}` : ""}`
-          : "시작 전";
-    const message = `교육용 예시 · 실제 요청 추적 아님 · ${statusLabel}`;
-    setRequestFlowText(requestFlowStatus, message);
+    const pathUnavailable = currentState.phase === "PATH_UNAVAILABLE" || isPathMissing;
+    const statusState = pathUnavailable ? "unavailable"
+      : currentState.status === "running" ? currentState.phase === "EDGE_TRAVEL" ? "moving" : "running"
+        : currentState.status === "paused" ? "paused"
+          : currentState.status === "complete" ? "complete" : "idle";
+    const statusLabels = {
+      idle: "시작 전",
+      running: "진행 중",
+      moving: "이동 중",
+      paused: "일시정지",
+      complete: "완료",
+      unavailable: "경로 확인 불가"
+    };
+    setRequestFlowText(requestFlowStatus, statusLabels[statusState]);
+    if (requestFlowStatus && requestFlowStatus.getAttribute("data-state") !== statusState) {
+      requestFlowStatus.setAttribute("data-state", statusState);
+    }
     if (requestFlowControls) requestFlowControls.dataset.detailed = String(detailed);
     setHidden(requestFlowDetails, !detailed);
     setHidden(requestFlowNavigation, !detailed);
@@ -324,7 +331,7 @@
     setRequestFlowText(requestFlowStepCount, hasSteps
       ? `${currentState.stepIndex + 1} / ${steps.length}` : `0 / ${steps.length}`);
     setRequestFlowText(requestFlowStepKind, step
-      ? step.kind === "actual" ? "확인된 구조" : "교육용 설명" : "단계 없음");
+      ? step.kind === "actual" ? "Snapshot에서 확인한 구조" : "일반적인 처리 원리" : "단계 없음");
     setRequestFlowText(requestFlowStepTitle, step && step.label || "표시할 단계가 없습니다.");
     setRequestFlowText(requestFlowStepDescription, step && step.description || "");
     if (filterEducation) {
@@ -358,6 +365,7 @@
   function reportRequestFlowFailure(error) {
     state.requestFlowSteps = [];
     state.requestFlowPositions = {};
+    state.requestFlowSignature = null;
     let cause = error && error.message ? error.message : String(error || "원인 확인 불가");
     if (!handlingRequestFlowFailure) {
       handlingRequestFlowFailure = true;
@@ -365,7 +373,7 @@
         if (requestFlowController) requestFlowController.setSteps([]);
       } catch (resetError) {
         const resetCause = resetError && resetError.message ? resetError.message : String(resetError);
-        cause = `${cause}; 교육용 흐름 정리 실패: ${resetCause}`;
+        cause = `${cause}; 학습 흐름 정리 실패: ${resetCause}`;
       } finally {
         handlingRequestFlowFailure = false;
       }
@@ -375,9 +383,9 @@
       setRequestFlowVisibility(false);
     } catch (hideError) {
       const hideCause = hideError && hideError.message ? hideError.message : String(hideError);
-      cause = `${cause}; 교육용 흐름 숨김 실패: ${hideCause}`;
+      cause = `${cause}; 학습 흐름 숨김 실패: ${hideCause}`;
     }
-    showNotice(`교육용 흐름 준비 실패: ${cause}`, "error");
+    showNotice(`학습 흐름 준비 실패: ${cause}`, "error");
   }
 
   function renderRequestFlowSafely(flowState) {
@@ -392,6 +400,7 @@
   function resetRequestFlow() {
     state.requestFlowSteps = [];
     state.requestFlowPositions = {};
+    state.requestFlowSignature = null;
     if (requestFlowController) requestFlowController.setSteps([]);
     setRequestFlowNode(null);
     setRequestFlowVisibility(false);
@@ -427,11 +436,19 @@
         step.transition.length = null;
       }
     });
-    state.requestFlowSteps = steps;
+    const signature = JSON.stringify({
+      view: state.view,
+      endpointId: isFindingDetailView() ? state.detailApiId : state.selectedEndpointId,
+      steps
+    });
+    const currentFlow = requestFlowController.state();
+    const sameFlow = state.requestFlowSignature === signature && currentFlow.steps.length === steps.length;
+    state.requestFlowSteps = sameFlow ? currentFlow.steps : steps;
     state.requestFlowPositions = positions;
-    requestFlowController.setSteps(steps);
+    state.requestFlowSignature = signature;
+    if (!sameFlow) requestFlowController.setSteps(steps);
     setRequestFlowVisibility(true);
-    renderRequestFlowSafely(requestFlowController.state());
+    renderRequestFlowSafely(sameFlow ? currentFlow : requestFlowController.state());
   }
 
   function requestMessage(status, resource) {
@@ -1129,7 +1146,8 @@
   }
 
   function settingsFocusableElements() {
-    return [settingsCloseButton, showAreasSetting, showEdgeLabelsSetting, showMinimapSetting, showDetailFlowSetting]
+    return [settingsCloseButton, showAreasSetting, showEdgeLabelsSetting, showMinimapSetting, showDetailFlowSetting,
+      flowNodeDurationSetting, flowSpeedSetting]
       .filter((element) => element && !element.disabled);
   }
 
@@ -1889,7 +1907,7 @@
     const displayCause = displayError && displayError.message ? displayError.message : "원인 확인 불가";
     const flowCause = flowError && flowError.message ? flowError.message : "원인 확인 불가";
     if (displayError && flowError) {
-      showNotice(`Graph 표시 실패: ${displayCause} · 교육용 흐름 준비 실패: ${flowCause}`, "error");
+      showNotice(`Graph 표시 실패: ${displayCause} · 학습 흐름 준비 실패: ${flowCause}`, "error");
     } else if (displayError) {
       showNotice(`Graph 표시 실패: ${displayCause}`, "error");
     } else if (!flowError && showLayoutNotice) {
@@ -2211,11 +2229,13 @@
 
   function temporaryFilterHooks(target) {
     let wasOpen = null;
+    let previousScrollTop = null;
     return {
       target,
       prepare: ({ target: element }) => {
         if (!filterPanel || !isWithinElement(element, filterPanel)) return true;
         wasOpen = !filterPanel.hidden;
+        previousScrollTop = filterPanel.scrollTop || 0;
         if (!wasOpen) {
           // 상세 화면의 검색 목록·입력·선택 위치를 임시 패널 개방 전 상태로 복원
           const endpointState = isDetailView() && endpointOptions && endpointSearch ? {
@@ -2235,12 +2255,29 @@
             state.featureEndpointOptionIndex = endpointState.optionIndex;
           }
         }
+        if (element !== filterPanel) {
+          const panelRect = filterPanel.getBoundingClientRect();
+          const targetRect = element.getBoundingClientRect();
+          const visibleTop = panelRect.top + (Number(filterPanel.clientTop) || 0);
+          const visibleBottom = visibleTop + (Number(filterPanel.clientHeight) || panelRect.height);
+
+          // 좁은 화면에서 패널 내부의 하단 대상도 Spotlight 프레임 안에 들어오도록 스크롤
+          if (targetRect.height > visibleBottom - visibleTop) {
+            filterPanel.scrollTop += targetRect.top - visibleTop;
+          } else if (targetRect.top < visibleTop) {
+            filterPanel.scrollTop -= visibleTop - targetRect.top;
+          } else if (targetRect.bottom > visibleBottom) {
+            filterPanel.scrollTop += targetRect.bottom - visibleBottom;
+          }
+        }
         return !filterPanel.hidden;
       },
       cleanup: () => {
         if (wasOpen === null) return;
         setFilterPanel(wasOpen, false);
+        if (previousScrollTop !== null) filterPanel.scrollTop = previousScrollTop;
         wasOpen = null;
+        previousScrollTop = null;
       }
     };
   }
@@ -2450,13 +2487,13 @@
         {
           target: () => requestFlowControls,
           title: "요청 전달 과정",
-          description: "Request/Response 준비, Servlet Filter, 보안 위임, Handler의 일반 처리 흐름입니다. SecurityContext는 현재 Authentication을 담는 컨텍스트이고 HttpServletRequest는 HTTP 요청 객체이며 실제 요청별 Trace나 처리 결과가 아닙니다.",
+          description: "SecurityContext에는 현재 Authentication이 담기고, HttpServletRequest는 HTTP 요청 객체입니다. Snapshot에서 확인한 관계와 일반적인 Servlet 처리 원리를 함께 보여주며, 실제 요청별 Trace나 처리 결과를 나타내지 않습니다.",
           valid: () => Boolean(requestFlowControls && !requestFlowControls.hidden && state.requestFlowSteps.length > 0)
         },
         {
           target: () => requestFlowFilterEducation,
           title: "필터 처리 단계",
-          description: "상세 교육 설명에서 입력·검사 조건·대표 처리와 가능한 결과를 확인합니다. 내용은 교육용 설명이며 실제 요청값이나 결과가 아닙니다.",
+          description: "상세 처리 과정에서 입력·검사 조건·대표 처리와 가능한 결과를 확인합니다. 설명은 처리 원리 참고이며 실제 요청값이나 결과를 나타내지 않습니다.",
           valid: () => Boolean(state.display.detailedFlow && requestFlowDetails && !requestFlowDetails.hidden
             && requestFlowFilterEducation && !requestFlowFilterEducation.hidden)
         },
@@ -2507,6 +2544,14 @@
       ];
     }
     if (state.view === "security-detail") {
+      if (state.findingIndex.length === 0) {
+        return [{
+          target: () => inspector,
+          title: "보존된 취약점 없음",
+          description: "현재 Snapshot에는 Finding이 없습니다. 보안 MAP에서 저장된 진단 결과를 확인할 수 있으며, 이 안내는 임의의 Finding을 만들지 않습니다.",
+          valid: () => isFindingDetailView() && Boolean(inspector && !inspector.hidden)
+        }];
+      }
       const hasGuide = (entry) => typeof entry.finding.guide === "string" && entry.finding.guide.trim().length > 0;
       return [
         findingInspectorStep("판단 내용", "실제 Finding의 제목·Rule ID·판단 신뢰도를 확인합니다. Confidence는 근거에 따른 판단 상태입니다.", "header", () => true),
@@ -2527,10 +2572,17 @@
     if (event && event.stopPropagation) event.stopPropagation();
     if (helpPanel && !helpPanel.hidden) setPanel(helpPanel, helpButton, false);
     if (!spotlight) {
-      toggleHeaderPanel(helpPanel, helpButton, settingsPanel, settingsButton);
+      showNotice("화면 안내를 불러오지 못했습니다. 페이지를 새로고침해 주세요.", "error");
       return;
     }
-    spotlight.start(currentScreenTutorial(), { trigger: helpButton });
+    try {
+      if (!spotlight.start(currentScreenTutorial(), { trigger: helpButton })) {
+        showNotice("현재 화면에서 안내할 수 있는 항목이 없습니다.", "info");
+      }
+    } catch (error) {
+      const cause = error && error.message ? error.message : "원인 확인 불가";
+      showNotice(`화면 안내를 시작하지 못했습니다: ${cause}`, "error");
+    }
   });
   settingsButton.addEventListener("click", () => {
     if (spotlight && spotlight.isActive()) spotlight.close({ restoreFocus: false });
@@ -2587,6 +2639,18 @@
     // 열린 Inspector에 상세 처리 보기 상태를 즉시 반영
     if (state.selection) renderGraphView(state.layout ? "elk" : "initial", true);
     if (requestFlowController) renderRequestFlowSafely(requestFlowController.state());
+  });
+  if (flowNodeDurationSetting) flowNodeDurationSetting.addEventListener("change", () => {
+    const nodeHoldDuration = Number(flowNodeDurationSetting.value);
+    if (![500, 1000, 1500, 2000, 3000, 5000].includes(nodeHoldDuration)) return;
+    state.requestFlowSettings.nodeHoldDuration = nodeHoldDuration;
+    if (requestFlowController) requestFlowController.setPlaybackSettings({ nodeHoldDuration });
+  });
+  if (flowSpeedSetting) flowSpeedSetting.addEventListener("change", () => {
+    const speed = Number(flowSpeedSetting.value);
+    if (![0.5, 1, 1.5, 2].includes(speed)) return;
+    state.requestFlowSettings.speed = speed;
+    if (requestFlowController) requestFlowController.setPlaybackSettings({ speed });
   });
   if (endpointSearch) endpointSearch.addEventListener("input", () => {
     if (!isDetailView()) {

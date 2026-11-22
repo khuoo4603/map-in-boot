@@ -6,6 +6,7 @@ import vm from "node:vm";
 const indexHtml = readFileSync("map-in-boot-starter/src/main/resources/static/mapinboot/index.html", "utf8");
 const appCss = readFileSync("map-in-boot-starter/src/main/resources/static/mapinboot/app.css", "utf8");
 const appJs = readFileSync("map-in-boot-starter/src/main/resources/static/mapinboot/app.js", "utf8");
+const spotlightJs = readFileSync("map-in-boot-starter/src/main/resources/static/mapinboot/spotlight.js", "utf8");
 
 function createEventTarget() {
   const listeners = new Map();
@@ -120,10 +121,10 @@ function createElement(tagName = "div") {
   return element;
 }
 
-function loadUi({ fetchImpl, timers, animationClock, clipboard } = {}) {
+function loadUi({ fetchImpl, timers, animationClock, clipboard, includeSpotlight = true } = {}) {
   const ids = [
     "view-title", "view-state", "shell-notice", "help-button", "settings-button", "refresh-button",
-    "help-panel", "settings-panel", "settings-close", "setting-show-areas", "setting-show-edge-labels", "setting-show-minimap", "setting-show-detail-flow",
+    "help-panel", "settings-panel", "settings-close", "setting-show-areas", "setting-show-edge-labels", "setting-show-minimap", "setting-show-detail-flow", "setting-flow-node-duration", "setting-flow-speed",
     "graph-canvas", "map-toolbar",
     "graph-empty", "graph-state-message", "graph-svg", "graph-viewport", "graph-areas", "graph-flow-projection", "graph-guides",
     "graph-edges", "graph-nodes", "graph-finding-section-titles", "service-name", "snapshot-time", "endpoint-search", "endpoint-filter-label", "endpoint-filter-label-text",
@@ -159,7 +160,9 @@ function loadUi({ fetchImpl, timers, animationClock, clipboard } = {}) {
     elements.get("setting-show-areas"),
     elements.get("setting-show-edge-labels"),
     elements.get("setting-show-minimap"),
-    elements.get("setting-show-detail-flow")
+    elements.get("setting-show-detail-flow"),
+    elements.get("setting-flow-node-duration"),
+    elements.get("setting-flow-speed")
   );
   elements.get("map-filter-panel").hidden = true;
   elements.get("endpoint-options").hidden = true;
@@ -220,10 +223,10 @@ function loadUi({ fetchImpl, timers, animationClock, clipboard } = {}) {
   mapToolbar.setAttribute("class", "graph-tools map-toolbar");
   const filterGroup = createElement("div");
   filterGroup.setAttribute("class", "toolbar-tool-group map-filter-toggle");
-  filterGroup.append(elements.get("filter-toggle"), elements.get("map-filter-panel"));
+  filterGroup.append(elements.get("filter-toggle"));
   mapToolbar.append(
     elements.get("zoom-out"), elements.get("zoom-in"), elements.get("fit-graph"),
-    elements.get("reset-view"), filterGroup
+    elements.get("reset-view"), filterGroup, elements.get("map-filter-panel")
   );
   elements.get("map-filter-panel").setAttribute("class", "map-filter-panel");
   elements.get("map-filter-panel").append(
@@ -287,7 +290,7 @@ function loadUi({ fetchImpl, timers, animationClock, clipboard } = {}) {
     clearTimeout: timers ? timers.clearTimeout : clearTimeout,
     performance: animationClock ? { now: () => animationClock.now() } : undefined
   });
-  ["graph-flow.js", "request-flow-animation.js", "graph-standard-filters.js", "graph-renderer.js", "graph-inspector.js", "layout-client.js", "graph-navigation.js", "spotlight.js", "app.js"].forEach((file) => {
+  ["graph-flow.js", "request-flow-animation.js", "graph-standard-filters.js", "graph-renderer.js", "graph-inspector.js", "layout-client.js", "graph-navigation.js", ...(includeSpotlight ? ["spotlight.js"] : []), "app.js"].forEach((file) => {
     vm.runInContext(
       readFileSync(`map-in-boot-starter/src/main/resources/static/mapinboot/${file}`, "utf8"),
       context
@@ -330,6 +333,7 @@ test("Spotlight는 유효한 실제 대상만 탐색하고 Escape에서 도움�
   assert.equal(spotlight.getState().current, 1);
   assert.equal(spotlight.getState().total, 2);
   const card = findAllByClass(document.body, "spotlight-card")[0];
+  assert.equal(findAllByClass(card, "spotlight-skip").length, 0);
   assert.equal(card.getAttribute("role"), "dialog");
   assert.equal(card.getAttribute("aria-modal"), "true");
   assert.equal(card.getAttribute("aria-describedby"), "spotlight-description");
@@ -351,7 +355,7 @@ test("Spotlight는 유효한 실제 대상만 탐색하고 Escape에서 도움�
   assert.equal(findAllByClass(card, "spotlight-next")[0].textContent, "완료");
   findAllByClass(card, "spotlight-previous")[0].dispatchEvent({ type: "click" });
   assert.equal(spotlight.getState().current, 1);
-  findAllByClass(card, "spotlight-skip")[0].dispatchEvent({ type: "click" });
+  findAllByClass(card, "spotlight-close")[0].dispatchEvent({ type: "click" });
   assert.equal(spotlight.getState().active, false);
   assert.equal(spotlight.restart(), true);
   document.dispatchEvent({ type: "keydown", key: "Escape" });
@@ -371,6 +375,47 @@ test("Spotlight는 유효한 실제 대상만 탐색하고 Escape에서 도움�
   assert.equal(spotlight.restart(), true);
   ui.selectView("security-flow");
   assert.equal(spotlight.getState().active, false);
+});
+
+test("Spotlight 자산이 없으면 단순 도움말 목록 대신 원인을 안내함", () => {
+  const { elements } = loadUi({ includeSpotlight: false });
+
+  elements.get("help-button").dispatchEvent({ type: "click" });
+
+  assert.equal(elements.get("help-panel").hidden, true);
+  assert.match(elements.get("shell-notice").textContent, /화면 안내.*불러오지 못했습니다/);
+});
+
+test("도움말 대상 외부에만 딤과 약한 블러를 적용함", () => {
+  assert.match(appCss, /\.spotlight-shield\s*\{[^}]*backdrop-filter:\s*blur\(1\.25px\)/);
+  assert.match(appCss, /\.spotlight-shield\s*\{[^}]*background:\s*rgba\(0, 0, 0, \.38\)/);
+  assert.doesNotMatch(spotlightJs, /spotlight-skip|건너뛰기/);
+  assert.doesNotMatch(indexHtml, /settings-notice|설정은 현재 화면에만 적용되며 실제 분석 결과를 변경하지 않습니다\./);
+  assert.match(appCss, /\.spotlight-card\s*\{[^}]*display:\s*flex;[^}]*flex-direction:\s*column;[^}]*overflow:\s*auto;/);
+  assert.match(appCss, /\.spotlight-description\s*\{[^}]*min-height:\s*0;[^}]*overflow:\s*auto;/);
+});
+
+test("학습 흐름 설정은 Drawer에 기본값과 허용 옵션을 제공하고 안내 문구를 반복하지 않음", () => {
+  assert.match(indexHtml, /id="setting-flow-node-duration"[^>]*>[\s\S]*?<option value="1500" selected>1\.5초<\/option>/);
+  assert.match(indexHtml, /id="setting-flow-speed"[^>]*>[\s\S]*?<option value="1" selected>1배<\/option>/);
+  ["500", "1000", "1500", "2000", "3000", "5000"].forEach((value) => {
+    assert.match(indexHtml, new RegExp(`<option value="${value}"`));
+  });
+  ["0.5", "1", "1.5", "2"].forEach((value) => {
+    assert.match(indexHtml, new RegExp(`<option value="${value}"`));
+  });
+  assert.doesNotMatch(indexHtml, /교육용 예시\s*·\s*실제 요청 추적 아님/);
+  assert.match(indexHtml, /요청 처리 흐름/);
+  assert.match(indexHtml, /class="request-flow-status" id="request-flow-status" data-state="idle" role="status" aria-live="polite">시작 전/);
+  assert.match(appCss, /\.settings-panel\s*\{[^}]*overflow-y:\s*auto/s);
+  assert.match(appCss, /\.settings-choice select:focus-visible\s*\{[^}]*outline:/);
+});
+
+test("필터 패널은 Compact Toolbar 바로 아래에서 같은 너비를 사용함", () => {
+  assert.match(indexHtml, /class="graph-tools map-toolbar"[\s\S]*?id="screen-lock-toggle"[\s\S]*?<\/button>\s*<\/div>\s*<\/div>\s*<div class="map-filter-panel"/);
+  assert.match(appCss, /\.map-filter-panel\s*\{[^}]*top:\s*100%;/);
+  assert.match(appCss, /\.map-filter-panel\s*\{[^}]*left:\s*-1px;[^}]*width:\s*calc\(100% \+ 2px\);[^}]*box-sizing:\s*border-box;/);
+  assert.doesNotMatch(appCss, /\.map-filter-panel\[data-view="security-detail"\]/);
 });
 
 test("Spotlight는 Resize에서 실제 화면 좌표를 갱신하고 작은 Viewport 안에 카드를 둠", () => {
@@ -549,8 +594,52 @@ test("도움말은 현재 화면의 Spotlight를 시작하고 빈 Graph 요소�
 
   ui.selectView("security-detail");
   elements.get("help-button").dispatchEvent({ type: "click" });
-  assert.equal(spotlight.getState().active, false);
+  assert.equal(spotlight.getState().active, true);
+  assert.equal(spotlight.getState().total, 1);
+  assert.equal(spotlight.getState().step.title, "보존된 취약점 없음");
+  assert.match(spotlight.getState().step.description, /Snapshot에는 Finding이 없습니다/);
   assert.equal(elements.get("finding-modal").hidden, true);
+  spotlight.close();
+});
+
+test("보안 MAP Spotlight는 좁은 화면의 필터 대상을 드러내고 원래 스크롤 위치를 복원함", () => {
+  const { ui, elements, window, document } = loadUi();
+  const spotlight = window.MapInBootSpotlight;
+  const panel = elements.get("map-filter-panel");
+  const fields = elements.get("finding-filter-fields");
+  window.innerWidth = 360;
+  window.innerHeight = 390;
+  ui.selectView("security-flow");
+
+  panel.clientTop = 1;
+  panel.clientHeight = 166;
+  panel.scrollHeight = 369;
+  panel.scrollTop = 0;
+  panel.getBoundingClientRect = () => ({ left: 10, top: 193, right: 280, bottom: 361, width: 270, height: 168 });
+  fields.clientWidth = 248;
+  fields.clientHeight = 122;
+  fields.getBoundingClientRect = () => {
+    const top = 390 - panel.scrollTop;
+    return { left: 21, top, right: 269, bottom: top + 122, width: 248, height: 122 };
+  };
+
+  elements.get("help-button").dispatchEvent({ type: "click" });
+  assert.equal(spotlight.getState().active, true);
+  assert.equal(spotlight.getState().step.title, "판단 상태 구분");
+  assert.equal(panel.scrollTop, 152);
+  assert.equal(findAllByClass(document.body, "spotlight-card")[0].style.maxHeight, "216px");
+  spotlight.close();
+  assert.equal(panel.hidden, true);
+  assert.equal(panel.scrollTop, 0);
+
+  ui.setFilterPanel(true, false);
+  panel.scrollTop = 12;
+  elements.get("help-button").dispatchEvent({ type: "click" });
+  assert.equal(spotlight.getState().active, true);
+  assert.equal(panel.scrollTop, 152);
+  spotlight.close();
+  assert.equal(panel.hidden, false);
+  assert.equal(panel.scrollTop, 12);
 });
 
 test("미니맵 표시 설정이 꺼진 경우 Spotlight가 설정을 바꾸지 않고 단계를 제외함", async () => {
@@ -602,7 +691,7 @@ test("화면별 Spotlight는 실제 Snapshot 대상을 강조하고 화면 전�
   elements.get("help-button").dispatchEvent({ type: "click" });
   assert.equal(spotlight.getState().total, 5);
   assert.equal(spotlight.getState().step.title, "그래프 탐색");
-  assert.equal(elements.get("map-toolbar").children.length, 5);
+  assert.equal(elements.get("map-toolbar").children.length, 6);
   spotlight.next();
   assert.equal(elements.get("map-filter-panel").hidden, false);
   spotlight.close();
@@ -636,7 +725,7 @@ test("화면별 Spotlight는 실제 Snapshot 대상을 강조하고 화면 전�
   assert.match(spotlight.getState().step.description, /Servlet Filter 등록과 SecurityFilterChain 내부 Filter 구성은 구분/);
   assert.equal(elements.get("map-filter-panel").hidden, true);
   spotlight.next();
-  assert.match(spotlight.getState().step.description, /SecurityContext는 현재 Authentication을 담는 컨텍스트이고 HttpServletRequest는 HTTP 요청 객체/);
+  assert.match(spotlight.getState().step.description, /SecurityContext에는 현재 Authentication이 담기고, HttpServletRequest는 HTTP 요청 객체/);
   assert.equal(ui.state.display.detailedFlow, true);
   assert.equal(ui.state.selection.id, "endpoint-a");
 
@@ -1524,10 +1613,10 @@ test("MAP 툴바·알림·필터 패널과 필터·설정 아이콘의 기준 �
   const settingsStart = indexHtml.indexOf('id="settings-button"');
   const settingsEnd = indexHtml.indexOf("</button>", settingsStart);
   assert.ok(noticeStart > toolbarStart);
-  assert.match(indexHtml.slice(noticeStart - 100, noticeStart), /<\/div>\s*<\/div>\s*<\/div>\s*$/);
+  assert.match(indexHtml.slice(noticeStart - 100, noticeStart), /<\/div>\s*<\/div>\s*$/);
   assert.match(appCss, /\.map-toolbar\s*\{[^}]*width:\s*max-content/);
   assert.match(appCss, /\.shell-notice\s*\{[^}]*top:\s*clamp\(12px[^}]*right:\s*clamp\(16px[^}]*pointer-events:\s*none/s);
-  assert.match(appCss, /\.map-filter-panel\s*\{[^}]*right:\s*0;\s*left:\s*auto;[^}]*width:\s*min\(260px/s);
+  assert.match(appCss, /\.map-filter-panel\s*\{[^}]*top:\s*100%;[^}]*left:\s*-1px;[^}]*width:\s*calc\(100% \+ 2px\);[^}]*box-sizing:\s*border-box;/);
   assert.match(indexHtml, /<svg class="filter-icon" viewBox="0 0 24 24"/);
   assert.match(appCss, /\.map-filter-button \.filter-icon, #settings-button \.header-icon\s*\{[^}]*width:\s*18px;[^}]*height:\s*18px;[^}]*aspect-ratio:\s*1 \/ 1/s);
   assert.match(indexHtml.slice(settingsStart, settingsEnd), /<svg class="header-icon" viewBox="0 0 24 24"/);
@@ -1647,6 +1736,96 @@ test("MAP 오버레이 툴바 조작은 Graph Pan 상태를 시작하지 않음"
   assert.equal(ui.state.selection.id, "node-2");
 });
 
+test("교육용 Flow 버튼 포인터 입력은 Graph Pan에 가로채이지 않음", () => {
+  const { ui, elements } = loadUi();
+  const graphCanvas = elements.get("graph-canvas");
+  const controls = elements.get("request-flow-controls");
+  controls.setAttribute("class", "request-flow-controls");
+  const buttons = [
+    "request-flow-start", "request-flow-pause", "request-flow-reset",
+    "request-flow-previous", "request-flow-next"
+  ].map((id) => elements.get(id));
+  controls.append(...buttons);
+  graphCanvas.append(controls);
+
+  buttons.forEach((button) => {
+    button.tagName = "button";
+    button.append(createElement("span"));
+  });
+  [false, true].forEach((locked) => {
+    ui.navigation.setLocked(locked);
+    buttons.forEach((button, index) => {
+      const event = { type: "pointerdown", pointerId: (locked ? 10 : 0) + index + 1, clientX: 20, clientY: 20 };
+      button.children[0].dispatchEvent(event);
+      assert.equal(ui.navigation.state.dragging, false);
+      assert.equal(graphCanvas.pointerCaptures.has(event.pointerId), false);
+      assert.equal(Boolean(event.defaultPrevented), false);
+    });
+  });
+});
+
+test("Graph 내부 표준 대화형 컨트롤은 Pan을 막고 빈 Canvas 드래그는 유지함", () => {
+  const { ui, elements, document } = loadUi();
+  const graphCanvas = elements.get("graph-canvas");
+  const html = createElement("html");
+  html.append(graphCanvas);
+  html.parentNode = document;
+  const controls = [
+    createElement("button"), createElement("input"), createElement("select"),
+    createElement("textarea"), createElement("a"), createElement("label"),
+    createElement("div"), createElement("div"), createElement("div")
+  ];
+  controls[4].setAttribute("href", "#details");
+  controls[6].setAttribute("role", "switch");
+  controls[7].setAttribute("tabindex", "0");
+  controls[8].setAttribute("contenteditable", "true");
+  controls.forEach((control, index) => {
+    graphCanvas.append(control);
+    const event = { type: "pointerdown", pointerId: index + 20, clientX: 20, clientY: 20 };
+    control.dispatchEvent(event);
+    assert.equal(ui.navigation.state.dragging, false);
+    assert.equal(graphCanvas.pointerCaptures.has(event.pointerId), false);
+    assert.equal(Boolean(event.defaultPrevented), false);
+  });
+
+  const drag = { type: "pointerdown", pointerId: 40, target: graphCanvas, clientX: 20, clientY: 20 };
+  graphCanvas.dispatchEvent(drag);
+  assert.equal(ui.navigation.state.dragging, true);
+  assert.equal(graphCanvas.pointerCaptures.has(40), true);
+  assert.equal(drag.defaultPrevented, true);
+  graphCanvas.dispatchEvent({ type: "pointerup", pointerId: 40 });
+  assert.equal(ui.navigation.state.dragging, false);
+  assert.equal(graphCanvas.pointerCaptures.has(40), false);
+});
+
+test("Spotlight 종료 후 교육용 Flow 시작 입력은 포인터 캡처 없이 동작함", async () => {
+  const { ui, elements, document, window } = loadUi();
+  ui.renderGraph(flowGraphFixture());
+  ui.openEndpointDetail("endpoint-a");
+  await ui.layoutGraph();
+  elements.get("setting-show-detail-flow").checked = true;
+  elements.get("setting-show-detail-flow").dispatchEvent({ type: "change" });
+
+  const controls = elements.get("request-flow-controls");
+  controls.setAttribute("class", "request-flow-controls");
+  controls.append(elements.get("request-flow-start"));
+  elements.get("graph-canvas").append(controls);
+
+  elements.get("help-button").dispatchEvent({ type: "click" });
+  assert.equal(window.MapInBootSpotlight.getState().active, true);
+  document.dispatchEvent({ type: "keydown", key: "Escape" });
+  assert.equal(window.MapInBootSpotlight.getState().active, false);
+
+  const pointerDown = { type: "pointerdown", pointerId: 41, clientX: 20, clientY: 20 };
+  elements.get("request-flow-start").dispatchEvent(pointerDown);
+  assert.equal(ui.navigation.state.dragging, false);
+  assert.equal(elements.get("graph-canvas").pointerCaptures.has(41), false);
+  assert.equal(Boolean(pointerDown.defaultPrevented), false);
+
+  elements.get("request-flow-start").dispatchEvent({ type: "click" });
+  assert.equal(ui.requestFlow.state().status, "running");
+});
+
 test("Finding 마커 포인터 입력은 Graph Pan을 시작하지 않음", () => {
   const { ui, elements } = loadUi();
   const marker = createElement("g");
@@ -1720,9 +1899,9 @@ test("설정 Drawer는 표시 옵션을 독립 적용하고 Escape에서 Graph �
   elements.get("settings-panel").dispatchEvent({
     type: "keydown", key: "Tab", shiftKey: true, target: elements.get("settings-close")
   });
-  assert.equal(elements.get("setting-show-detail-flow").focused, true);
+  assert.equal(elements.get("setting-flow-speed").focused, true);
   elements.get("settings-panel").dispatchEvent({
-    type: "keydown", key: "Tab", target: elements.get("setting-show-detail-flow")
+    type: "keydown", key: "Tab", target: elements.get("setting-flow-speed")
   });
   assert.equal(elements.get("settings-close").focused, true);
 
@@ -1762,6 +1941,52 @@ test("설정 Drawer는 표시 옵션을 독립 적용하고 Escape에서 Graph �
   ui.selectView("all-flow");
   ui.selectView("feature-flow");
   assert.equal(ui.state.display.detailedFlow, true);
+});
+
+test("학습 흐름 재생 설정은 세션 값으로 반영되고 선택한 단계를 초기화하지 않음", () => {
+  const { ui, elements } = loadUi();
+  assert.equal(ui.state.requestFlowSettings.nodeHoldDuration, 1500);
+  assert.equal(ui.state.requestFlowSettings.speed, 1);
+  ui.requestFlow.setSteps([
+    { id: "first", kind: "actual", anchorId: "node-a" },
+    { id: "selected", kind: "actual", anchorId: "node-b" }
+  ]);
+  ui.requestFlow.play();
+
+  elements.get("setting-flow-node-duration").value = "3000";
+  elements.get("setting-flow-node-duration").dispatchEvent({ type: "change" });
+  assert.equal(ui.requestFlow.state().status, "running");
+  assert.equal(ui.requestFlow.state().stepIndex, 0);
+  ui.requestFlow.pause();
+  ui.requestFlow.seekToStep(1);
+  elements.get("setting-flow-speed").value = "2";
+  elements.get("setting-flow-speed").dispatchEvent({ type: "change" });
+
+  assert.equal(ui.state.requestFlowSettings.nodeHoldDuration, 3000);
+  assert.equal(ui.state.requestFlowSettings.speed, 2);
+  assert.equal(ui.requestFlow.state().status, "paused");
+  assert.equal(ui.requestFlow.state().stepIndex, 1);
+  assert.equal(ui.requestFlow.state().step.id, "selected");
+});
+
+test("요청 처리 흐름 상태 문구와 점 표시가 Controller 상태를 따라감", () => {
+  const { ui, elements } = loadUi();
+  ui.requestFlow.setSteps([
+    { id: "first", kind: "actual", anchorId: "node-a" },
+    { id: "second", kind: "education" }
+  ]);
+  assert.equal(elements.get("request-flow-status").textContent, "시작 전");
+  assert.equal(elements.get("request-flow-status").getAttribute("data-state"), "idle");
+
+  ui.requestFlow.play();
+  assert.equal(elements.get("request-flow-status").textContent, "진행 중");
+  assert.equal(elements.get("request-flow-status").getAttribute("data-state"), "running");
+  ui.requestFlow.pause();
+  assert.equal(elements.get("request-flow-status").textContent, "일시정지");
+  assert.equal(elements.get("request-flow-status").getAttribute("data-state"), "paused");
+  ui.requestFlow.reset();
+  assert.equal(elements.get("request-flow-status").textContent, "시작 전");
+  assert.equal(elements.get("request-flow-status").getAttribute("data-state"), "idle");
 });
 
 test("Spotlight의 Escape 종료는 설정 Drawer와 선택된 Inspector를 추가로 닫지 않음", async () => {
@@ -2203,7 +2428,7 @@ test("Spring Security 7 표준 Filter 12종이 FQCN과 교육 필수 항목을 �
   assert.deepEqual(Array.from(references, (reference) => reference.referenceOrder),
     Array.from({ length: 12 }, (_, index) => index + 1));
   references.forEach((reference) => {
-    assert.match(reference.source, /목록 순서는 교육용/);
+    assert.match(reference.source, /표시 순서는 처리 원리 설명용/);
     educationFields.forEach((field) => {
       assert.equal(typeof reference[field], "string", `${reference.name} ${field} 문자열 제공`);
       assert.ok(reference[field].trim().length > 0, `${reference.name} ${field} 설명 제공`);
@@ -2244,7 +2469,7 @@ test("상세 처리 보기에서 표준 Filter 교육을 선택하고 실제 Sna
   assert.match(educationText, /주의사항/);
   assert.match(educationText, /실제 filterOrder를 뜻하지 않습니다/);
   assert.match(educationText, /분석 상태 출처/);
-  assert.match(educationText, /교육 출처/);
+  assert.match(educationText, /참고 자료/);
   assert.doesNotMatch(educationText, /evidence-security-filter-1|SecurityConfiguration#filterChain/);
   assert.equal(findAllByClass(inspector, "inspector-filter-reference")
     .find((button) => button.attributes["data-filter-fqcn"] === "org.springframework.security.web.csrf.CsrfFilter")
@@ -2281,7 +2506,7 @@ test("미등록 표준 필터 참고 카드 선택은 Snapshot Graph 선택과 �
   reference.dispatchEvent({ type: "click" });
   const educationText = textOf(inspector);
   assert.match(educationText, /HeaderWriterFilter/);
-  assert.match(educationText, /실제 Graph 노드가 아닌 교육용 참고/);
+  assert.match(educationText, /Snapshot에 없는 표준 Filter 참고 자료/);
   assert.match(educationText, /응답/);
   assert.equal(inspector.getAttribute("data-selection-id"), "endpoint-a");
   assert.equal(snapshot.nodes.some((node) => node.id.startsWith("standard-filter-")), false);
@@ -2731,7 +2956,7 @@ test("Request 교육 단계가 확정 Chain·Filter 순서·Handler만 실제 An
 
   assert.deepEqual(actualAnchors, ["servlet-filter-1", "chain-a", "security-filter-1", "security-filter-2", "security-filter-3", "servlet-1", "endpoint-a", "handler-a"]);
   assert.equal(steps.some((step) => step.label.includes("HTTP 요청 수신")), true);
-  assert.equal(steps.some((step) => step.label.includes("동기 처리 스레드")), true);
+  assert.equal(steps.some((step) => step.label.includes("동기 처리 문맥")), true);
   const responseReturn = steps.at(-1);
   assert.equal(responseReturn.id, "education-response-return");
   assert.equal(responseReturn.kind, "education");
@@ -2836,6 +3061,31 @@ test("Request 교육은 Endpoint가 없거나 여러 개여도 선택 Endpoint �
   });
 });
 
+test("Request 교육은 확인된 Snapshot Edge를 교육용 Projection Edge보다 먼저 선택함", () => {
+  const { window } = loadUi();
+  const graph = window.MapInBootGraph.normalize(detailGraphFixture());
+  const steps = window.MapInBootRequestFlow.buildSteps({
+    graph,
+    index: window.MapInBootFlow.createIndex(graph),
+    endpointId: "endpoint-a",
+    positions: {},
+    projection: {
+      nodes: [],
+      edges: [
+        { id: "projected-chain-filter", sourceId: "chain-a", targetId: "security-filter-1" },
+        { id: "projected-filter-order", sourceId: "security-filter-1", targetId: "security-filter-2" }
+      ]
+    }
+  });
+  const chain = steps.find((step) => step.anchorId === "chain-a");
+  const firstFilter = steps.find((step) => step.anchorId === "security-filter-1");
+
+  assert.equal(chain.transition.kind, "actual");
+  assert.equal(chain.transition.edgeId, "security-filtered-1");
+  assert.equal(firstFilter.transition.kind, "projection");
+  assert.equal(firstFilter.transition.edgeId, "projected-filter-order");
+});
+
 test("Request 교육 Controller가 Node 점등·Edge 이동·경로 불가·일시정지·재개·완료를 보장함", () => {
   const { window } = loadUi();
   const clock = createFakeClock();
@@ -2911,6 +3161,58 @@ test("Request 교육 Controller가 Node 점등·Edge 이동·경로 불가·일�
   assert.equal(controller.state().phase, null);
   assert.equal(clock.activeCount(), 0);
   assert.equal(updates.some((state) => state.status === "complete"), true);
+});
+
+test("Request Controller 설정 변경은 재생 중 Node·Edge 진행률과 현재 단계를 보존함", () => {
+  const { window } = loadUi();
+  const clock = createFakeClock();
+  const controller = window.MapInBootRequestFlow.createController({
+    clock,
+    nodeHoldDuration: 1000,
+    minimumEdgeDuration: 300,
+    maximumEdgeDuration: 300,
+    durationPerLength: 1
+  });
+  controller.setSteps([
+    { id: "first", kind: "actual", anchorId: "node-a", transition: { kind: "actual", edgeId: "edge-a", length: 300 } },
+    { id: "second", kind: "actual", anchorId: "node-b" }
+  ]);
+  controller.play();
+  clock.tick(400);
+  assert.equal(controller.state().progress, 0.4);
+  controller.setPlaybackSettings({ nodeHoldDuration: 2000 });
+  assert.equal(controller.state().progress, 0.4);
+  assert.equal(controller.state().phase, "NODE_HOLD");
+  assert.equal(controller.state().stepIndex, 0);
+  clock.tick(1199);
+  assert.equal(controller.state().phase, "NODE_HOLD");
+  clock.tick(1);
+  assert.equal(controller.state().phase, "EDGE_TRAVEL");
+
+  clock.tick(120);
+  assert.equal(controller.state().progress, 0.4);
+  controller.setPlaybackSettings({ speed: 2 });
+  assert.equal(controller.state().progress, 0.4);
+  assert.equal(controller.state().phase, "EDGE_TRAVEL");
+  controller.pause();
+  controller.setPlaybackSettings({ speed: 0.5 });
+  assert.equal(controller.state().status, "paused");
+  assert.equal(controller.state().progress, 0.4);
+  clock.tick(500);
+  assert.equal(controller.state().progress, 0.4);
+  controller.play();
+  clock.tick(359);
+  assert.equal(controller.state().phase, "EDGE_TRAVEL");
+  clock.tick(1);
+  assert.equal(controller.state().stepIndex, 1);
+  assert.equal(controller.state().phase, "NODE_HOLD");
+
+  controller.pause();
+  const pausedIndex = controller.state().stepIndex;
+  controller.setPlaybackSettings({ nodeHoldDuration: 3000 });
+  assert.equal(controller.state().status, "paused");
+  assert.equal(controller.state().stepIndex, pausedIndex);
+  assert.equal(controller.activeFrameCount(), 0);
 });
 
 test("Request 교육 Controller의 단계 탐색은 경계·중간 재생·완료 상태를 보존함", () => {
@@ -2999,7 +3301,7 @@ test("상세 처리 보기에서 단계·표준 Filter 설명·재생 조작을 
   assert.equal(elements.get("request-flow-controls").dataset.detailed, "true");
   assert.equal(elements.get("request-flow-details").hidden, false);
   assert.equal(elements.get("request-flow-step-count").textContent, `1 / ${steps.length}`);
-  assert.equal(elements.get("request-flow-step-kind").textContent, "교육용 설명");
+  assert.equal(elements.get("request-flow-step-kind").textContent, "일반적인 처리 원리");
   assert.equal(ui.requestFlow.state().status, "idle");
   assert.equal(elements.get("request-flow-previous").disabled, true);
   assert.equal(elements.get("request-flow-next").disabled, false);
@@ -3012,7 +3314,7 @@ test("상세 처리 보기에서 단계·표준 Filter 설명·재생 조작을 
 
   assert.ok(filterStep.filterEducation);
   assert.equal(ui.requestFlow.seekToStep(filterIndex), true);
-  assert.equal(elements.get("request-flow-step-kind").textContent, "확인된 구조");
+  assert.equal(elements.get("request-flow-step-kind").textContent, "Snapshot에서 확인한 구조");
   assert.equal(elements.get("request-flow-step-title").textContent, filterStep.label);
   assert.equal(elements.get("request-flow-filter-status").textContent, filterStep.filterEducation.statusLabel);
   assert.equal(elements.get("request-flow-filter-role").textContent, filterStep.filterEducation.role);
@@ -3109,13 +3411,14 @@ test("Request 교육 빛 점은 꺾인 SVG 경로의 실제 좌표를 사용함"
   assert.equal(window.MapInBootRequestFlow.pathPointAt({}, 0.5), null);
 });
 
-test("Request 교육 reduced-motion은 RAF 없이 마지막 단계와 키보드 가능한 상태를 제공함", () => {
+test("Request 교육 reduced-motion은 이동 효과를 줄이고 수동·자동 단계 진행을 유지함", () => {
   const { window } = loadUi();
   const clock = createFakeClock();
   const controller = window.MapInBootRequestFlow.createController({
     clock,
     reducedMotion: true,
-    nodeHoldDuration: 100
+    nodeHoldDuration: 100,
+    reducedMotionStepDuration: 100
   });
   controller.setSteps([
     { id: "step-a", label: "A", kind: "education" },
@@ -3123,17 +3426,35 @@ test("Request 교육 reduced-motion은 RAF 없이 마지막 단계와 키보드 
   ]);
   controller.play();
 
-  assert.equal(controller.state().status, "complete");
+  assert.equal(controller.state().status, "running");
+  assert.equal(controller.state().stepIndex, 0);
+  assert.equal(controller.state().phase, "STEP_NOTICE");
+  assert.equal(controller.state().progress, 0);
+  assert.equal(controller.activeFrameCount(), 1);
+  assert.equal(clock.activeCount(), 1);
+  clock.tick(60);
+  controller.pause();
+  assert.equal(controller.state().status, "paused");
+  assert.equal(controller.state().stepIndex, 0);
+  controller.play();
+  clock.tick(40);
+  assert.equal(controller.state().status, "running");
   assert.equal(controller.state().stepIndex, 1);
   assert.equal(controller.state().step.anchorId, "node-b");
   assert.equal(controller.state().phase, "NODE_HOLD");
-  assert.equal(controller.state().progress, 1);
+  assert.equal(controller.state().progress, 0);
+  assert.equal(controller.activeFrameCount(), 1);
+  clock.tick(100);
+  assert.equal(controller.state().status, "complete");
+  assert.equal(controller.state().stepIndex, 1);
   assert.equal(controller.activeFrameCount(), 0);
   assert.equal(clock.activeCount(), 0);
 
   const selectedController = window.MapInBootRequestFlow.createController({
     clock,
-    reducedMotion: true
+    reducedMotion: true,
+    nodeHoldDuration: 100,
+    reducedMotionStepDuration: 100
   });
   selectedController.setSteps([
     { id: "step-a", label: "A", kind: "actual", anchorId: "node-a" },
@@ -3142,10 +3463,39 @@ test("Request 교육 reduced-motion은 RAF 없이 마지막 단계와 키보드 
   ]);
   assert.equal(selectedController.seekToStep(1), true);
   selectedController.play();
-  assert.equal(selectedController.state().status, "complete");
+  assert.equal(selectedController.state().status, "running");
   assert.equal(selectedController.state().stepIndex, 1);
   assert.equal(selectedController.state().phase, "STEP_NOTICE");
+  clock.tick(100);
+  assert.equal(selectedController.state().stepIndex, 2);
+  assert.equal(selectedController.state().status, "running");
+  clock.tick(100);
+  assert.equal(selectedController.state().status, "complete");
   assert.equal(selectedController.activeFrameCount(), 0);
+});
+
+test("동일 레이아웃 재적용은 진행 중인 요청 교육 단계를 초기화하지 않음", async () => {
+  const animationClock = createFakeClock();
+  const { ui, elements } = loadUi({ animationClock });
+  ui.renderGraph(detailGraphFixture());
+  ui.openEndpointDetail("endpoint-a");
+  await ui.layoutGraph();
+  const flow = ui.requestFlow;
+  const selectedStep = Math.min(2, flow.state().steps.length - 1);
+  assert.ok(selectedStep > 0);
+  assert.equal(flow.seekToStep(selectedStep), true);
+  elements.get("request-flow-start").dispatchEvent({ type: "click" });
+  animationClock.tick(40);
+  const before = flow.state();
+
+  await ui.layoutGraph();
+
+  const after = flow.state();
+  assert.equal(after.status, "running");
+  assert.equal(after.stepIndex, before.stepIndex);
+  assert.equal(after.phase, before.phase);
+  assert.equal(flow.activeFrameCount(), 1);
+  assert.equal(ui.state.requestFlowSteps.length, after.steps.length);
 });
 
 test("Request 교육은 상세 MAP에서만 표시되고 View 복귀·문서 숨김·재조회 시 정리됨", async () => {
@@ -3157,7 +3507,7 @@ test("Request 교육은 상세 MAP에서만 표시되고 View 복귀·문서 숨
 
   assert.equal(elements.get("request-flow-controls").hidden, false);
   assert.equal(elements.get("request-flow-education").hasAttribute("hidden"), false);
-  assert.match(elements.get("request-flow-status").textContent, /교육용 예시/);
+  assert.equal(elements.get("request-flow-status").textContent, "시작 전");
   assert.equal(ui.requestFlow.state().status, "idle");
 
   ui.requestFlow.setSteps([{ id: "visible-dot", kind: "actual", anchorId: "endpoint-a", position: { x: 10, y: 20 } }]);
@@ -3229,8 +3579,10 @@ test("Request 교육은 SVG Edge 경로를 따라 점을 이동하고 실제·�
   ui.requestFlow.play();
   assert.equal(source.getAttribute("data-request-flow-active"), "true");
   assert.equal(elements.get("request-flow-dot").hasAttribute("hidden"), true);
-  animationClock.tick(280);
+  animationClock.tick(1500);
   assert.equal(ui.requestFlow.state().phase, "EDGE_TRAVEL");
+  assert.equal(elements.get("request-flow-status").textContent, "이동 중");
+  assert.equal(elements.get("request-flow-status").getAttribute("data-state"), "moving");
   assert.equal(source.getAttribute("data-request-flow-active"), null);
   assert.equal(elements.get("request-flow-dot").hasAttribute("hidden"), false);
   assert.equal(elements.get("request-flow-dot").getAttribute("cx"), "0");
@@ -3294,7 +3646,7 @@ test("Request Flow는 HTMLCollection형 SVG Projection children에서 실제 경
   assert.equal(typeof children.filter, "undefined");
 
   ui.requestFlow.play();
-  assert.doesNotThrow(() => animationClock.tick(280));
+  assert.doesNotThrow(() => animationClock.tick(1500));
   assert.equal(ui.requestFlow.state().phase, "EDGE_TRAVEL");
   assert.equal(elements.get("request-flow-dot").hidden, false);
   assert.equal(elements.get("request-flow-dot").getAttribute("cx"), "0");
@@ -3324,9 +3676,11 @@ test("Request Flow는 HTMLCollection형 Graph Edge의 묶인 원본 ID를 찾고
     { id: "chain", label: "Chain", kind: "actual", anchorId: "chain-a" }
   ]);
   ui.requestFlow.play();
-  assert.doesNotThrow(() => animationClock.tick(280));
+  assert.doesNotThrow(() => animationClock.tick(1500));
   assert.equal(elements.get("request-flow-dot").getAttribute("cx"), "70");
   assert.equal(elements.get("request-flow-dot").getAttribute("cy"), "0");
+  assert.equal(elements.get("request-flow-status").textContent, "이동 중");
+  assert.equal(elements.get("request-flow-status").getAttribute("data-state"), "moving");
 
   ui.requestFlow.setSteps([
     { id: "endpoint", label: "API", kind: "actual", anchorId: "endpoint-a", transition: {
@@ -3335,8 +3689,9 @@ test("Request Flow는 HTMLCollection형 Graph Edge의 묶인 원본 ID를 찾고
     { id: "chain", label: "Chain", kind: "actual", anchorId: "chain-a" }
   ]);
   ui.requestFlow.play();
-  assert.doesNotThrow(() => animationClock.tick(280));
+  assert.doesNotThrow(() => animationClock.tick(1500));
   assert.match(elements.get("request-flow-status").textContent, /경로 확인 불가/);
+  assert.equal(elements.get("request-flow-status").getAttribute("data-state"), "unavailable");
 });
 
 test("ELK 성공 후 Request Flow 준비 실패는 Graph 배치 성공을 유지함", async () => {
@@ -3350,7 +3705,7 @@ test("ELK 성공 후 Request Flow 준비 실패는 Graph 배치 성공을 유지
   assert.equal(elements.get("graph-canvas").dataset.layoutState, "loaded");
   assert.ok(ui.state.layout);
   assert.ok(ui.state.visibleGraph.nodes.length > 0);
-  assert.match(elements.get("shell-notice").textContent, /교육용 흐름 준비 실패/);
+  assert.match(elements.get("shell-notice").textContent, /학습 흐름 준비 실패/);
   assert.doesNotMatch(elements.get("shell-notice").textContent, /Graph 자동 배치 실패/);
 });
 
@@ -3382,7 +3737,7 @@ test("ELK Layout Cache Hit 뒤 Request Flow 준비 실패도 Layout 성공을 �
 
   assert.strictEqual(ui.state.layout, cachedLayout);
   assert.equal(ui.state.layoutState, "loaded");
-  assert.match(elements.get("shell-notice").textContent, /교육용 흐름 준비 실패/);
+  assert.match(elements.get("shell-notice").textContent, /학습 흐름 준비 실패/);
   assert.doesNotMatch(elements.get("shell-notice").textContent, /Graph 자동 배치 실패/);
 });
 
@@ -3403,7 +3758,7 @@ test("Request Flow Edge 이동 중 Inspector를 닫아도 재생과 경로 이�
   transition.length = 100;
 
   ui.requestFlow.play();
-  animationClock.tick(280);
+  animationClock.tick(1500);
   animationClock.tick(100);
   assert.equal(ui.requestFlow.state().phase, "EDGE_TRAVEL");
   assert.equal(ui.requestFlow.state().status, "running");
@@ -5400,6 +5755,11 @@ test("인가 및 보안정보 표시 그룹은 원본 Fact를 Inspector에서 �
   await ui.layoutGraph();
   const support = findAllByClass(elements.get("graph-nodes"), "graph-support-group");
   assert.ok(support.length >= 2);
+  support.forEach((group) => {
+    assert.equal(findAllByClass(group, "graph-node-type-dot").length, 1);
+    assert.equal(findAllByClass(group, "graph-node-type-badge").length, 0);
+    assert.equal(findAllByClass(group, "graph-node-display-id")[0].getAttribute("text-anchor"), "end");
+  });
   support[0].dispatchEvent({ type: "click", stopPropagation() {} });
   assert.equal(ui.state.selection.kind, "controller-group");
   assert.match(textOf(elements.get("inspector")), /포함된 원본 Fact/);
@@ -6781,7 +7141,7 @@ test("Inspector·Hover·Finding은 공통 한국어 표시와 원본 이벤트 I
   originalIdentifiers.forEach((id) => assert.equal(modalText.includes(id), false, "Finding 상세에 원본 ID 미노출"));
 });
 
-test("Node 카드는 유형 배지·유형별 표시 ID와 SVG 텍스트 경계를 표시함", () => {
+test("Node 카드는 초록 유형 점·회색 ID와 겹치지 않는 SVG 텍스트 경계를 표시함", () => {
   const { ui, elements, document, window } = loadUi();
   const snapshot = graphFixture();
   snapshot.nodes[2].attributes = {
@@ -6799,7 +7159,7 @@ test("Node 카드는 유형 배지·유형별 표시 ID와 SVG 텍스트 경계�
     if (tagName === "text") {
       element.getComputedTextLength = () => {
         const className = element.getAttribute("class");
-        if (["graph-node-label", "graph-node-detail", "graph-node-display-id"].includes(className)) {
+        if (["graph-node-label", "graph-node-detail", "graph-node-display-id", "graph-node-type"].includes(className)) {
           let current = element;
           while (current && current !== elements.get("graph-nodes")) current = current.parentNode;
           assert.ok(current, `${className}는 SVG 계층 연결 후 너비 측정`);
@@ -6823,7 +7183,7 @@ test("Node 카드는 유형 배지·유형별 표시 ID와 SVG 텍스트 경계�
     const type = snapshot.nodes[index].type;
     const card = findAllByClass(node, "graph-node-card")[0];
     const badge = findAllByClass(node, "graph-node-type")[0];
-    const badgeBackground = findAllByClass(node, "graph-node-type-badge")[0];
+    const typeDot = findAllByClass(node, "graph-node-type-dot")[0];
     const displayId = findAllByClass(node, "graph-node-display-id")[0];
     const titleLines = findAllByClass(node, "graph-node-label");
     const details = findAllByClass(node, "graph-node-detail");
@@ -6831,11 +7191,18 @@ test("Node 카드는 유형 배지·유형별 표시 ID와 SVG 텍스트 경계�
     assert.equal(card.attributes.width, "260");
     assert.equal(card.attributes.height, "120");
     assert.equal(badge.textContent, window.MapInBootGraph.nodeTypeLabel(type));
-    assert.ok(badgeBackground);
+    assert.ok(typeDot);
+    assert.equal(typeDot.tagName, "circle");
+    assert.equal(findAllByClass(node, "graph-node-type-badge").length, 0);
     assert.equal(displayId.textContent, expectedCodes[index]);
     assert.equal(displayId.attributes["text-anchor"], "end");
+    const typeWidth = badge.getComputedTextLength();
+    const displayStart = Number(displayId.attributes.x) - displayId.getComputedTextLength();
+    assert.ok(Number(badge.attributes.x) + typeWidth <= displayStart,
+      `${badge.textContent} 유형명과 ${displayId.textContent} 표시 ID 사이 간격 확보`);
     assert.ok(titleLines.length <= 2);
     assert.ok(details.length <= 1);
+    assert.ok(badge.getAttribute("clip-path"));
     [...titleLines, ...details, displayId].forEach((text) => assert.ok(text.getAttribute("clip-path")));
   });
   const endpoint = renderedNodes.find((node) => node.getAttribute("data-node-id") === "node-2");
@@ -6843,6 +7210,9 @@ test("Node 카드는 유형 배지·유형별 표시 ID와 SVG 텍스트 경계�
   assert.ok(measuredNodeTexts > 0);
   assert.ok(findAllByClass(elements.get("graph-svg"), "graph-node-content-clip").length > 0);
   assert.ok(findAllByClass(elements.get("graph-svg"), "graph-node-header-clip").length > 0);
+  assert.ok(findAllByClass(elements.get("graph-svg"), "graph-node-header-type-clip").length > 0);
+  assert.match(appCss, /\.graph-node-display-id\s*\{[^}]*fill:\s*#b5c3ba/);
+  assert.match(appCss, /\.graph-node-type-dot\s*\{[^}]*fill:\s*var\(--accent-strong\)/);
 });
 
 test("Inspector 헤더는 유형 배지와 대표 이름만 표시하고 표시 ID는 속성에 보존함", () => {
@@ -6916,4 +7286,28 @@ test("Controller Group은 Handler 서명을 축약해 표시하고 전체 원문
   assert.ok(originals);
   assert.equal(originals.hasAttribute("open"), false);
   signatures.forEach((signature) => assert.ok(textOf(originals).includes(signature)));
+});
+
+test("노드 유형 라벨은 외곽선 색을 따르고 노드 배경만 옅게 물들임", () => {
+  const { ui, elements } = loadUi();
+  ui.renderGraph(graphFixture());
+
+  const nodes = findAllByClass(elements.get("graph-nodes"), "graph-node")
+    .filter((node) => node.getAttribute("data-node-id"));
+  assert.ok(nodes.length > 0);
+  nodes.forEach((node) => {
+    const outlineColor = findAllByClass(node, "graph-node-card")[0].getAttribute("stroke");
+    const tint = findAllByClass(node, "graph-node-background-tint")[0];
+    const badge = findAllByClass(node, "graph-node-type-badge")[0];
+    const label = findAllByClass(node, "graph-node-type")[0];
+    const dot = findAllByClass(node, "graph-node-type-dot")[0];
+
+    assert.ok(tint);
+    assert.equal(tint.getAttribute("fill"), outlineColor);
+    assert.equal(tint.getAttribute("fill-opacity"), null);
+    assert.equal(badge, undefined);
+    assert.equal(label.getAttribute("fill"), outlineColor);
+    assert.equal(dot.getAttribute("fill"), outlineColor);
+  });
+  assert.match(appCss, /\.graph-node-background-tint\s*\{[^}]*fill-opacity:\s*\.12/);
 });

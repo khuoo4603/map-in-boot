@@ -95,6 +95,10 @@ class WebAccessSmokeIntegrationTest {
             mvc.perform(get("/mapinboot/app.js"))
                     .andExpect(status().isOk())
                     .andExpect(content().contentTypeCompatibleWith(MediaType.valueOf("text/javascript")));
+            mvc.perform(get("/mapinboot/spotlight.js"))
+                    .andExpect(status().isOk())
+                    .andExpect(content().contentTypeCompatibleWith(MediaType.valueOf("text/javascript")))
+                    .andExpect(content().string(org.hamcrest.Matchers.containsString("MapInBootSpotlight")));
             mvc.perform(get("/mapinboot/graph-flow.js"))
                     .andExpect(status().isOk())
                     .andExpect(content().contentTypeCompatibleWith(MediaType.valueOf("text/javascript")));

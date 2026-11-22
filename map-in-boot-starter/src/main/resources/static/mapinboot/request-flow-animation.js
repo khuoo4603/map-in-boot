@@ -78,6 +78,15 @@
 
   function transitionBetween(source, target, graph, projection) {
     if (!source.anchorId || !target.anchorId || source.anchorId === target.anchorId) return null;
+    const actualEdge = (graph && Array.isArray(graph.edges) ? graph.edges : [])
+      .find((edge) => edge.sourceId === source.anchorId && edge.targetId === target.anchorId);
+    if (actualEdge) return {
+      kind: "actual",
+      edgeId: actualEdge.id,
+      sourceId: source.anchorId,
+      targetId: target.anchorId,
+      length: null
+    };
     const projectionEdge = projection && Array.isArray(projection.edges)
       ? projection.edges.find((edge) => edge.sourceId === source.anchorId && edge.targetId === target.anchorId)
       : null;
@@ -90,15 +99,7 @@
         length: null
       };
     }
-    const actualEdge = (graph && Array.isArray(graph.edges) ? graph.edges : [])
-      .find((edge) => edge.sourceId === source.anchorId && edge.targetId === target.anchorId);
-    return actualEdge ? {
-      kind: "actual",
-      edgeId: actualEdge.id,
-      sourceId: source.anchorId,
-      targetId: target.anchorId,
-      length: null
-    } : null;
+    return null;
   }
 
   function connectSteps(steps, graph, projection) {
@@ -158,23 +159,23 @@
       : null);
     const steps = [];
 
-    educationStep(steps, projection, positions, "education-http-request", "HTTP 요청 수신", "실제 요청 Trace가 아닌 표준 처리 원리의 교육 단계");
-    educationStep(steps, projection, positions, "education-request-prepare", "Request 준비", "HttpServletRequest·HttpServletResponse 참조 준비");
-    educationStep(steps, projection, positions, "education-thread-context", "동기 처리 스레드", "일반적인 처리 문맥이며 실제 Thread ID가 아님");
-    educationStep(steps, projection, positions, "education-servlet-filter-chain", "FilterChain 전달", "Filter#doFilter·FilterChain.doFilter의 객체 참조 전달");
+    educationStep(steps, projection, positions, "education-http-request", "HTTP 요청 수신", "HTTP 요청이 Servlet 컨테이너로 전달되는 일반적인 처리 원리입니다.");
+    educationStep(steps, projection, positions, "education-request-prepare", "요청 정보 준비", "컨테이너가 HttpServletRequest와 HttpServletResponse를 준비해 처리 체인에 전달합니다.");
+    educationStep(steps, projection, positions, "education-thread-context", "동기 처리 문맥", "동기식 Servlet 처리는 컨테이너의 요청 처리 문맥에서 이어집니다.");
+    educationStep(steps, projection, positions, "education-servlet-filter-chain", "FilterChain 전달", "Filter#doFilter에서 FilterChain.doFilter를 호출해 다음 Filter로 제어를 넘깁니다.");
 
     const servlet = sourceNodes.find((node) => node.type === "SERVLET");
     const servletOrder = servlet && flowIndex && typeof flowIndex.servletFiltersForServlet === "function"
       ? flowIndex.servletFiltersForServlet(servlet.id)
       : { orderStatus: "UNKNOWN", filters: [] };
     if (servletOrder.orderStatus === "CONFIRMED") {
-      servletOrder.filters.forEach((filter) => actualStep(steps, `servlet-filter-${filter.id}`, `확인된 Servlet Filter · ${filter.label}`, filter, positions, "Servlet 등록 관계와 filterOrder 확인"));
+      servletOrder.filters.forEach((filter) => actualStep(steps, `servlet-filter-${filter.id}`, `확인된 Servlet Filter · ${filter.label}`, filter, positions, "Snapshot에서 Servlet 등록 관계와 filterOrder가 확인된 Filter입니다."));
     } else {
-      educationStep(steps, projection, positions, "education-servlet-filter-chain", "Servlet Filter 순서 확인 불가", "실제 등록은 확인되지만 순서가 확정되지 않아 실제 통과 순서로 재생하지 않음");
+      educationStep(steps, projection, positions, "education-servlet-filter-chain", "Servlet Filter 순서 확인 불가", "등록 관계는 확인됐지만 순서를 확정할 근거가 부족해 순차 재생하지 않습니다.");
     }
-    educationStep(steps, projection, positions, "education-delegating-filter-proxy", "DelegatingFilterProxy", "Servlet Filter에서 Spring Security로 위임하는 표준 구조");
-    educationStep(steps, projection, positions, "education-filter-chain-proxy", "FilterChainProxy", "등록된 SecurityFilterChain 목록 평가");
-    educationStep(steps, projection, positions, "education-request-matcher", "RequestMatcher 평가", "등록 순서에 따라 첫 매칭 Chain 하나를 선택하는 개념 단계");
+    educationStep(steps, projection, positions, "education-delegating-filter-proxy", "DelegatingFilterProxy", "DelegatingFilterProxy가 Spring Security Filter Chain으로 처리를 위임합니다.");
+    educationStep(steps, projection, positions, "education-filter-chain-proxy", "FilterChainProxy", "FilterChainProxy가 등록된 SecurityFilterChain을 평가합니다.");
+    educationStep(steps, projection, positions, "education-request-matcher", "RequestMatcher 평가", "RequestMatcher가 등록 순서에 따라 처음 일치하는 Chain을 찾습니다.");
 
     const match = selectedEndpointId && flowIndex && typeof flowIndex.firstMatchedChain === "function"
       ? flowIndex.firstMatchedChain(selectedEndpointId)
@@ -189,7 +190,7 @@
         `확인된 SecurityFilterChain · ${chain.label}`,
         chain,
         positions,
-        "MATCHED_BY와 첫 적용 Chain 확인"
+        "Snapshot에서 확인된 MATCHED_BY 관계로 첫 적용 Chain을 표시합니다."
       );
       const filters = confirmedFilterSet(flowIndex, source, chain.id);
       if (filters.status === "CONFIRMED") {
@@ -221,7 +222,7 @@
             `Security Filter · ${filter.label}`,
             filter,
             positions,
-            `FILTERED_BY 및 filterOrder ${attributes(edge).filterOrder || attributes(filter).filterOrder} 확인`,
+            `Snapshot에서 FILTERED_BY와 filterOrder ${attributes(edge).filterOrder || attributes(filter).filterOrder}를 확인했습니다.`,
             filterEducationByClass.get(attributes(filter).filterClass) || null
           );
         });
@@ -229,7 +230,7 @@
         appendStep(steps, {
           id: "security-filter-order-uncertain",
           label: "Security Filter 순서 확인 불가",
-          description: "미확정·중복 순서는 실제 통과 순서로 재생하지 않음"
+          description: "순서를 확정할 근거가 부족해 확인된 통과 순서로 표시하지 않습니다."
         });
       }
     } else {
@@ -241,17 +242,17 @@
         position: projection && Array.isArray(projection.nodes)
           ? projection.nodes.find((node) => node.id === "education-request-matcher")?.position
           : null,
-        description: "MATCHED_BY가 없거나 불확실하여 실제 Chain을 선택하지 않음"
+        description: "MATCHED_BY 관계가 없거나 불확실해 적용 Chain을 특정하지 않습니다."
       });
     }
 
-    educationStep(steps, projection, positions, "education-servlet-chain-continue", "Servlet FilterChain 계속", "인증 실패·인가 거부 시 이후 단계에 도달하지 않을 수 있음");
+    educationStep(steps, projection, positions, "education-servlet-chain-continue", "Servlet FilterChain 계속", "FilterChain.doFilter가 다음 단계로 연결되며, 앞선 처리 결과에 따라 이후 단계에 도달하지 않을 수 있습니다.");
     const dispatcher = sourceNodes.find((node) => node.type === "SERVLET");
-    if (dispatcher) actualStep(steps, "dispatcher-servlet", "확인된 DispatcherServlet", dispatcher, positions, "Servlet 등록 정보 확인");
-    educationStep(steps, projection, positions, "education-handler-mapping", "HandlerMapping", "요청과 Handler의 매핑 정보 조회");
+    if (dispatcher) actualStep(steps, "dispatcher-servlet", "확인된 DispatcherServlet", dispatcher, positions, "Snapshot에서 Servlet 등록 관계를 확인했습니다.");
+    educationStep(steps, projection, positions, "education-handler-mapping", "HandlerMapping", "HandlerMapping이 요청 정보에 맞는 Handler를 조회합니다.");
     const actualEndpoint = endpoint && nodes.get(endpoint.id);
-    if (actualEndpoint) actualStep(steps, "endpoint-mapping", `확인된 API Endpoint · ${actualEndpoint.label}`, actualEndpoint, positions, "Endpoint는 Servlet 실행 객체가 아닌 매핑 정보");
-    educationStep(steps, projection, positions, "education-handler-adapter", "HandlerAdapter", "확인된 Controller·Handler 호출 준비");
+    if (actualEndpoint) actualStep(steps, "endpoint-mapping", `확인된 API Endpoint · ${actualEndpoint.label}`, actualEndpoint, positions, "Endpoint는 Servlet 실행 객체가 아니라 Handler 매핑 정보입니다.");
+    educationStep(steps, projection, positions, "education-handler-adapter", "HandlerAdapter", "HandlerAdapter가 매핑된 Controller·Handler 호출을 준비합니다.");
 
     const handler = selectedEndpointId && flowIndex && typeof flowIndex.handlerFor === "function"
       ? flowIndex.handlerFor(selectedEndpointId)
@@ -265,21 +266,21 @@
         `확인된 Handler · ${actualHandler.label}`,
         actualHandler,
         positions,
-        "Endpoint attributes.handler와 기존 Handler Node 대응"
+        "Snapshot의 Endpoint attributes.handler와 기존 Handler Node가 연결됩니다."
       );
     } else {
       appendStep(steps, {
         id: "handler-uncertain",
         label: "Handler 대응 확인 불가",
-        description: "속성 대응이 확인되지 않아 Handler 호출을 실제 사실로 표시하지 않음"
+        description: "Snapshot에서 Endpoint와 Handler를 연결할 근거를 확인하지 못했습니다."
       });
     }
 
     appendStep(steps, {
       id: "education-response-return",
-      label: "교육용 응답 복귀",
+      label: "응답 복귀 원리",
       kind: "education",
-      description: "일반적인 동기 호출 체인은 Handler 처리 뒤 호출자 방향으로 복귀할 수 있음. 비동기·ERROR·FORWARD 등은 다른 경로가 개입할 수 있어 같은 순서로 단정하지 않으며, 특정 Response 경로나 실제 응답 결과를 확인한 기록은 아님"
+      description: "일반적인 동기 호출 체인에서는 Handler 처리 뒤 호출자 방향으로 돌아갑니다. 비동기·ERROR·FORWARD는 다른 경로가 적용될 수 있습니다."
     });
 
     return connectSteps(steps, source, projection);
@@ -316,13 +317,15 @@
   function createController(options = {}) {
     const clock = options.clock || defaultClock();
     const duration = (value, fallback) => Number.isFinite(value) && value > 0 ? value : fallback;
-    const nodeHoldDuration = duration(options.nodeHoldDuration, 280);
+    let nodeHoldDuration = duration(options.nodeHoldDuration, 280);
+    let playbackSpeed = duration(options.speed, 1);
     const minimumEdgeDuration = duration(options.minimumEdgeDuration, 450);
     const maximumEdgeDuration = Math.max(minimumEdgeDuration, duration(options.maximumEdgeDuration, 1000));
     const durationPerLength = duration(options.durationPerLength, 0.65);
     const unavailablePathDuration = duration(options.unavailablePathDuration, 280);
     const stepNoticeDuration = duration(options.stepNoticeDuration, 260);
     const reducedMotion = Boolean(options.reducedMotion);
+    const reducedMotionStepDuration = duration(options.reducedMotionStepDuration, 650);
     const onUpdate = typeof options.onUpdate === "function" ? options.onUpdate : () => {};
     const onStateChange = typeof options.onStateChange === "function" ? options.onStateChange : () => {};
     let steps = [];
@@ -376,10 +379,12 @@
     function edgeDuration(step) {
       const length = step && step.transition && step.transition.length;
       if (!Number.isFinite(length) || length <= 0) return null;
-      return Math.min(maximumEdgeDuration, Math.max(minimumEdgeDuration, length * durationPerLength));
+      const baseDuration = Math.min(maximumEdgeDuration, Math.max(minimumEdgeDuration, length * durationPerLength));
+      return baseDuration / playbackSpeed;
     }
 
     function phaseDuration() {
+      if (reducedMotion) return phase === "NODE_HOLD" ? nodeHoldDuration : reducedMotionStepDuration;
       if (phase === "NODE_HOLD") return nodeHoldDuration;
       if (phase === "EDGE_TRAVEL") return edgeDuration(steps[stepIndex]);
       if (phase === "PATH_UNAVAILABLE") return unavailablePathDuration;
@@ -439,18 +444,20 @@
         }
         if (elapsed < currentDuration) {
           phaseElapsed = elapsed;
-          progress = elapsed / currentDuration;
-          emitUpdate();
+          progress = reducedMotion ? 0 : elapsed / currentDuration;
+          if (!reducedMotion) emitUpdate();
           return true;
         }
         elapsed -= currentDuration;
         startedAt += currentDuration;
         phaseElapsed = 0;
         progress = 0;
-        advancePhase();
+        if (reducedMotion) nextStep();
+        else advancePhase();
         if (status !== "running") return false;
+        if (reducedMotion) emitUpdate();
         if (elapsed === 0) {
-          emitUpdate();
+          if (!reducedMotion) emitUpdate();
           return true;
         }
       }
@@ -478,22 +485,6 @@
 
     function play() {
       if (destroyed || steps.length === 0 || status === "running") return;
-      if (reducedMotion) {
-        cancelFrame();
-        if (status !== "paused") {
-          let lastAnchored = -1;
-          for (let index = 0; index < steps.length; index += 1) {
-            if (steps[index] && steps[index].anchorId) lastAnchored = index;
-          }
-          stepIndex = lastAnchored >= 0 ? lastAnchored : steps.length - 1;
-        }
-        phase = phaseForStep(steps[stepIndex]);
-        progress = 1;
-        phaseElapsed = phaseDuration() || 0;
-        setStatus("complete");
-        emitUpdate();
-        return;
-      }
       if (status === "complete" || status === "idle") {
         stepIndex = 0;
         phase = phaseForStep(steps[stepIndex]);
@@ -528,6 +519,32 @@
       return true;
     }
 
+    function setPlaybackSettings(settings = {}) {
+      if (destroyed) return;
+      const now = clock.now();
+      const wasRunning = status === "running";
+      if (wasRunning) advance(now);
+      if (wasRunning && status !== "running") cancelFrame();
+
+      const previousDuration = phaseDuration();
+      const progressRatio = Number.isFinite(previousDuration) && previousDuration > 0
+        ? Math.max(0, Math.min(1, phaseElapsed / previousDuration))
+        : 0;
+      if (Number.isFinite(settings.nodeHoldDuration) && settings.nodeHoldDuration > 0) {
+        nodeHoldDuration = settings.nodeHoldDuration;
+      }
+      if (Number.isFinite(settings.speed) && settings.speed > 0) playbackSpeed = settings.speed;
+
+      const nextDuration = phaseDuration();
+      if (Number.isFinite(previousDuration) && previousDuration > 0
+        && Number.isFinite(nextDuration) && nextDuration > 0) {
+        phaseElapsed = nextDuration * progressRatio;
+        if (status === "running") startedAt = now - phaseElapsed;
+        progress = reducedMotion ? 0 : progressRatio;
+      }
+      emitUpdate();
+    }
+
     function reset() {
       if (destroyed) return;
       cancelFrame();
@@ -549,6 +566,7 @@
 
     return {
       setSteps,
+      setPlaybackSettings,
       play,
       pause,
       seekToStep,

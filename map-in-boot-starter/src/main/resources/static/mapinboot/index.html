@@ -73,11 +73,24 @@
           <label class="settings-option"><span>미니맵 표시</span><span class="settings-switch"><input id="setting-show-minimap" type="checkbox" role="switch" aria-checked="true" checked><span class="settings-switch-track" aria-hidden="true"></span></span></label>
         </fieldset>
         <fieldset class="settings-group">
-          <legend>교육 기능</legend>
+          <legend>학습 흐름</legend>
           <label class="settings-option"><span>상세 처리 과정 보기</span><span class="settings-switch"><input id="setting-show-detail-flow" type="checkbox" role="switch" aria-checked="false"><span class="settings-switch-track" aria-hidden="true"></span></span></label>
-          <p class="settings-description">기능별 상세 화면에서 필터 처리 원리를 단계별로 설명합니다.</p>
+          <label class="settings-choice"><span>노드에서 머무는 시간</span><select id="setting-flow-node-duration" aria-label="노드에서 머무는 시간">
+            <option value="500">0.5초</option>
+            <option value="1000">1초</option>
+            <option value="1500" selected>1.5초</option>
+            <option value="2000">2초</option>
+            <option value="3000">3초</option>
+            <option value="5000">5초</option>
+          </select></label>
+          <label class="settings-choice"><span>이동 속도</span><select id="setting-flow-speed" aria-label="이동 속도">
+            <option value="0.5">0.5배</option>
+            <option value="1" selected>1배</option>
+            <option value="1.5">1.5배</option>
+            <option value="2">2배</option>
+          </select></label>
+          <p class="settings-description">기능별 상세 화면의 노드 대기 시간과 빛 점 이동 속도에 적용합니다.</p>
         </fieldset>
-        <p class="settings-notice">설정은 현재 화면에만 적용되며 실제 분석 결과를 변경하지 않습니다.</p>
       </section>
     </div>
 
@@ -106,7 +119,19 @@
                     </svg>
                     <span class="sr-only">필터</span>
                   </button>
-                  <div class="map-filter-panel" id="map-filter-panel" role="region" aria-label="Graph 필터" hidden>
+                </div>
+                <div class="toolbar-tool-group map-lock-toggle">
+                  <button class="graph-tool-button map-lock-button" id="screen-lock-toggle" type="button" aria-label="화면 이동과 확대·축소 고정" data-tooltip="화면 이동과 확대·축소 고정" aria-pressed="false" data-locked="false">
+                    <svg class="toolbar-icon lock-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                      <rect x="4.5" y="10" width="15" height="11" rx="2"></rect>
+                      <path class="lock-shackle-open" d="M8 10V7a4 4 0 0 1 7.6-1.7"></path>
+                      <path class="lock-shackle-closed" d="M8 10V7a4 4 0 0 1 8 0v3"></path>
+                      <circle cx="12" cy="15.5" r="1"></circle>
+                    </svg>
+                  </button>
+                </div>
+              </div>
+                <div class="map-filter-panel" id="map-filter-panel" role="region" aria-label="Graph 필터" hidden>
                     <label class="graph-search" id="endpoint-filter-label"><span id="endpoint-filter-label-text">Endpoint 검색</span>
                       <input id="endpoint-search" type="search" autocomplete="off" placeholder="Method·Path·Handler" aria-controls="endpoint-options" aria-expanded="false" aria-autocomplete="list">
                       <div class="endpoint-options" id="endpoint-options" role="listbox" aria-label="API 선택" hidden></div>
@@ -150,19 +175,7 @@
                     </div>
                     <button class="map-filter-reset" id="search-reset" type="button">검색 초기화</button>
                     <span class="graph-filter-status sr-only" id="graph-filter-status" role="status" aria-live="polite">Graph 없음</span>
-                  </div>
                 </div>
-                <div class="toolbar-tool-group map-lock-toggle">
-                  <button class="graph-tool-button map-lock-button" id="screen-lock-toggle" type="button" aria-label="화면 이동과 확대·축소 고정" data-tooltip="화면 이동과 확대·축소 고정" aria-pressed="false" data-locked="false">
-                    <svg class="toolbar-icon lock-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-                      <rect x="4.5" y="10" width="15" height="11" rx="2"></rect>
-                      <path class="lock-shackle-open" d="M8 10V7a4 4 0 0 1 7.6-1.7"></path>
-                      <path class="lock-shackle-closed" d="M8 10V7a4 4 0 0 1 8 0v3"></path>
-                      <circle cx="12" cy="15.5" r="1"></circle>
-                    </svg>
-                  </button>
-                </div>
-              </div>
             </div>
             <div class="shell-notice" id="shell-notice" role="status" aria-live="polite" hidden></div>
             <div class="canvas-empty" id="graph-empty">
@@ -190,15 +203,17 @@
                 </g>
               </g>
             </svg>
-            <div class="request-flow-controls" id="request-flow-controls" role="region" aria-label="내부 처리 과정" hidden>
-              <p class="request-flow-note">교육용 예시 · 실제 요청 추적 아님</p>
-              <p class="request-flow-status" id="request-flow-status" role="status" aria-live="polite">교육용 예시 · 실제 요청 추적 아님 · 시작 전</p>
+            <div class="request-flow-controls" id="request-flow-controls" role="region" aria-label="요청 처리 흐름" hidden>
+              <div class="request-flow-heading">
+                <h2 class="request-flow-title">요청 처리 흐름</h2>
+                <p class="request-flow-status" id="request-flow-status" data-state="idle" role="status" aria-live="polite">시작 전</p>
+              </div>
               <section class="request-flow-details" id="request-flow-details" aria-label="현재 처리 단계" hidden>
                 <p class="request-flow-step-count" id="request-flow-step-count" role="status" aria-live="polite">0 / 0</p>
                 <p class="request-flow-step-kind" id="request-flow-step-kind">단계 없음</p>
                 <h3 class="request-flow-step-title" id="request-flow-step-title">표시할 단계가 없습니다.</h3>
                 <p class="request-flow-step-description" id="request-flow-step-description"></p>
-                <div class="request-flow-filter-education" id="request-flow-filter-education" aria-label="표준 필터 교육 설명" hidden>
+                <div class="request-flow-filter-education" id="request-flow-filter-education" aria-label="표준 필터 처리 원리" hidden>
                   <p class="request-flow-filter-row"><strong>현재 경로 상태</strong><span id="request-flow-filter-status"></span></p>
                   <p class="request-flow-filter-name" id="request-flow-filter-name"></p>
                   <p class="request-flow-filter-fqcn" id="request-flow-filter-fqcn"></p>
@@ -209,7 +224,7 @@
                   <p class="request-flow-filter-row"><strong>대표 처리</strong><span id="request-flow-filter-processing"></span></p>
                   <p class="request-flow-filter-row"><strong>가능한 결과</strong><span id="request-flow-filter-outcomes"></span></p>
                   <p class="request-flow-filter-row"><strong>주의사항</strong><span id="request-flow-filter-cautions"></span></p>
-                  <p class="request-flow-filter-row"><strong>교육 출처</strong><span id="request-flow-filter-source"></span></p>
+                  <p class="request-flow-filter-row"><strong>참고 자료</strong><span id="request-flow-filter-source"></span></p>
                 </div>
                 <div class="request-flow-navigation" id="request-flow-navigation" hidden>
                   <button id="request-flow-previous" type="button" disabled>이전 단계</button>

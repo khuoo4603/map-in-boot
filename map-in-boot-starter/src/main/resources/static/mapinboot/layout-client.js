@@ -83,7 +83,7 @@
     const endpointStart = mappingStart + 2;
     const handlerStart = endpointStart + endpointColumns;
     return [
-      { id: "request", label: "HTTP 요청 · 교육용 흐름", column: 0, columns: requestColumns },
+      { id: "request", label: "HTTP 요청 · 학습 흐름", column: 0, columns: requestColumns },
       { id: "servlet-filter", label: "Servlet Filter · 등록 관계", column: servletStart, columns: servletColumns },
       { id: "security-delegation", label: "Spring Security 위임", column: delegationStart, columns: 3 },
       { id: "security-chain", label: "첫 매칭 SecurityFilterChain", column: chainStart, columns: 1 },
@@ -1115,16 +1115,16 @@
         findingSectionLayouts.flatMap((section) => [section.bounds, section.titleBounds]));
 
     const projectionNodes = [
-      projectionNode("education-http-request", "HTTP 요청 수신", "교육용 표시 · 실제 요청 Trace 아님", 0, EDUCATION_Y),
-      projectionNode("education-request-prepare", "Request 준비", "HttpServletRequest · HttpServletResponse 참조", 1, EDUCATION_Y),
-      projectionNode("education-thread-context", "동기 처리 스레드", "일반적인 처리 문맥 · 실제 Thread ID 아님", 2, EDUCATION_Y),
-      projectionNode("education-servlet-filter-chain", "FilterChain 전달", "Filter#doFilter · FilterChain.doFilter", 3, EDUCATION_Y),
-      projectionNode("education-delegating-filter-proxy", "DelegatingFilterProxy", "Servlet Filter에서 Spring Security로 위임", delegationLane.column, EDUCATION_Y),
-      projectionNode("education-filter-chain-proxy", "FilterChainProxy", "등록 SecurityFilterChain 목록 평가", delegationLane.column + 1, EDUCATION_Y),
+      projectionNode("education-http-request", "HTTP 요청 수신", "일반적인 Servlet 처리 원리", 0, EDUCATION_Y),
+      projectionNode("education-request-prepare", "요청 정보 준비", "HttpServletRequest와 HttpServletResponse 준비", 1, EDUCATION_Y),
+      projectionNode("education-thread-context", "동기 처리 문맥", "동기식 Servlet의 일반 처리 문맥", 2, EDUCATION_Y),
+      projectionNode("education-servlet-filter-chain", "FilterChain 전달", "Filter#doFilter에서 다음 Filter로 제어 전달", 3, EDUCATION_Y),
+      projectionNode("education-delegating-filter-proxy", "DelegatingFilterProxy", "Servlet Filter에서 Spring Security로 처리 위임", delegationLane.column, EDUCATION_Y),
+      projectionNode("education-filter-chain-proxy", "FilterChainProxy", "등록된 SecurityFilterChain 평가", delegationLane.column + 1, EDUCATION_Y),
       projectionNode("education-request-matcher", "RequestMatcher 평가", chains.map((chain) => `체인 ${attributes(chain).chainOrder || "?"}`).join(" · ") || "체인 확인 불가", delegationLane.column + 2, EDUCATION_Y),
-      projectionNode("education-servlet-chain-continue", "Servlet FilterChain 계속", "인증 실패·인가 거부 시 이후 단계 미도달 가능", mvcLane.column, EDUCATION_Y),
-      projectionNode("education-handler-mapping", "HandlerMapping", "요청과 Handler의 매핑 정보 조회", mappingLane.column, EDUCATION_Y),
-      projectionNode("education-handler-adapter", "HandlerAdapter", "확인된 Controller·Handler 호출 준비", mappingLane.column + 1, EDUCATION_Y)
+      projectionNode("education-servlet-chain-continue", "Servlet FilterChain 계속", "앞선 처리 결과에 따라 이후 단계에 도달하지 않을 수 있음", mvcLane.column, EDUCATION_Y),
+      projectionNode("education-handler-mapping", "HandlerMapping", "요청 정보에 맞는 Handler 조회", mappingLane.column, EDUCATION_Y),
+      projectionNode("education-handler-adapter", "HandlerAdapter", "Controller·Handler 호출 준비", mappingLane.column + 1, EDUCATION_Y)
     ];
     const laneByColumn = new Map(lanes.map((lane) => [lane.column, lane]));
     projectionNodes.forEach((node) => {

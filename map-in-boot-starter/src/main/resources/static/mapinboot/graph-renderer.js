@@ -641,12 +641,47 @@
     return textElement;
   }
 
+  function addNodeHeader(parent, typeLabel, displayId, typeColor) {
+    const dot = createElement("circle");
+    dot.setAttribute("class", "graph-node-type-dot");
+    dot.setAttribute("cx", "15");
+    dot.setAttribute("cy", "19");
+    dot.setAttribute("r", "3.5");
+    dot.setAttribute("fill", typeColor);
+    parent.appendChild(dot);
+
+    const displayCode = addNodeText(parent, "graph-node-display-id", 248, 23, displayId, 138, 22);
+    displayCode.setAttribute("text-anchor", "end");
+    displayCode.setAttribute("clip-path", "url(#graph-node-header-clip)");
+    const measuredIdWidth = typeof displayCode.getComputedTextLength === "function"
+      ? displayCode.getComputedTextLength()
+      : String(displayId || "").length * 7;
+    const typeWidth = Math.max(40, 248 - 24 - Math.min(138, measuredIdWidth) - 12);
+    const typeText = addNodeText(parent, "graph-node-type", 24, 23, typeLabel,
+      typeWidth, Math.max(6, Math.floor(typeWidth / 7)));
+    typeText.setAttribute("clip-path", "url(#graph-node-header-type-clip)");
+    typeText.setAttribute("fill", typeColor);
+  }
+
+  function addNodeBackgroundTint(parent, typeColor) {
+    const tint = createElement("rect");
+    tint.setAttribute("class", "graph-node-background-tint");
+    tint.setAttribute("x", "1");
+    tint.setAttribute("y", "1");
+    tint.setAttribute("width", String(NODE_WIDTH - 2));
+    tint.setAttribute("height", String(NODE_HEIGHT - 2));
+    tint.setAttribute("rx", "6");
+    tint.setAttribute("fill", typeColor);
+    parent.appendChild(tint);
+  }
+
   function ensureNodeTextClips(svg) {
     if (!svg || Array.from(svg.children || []).some((child) => child.getAttribute("data-node-text-clips") === "true")) return;
     const definitions = createElement("defs");
     definitions.setAttribute("data-node-text-clips", "true");
     [
       { id: "graph-node-header-clip", className: "graph-node-header-clip", x: 108, y: 7, width: 140, height: 24 },
+      { id: "graph-node-header-type-clip", className: "graph-node-header-type-clip", x: 22, y: 7, width: 226, height: 24 },
       { id: "graph-node-content-clip", className: "graph-node-content-clip", x: 12, y: 34, width: 236, height: 78 }
     ].forEach(({ id, className, x, y, width, height }) => {
       const clipPath = createElement("clipPath");
@@ -1475,6 +1510,7 @@
       card.setAttribute("rx", "7");
       card.setAttribute("stroke", style);
       group.appendChild(card);
+      addNodeBackgroundTint(group, style);
       const input = createElement("circle");
       input.setAttribute("class", "graph-port graph-port-in");
       input.setAttribute("cx", "0");
@@ -1491,19 +1527,7 @@
       group.appendChild(output);
       layers.nodeLayer.appendChild(group);
 
-      const badge = createElement("rect");
-      badge.setAttribute("class", "graph-node-type-badge");
-      badge.setAttribute("x", "12");
-      badge.setAttribute("y", "9");
-      badge.setAttribute("width", "92");
-      badge.setAttribute("height", "20");
-      badge.setAttribute("rx", "4");
-      group.appendChild(badge);
-      addText(group, "graph-node-type", 20, 23, nodeTypeLabel(node.type));
-      const displayCode = addNodeText(group, "graph-node-display-id", 248, 23,
-        displayIds.node(node.id), 138, 22);
-      displayCode.setAttribute("text-anchor", "end");
-      displayCode.setAttribute("clip-path", "url(#graph-node-header-clip)");
+      addNodeHeader(group, nodeTypeLabel(node.type), displayIds.node(node.id), style);
 
       const primaryLines = semanticLines(display.primary, 28).slice(0, 2);
       primaryLines.forEach((line, index) => {
@@ -1564,8 +1588,10 @@
       card.setAttribute("width", String(NODE_WIDTH));
       card.setAttribute("height", String(NODE_HEIGHT));
       card.setAttribute("rx", "7");
-      card.setAttribute("stroke", "#c4b5fd");
+      const groupColor = "#c4b5fd";
+      card.setAttribute("stroke", groupColor);
       group.appendChild(card);
+      addNodeBackgroundTint(group, groupColor);
       [0, NODE_WIDTH].forEach((x) => {
         const port = createElement("circle");
         port.setAttribute("class", x === 0 ? "graph-port graph-port-in" : "graph-port graph-port-out");
@@ -1579,19 +1605,7 @@
       layers.nodeLayer.appendChild(group);
       const groupType = groupDefinition.type === "AUTHORIZATION" ? "인가 근거"
         : groupDefinition.type === "SECURITY_DATA" ? "보안정보 사용" : "Controller";
-      const badge = createElement("rect");
-      badge.setAttribute("class", "graph-node-type-badge");
-      badge.setAttribute("x", "12");
-      badge.setAttribute("y", "9");
-      badge.setAttribute("width", "92");
-      badge.setAttribute("height", "20");
-      badge.setAttribute("rx", "4");
-      group.appendChild(badge);
-      addText(group, "graph-node-type", 20, 23, groupType);
-      const displayCode = addNodeText(group, "graph-node-display-id", 248, 23,
-        display.displayId, 138, 22);
-      displayCode.setAttribute("text-anchor", "end");
-      displayCode.setAttribute("clip-path", "url(#graph-node-header-clip)");
+      addNodeHeader(group, groupType, display.displayId, groupColor);
       const title = addNodeText(group, "graph-node-label", 14, 56, display.primary, cardTextWidth, textFallbackLimit);
       title.setAttribute("clip-path", "url(#graph-node-content-clip)");
       const detail = groupDefinition.type ? `원본 Fact ${(groupDefinition.nodeIds || []).length}건` : display.detail;

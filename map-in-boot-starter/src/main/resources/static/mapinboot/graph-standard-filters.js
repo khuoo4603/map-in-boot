@@ -132,12 +132,12 @@
       condition: "요청이 인가 Filter와 구성된 정책 평가에 도달한 경우",
       processing: "요청 접근 권한을 평가하고 거부 결과는 AccessDeniedException으로 전달할 수 있음",
       outcomes: "요청 흐름 계속 또는 거부 예외 전달",
-      cautions: "교육 설명만으로 특정 요청의 실제 허용·거부를 확정하지 않음"
+      cautions: "처리 원리 참고만으로 특정 요청의 실제 허용·거부를 확정할 수 없습니다."
     }
   ].map((reference, index) => Object.freeze({
     ...reference,
     referenceOrder: index + 1,
-    source: "Spring Security 7 공식 Servlet 아키텍처 참고 · 목록 순서는 교육용"
+      source: "Spring Security 7 공식 Servlet 아키텍처 참고 자료 · 표시 순서는 처리 원리 설명용"
   })));
 
   const STATUS_LABELS = Object.freeze({

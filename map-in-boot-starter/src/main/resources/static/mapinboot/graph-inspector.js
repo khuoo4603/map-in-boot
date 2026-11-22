@@ -6,7 +6,7 @@
     { id: "connections", label: "연결 노드" },
     { id: "relations", label: "연결 관계" }
   ];
-  const filterEducationTab = { id: "filter-education", label: "필터 교육" };
+  const filterEducationTab = { id: "filter-education", label: "필터 이해하기" };
   const graphDisplay = window.MapInBootGraph || {};
   const standardFilterClient = window.MapInBootStandardFilters || null;
   const standardFilters = standardFilterClient && standardFilterClient.list
@@ -684,7 +684,7 @@
 
       appendHeading(parent, "Spring Security 표준 필터");
       appendElement(parent, "p", "inspector-filter-education-notice",
-        "처리 설명과 목록 순서는 교육용이며, 특정 요청의 실행 기록이나 실제 filterOrder를 뜻하지 않습니다.");
+        "처리 내용과 순서는 필터 동작 원리를 설명하기 위한 참고이며, 특정 요청의 실행 기록이나 실제 filterOrder를 뜻하지 않습니다.");
       const list = appendElement(parent, "div", "inspector-filter-reference-list");
       list.setAttribute("role", "list");
       standardFilters.forEach((reference) => {
@@ -716,8 +716,8 @@
       const selectedActualNode = selectedNodeFqcn === selectedReference.fqcn;
       const card = appendElement(parent, "section", "inspector-filter-education-card");
       appendElement(card, "p", "inspector-filter-education-kind", selectedActualNode
-        ? "선택한 실제 Filter Node의 교육 설명"
-        : "실제 Graph 노드가 아닌 교육용 참고");
+        ? "Snapshot에서 확인한 Filter의 처리 원리"
+        : "Snapshot에 없는 표준 Filter 참고 자료");
       appendElement(card, "h3", "inspector-filter-education-title", selectedReference.name);
       appendElement(card, "p", "inspector-filter-education-fqcn", selectedReference.fqcn);
       appendElement(card, "p", "inspector-filter-education-description", selectedReference.description);
@@ -728,7 +728,7 @@
       appendRow(card, "가능한 결과", selectedReference.outcomes);
       appendRow(card, "주의사항", selectedReference.cautions);
       appendRow(card, "분석 상태 출처", filterStatusSource(statusEntry));
-      appendRow(card, "교육 출처", selectedReference.source);
+      appendRow(card, "참고 자료", selectedReference.source);
     }
 
     function renderConnections(parent, graph, item, selection) {

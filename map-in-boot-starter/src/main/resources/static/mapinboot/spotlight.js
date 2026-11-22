@@ -83,7 +83,7 @@
   }
 
   function focusableControls(activeSession) {
-    return [activeSession.closeButton, activeSession.previousButton, activeSession.skipButton, activeSession.nextButton]
+    return [activeSession.closeButton, activeSession.previousButton, activeSession.nextButton]
       .filter((button) => button && !button.disabled && !button.hidden);
   }
 
@@ -91,7 +91,7 @@
     const button = activeSession.helpButton;
     if (!button) return;
     button.setAttribute("aria-expanded", "false");
-    button.setAttribute("aria-controls", "help-panel");
+    button.removeAttribute("aria-controls");
     button.setAttribute("aria-pressed", "false");
     button.style.zIndex = activeSession.helpZIndex || "";
   }
@@ -181,9 +181,10 @@
     const targetRadius = targetStyle && Number.parseFloat(targetStyle.borderTopLeftRadius) || 0;
     activeSession.frame.style.borderRadius = `${targetRadius + bounds.padding}px`;
 
+    activeSession.card.style.maxHeight = "";
     const cardBounds = activeSession.card.getBoundingClientRect();
     const cardWidth = Math.min(Number(cardBounds.width) || 340, viewport.width - 24);
-    const cardHeight = Math.min(Number(cardBounds.height) || 220, viewport.height - 24);
+    let cardHeight = Math.min(Number(cardBounds.height) || 220, viewport.height - 24);
     const gap = 14;
     const available = {
       below: viewport.height - bounds.bottom - gap,
@@ -199,6 +200,11 @@
       else {
         placement = Object.keys(available).sort((a, b) => available[b] - available[a])[0];
       }
+    }
+    if (available[placement] < cardHeight) {
+      // 작은 화면에서는 강조 대상과 겹치지 않도록 안내 카드를 가용 영역 안에서 스크롤
+      cardHeight = Math.max(0, Math.min(available[placement], viewport.height - 24));
+      activeSession.card.style.maxHeight = `${Math.round(cardHeight)}px`;
     }
     const desiredLeft = placement === "right" ? bounds.right + gap
       : placement === "left" ? bounds.left - cardWidth - gap
@@ -395,17 +401,15 @@
     const actions = document.createElement("div");
     actions.setAttribute("class", "spotlight-actions");
     const previousButton = makeButton("이전", "spotlight-previous");
-    const skipButton = makeButton("건너뛰기", "spotlight-skip");
     const nextButton = makeButton("다음", "spotlight-next");
     previousButton.addEventListener("click", previous);
-    skipButton.addEventListener("click", close);
     nextButton.addEventListener("click", next);
     closeButton.addEventListener("click", close);
-    actions.append(previousButton, skipButton, nextButton);
+    actions.append(previousButton, nextButton);
     card.append(heading, title, description, actions);
     root.appendChild(card);
     document.body.appendChild(root);
-    Object.assign(activeSession, { card, count, title, description, previousButton, skipButton, nextButton, closeButton });
+    Object.assign(activeSession, { card, count, title, description, previousButton, nextButton, closeButton });
   }
 
   function closeSettingsDrawer(context) {

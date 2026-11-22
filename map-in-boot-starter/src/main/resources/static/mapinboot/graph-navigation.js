@@ -7,9 +7,16 @@
   const MIN_ZOOM = 0.2;
   const MAX_ZOOM = 2.5;
   const DEFAULT_CANVAS = { width: 960, height: 540 };
+  const INTERACTIVE_CONTROL_TAGS = new Set(["button", "input", "label", "select", "summary", "textarea"]);
+  const INTERACTIVE_CONTROL_ROLES = new Set([
+    "button", "checkbox", "combobox", "gridcell", "link", "listbox", "menuitem",
+    "menuitemcheckbox", "menuitemradio", "option", "radio", "scrollbar", "searchbox",
+    "slider", "spinbutton", "switch", "tab", "textbox", "treeitem"
+  ]);
   const INTERACTIVE_TARGET_CLASSES = new Set([
     "graph-node", "graph-edge", "finding-marker", "graph-finding-section",
-    "graph-finding-section-title-target", "graph-projection-node", "graph-minimap", "map-toolbar"
+    "graph-finding-section-title-target", "graph-projection-node", "graph-minimap", "map-toolbar",
+    "request-flow-controls"
   ]);
 
   function finite(value, fallback) {
@@ -117,15 +124,31 @@
       };
     }
 
+    function interactiveControl(element) {
+      if (!element || typeof element.getAttribute !== "function") return false;
+      const tagName = typeof element.tagName === "string" ? element.tagName.toLowerCase() : "";
+      if (INTERACTIVE_CONTROL_TAGS.has(tagName)
+        || (tagName === "a" && element.getAttribute("href") !== null)
+        || INTERACTIVE_CONTROL_ROLES.has(element.getAttribute("role"))) return true;
+
+      const editable = element.getAttribute("contenteditable");
+      if (element.isContentEditable || editable === "" || editable === "true" || editable === "plaintext-only") return true;
+      return typeof element.hasAttribute === "function"
+        && element.hasAttribute("tabindex")
+        && element.getAttribute("tabindex") !== "-1";
+    }
+
     function nodeTarget(target) {
       if (!target) return false;
       if (typeof target.closest === "function"
         && (target.closest(".graph-node") || target.closest(".graph-edge") || target.closest(".finding-marker")
           || target.closest(".graph-finding-section") || target.closest(".graph-finding-section-title-target")
           || target.closest(".graph-projection-node") || target.closest(".graph-minimap")
+          || target.closest(".request-flow-controls")
           || target.closest(".map-toolbar"))) return true;
       let current = target;
       while (current) {
+        if (interactiveControl(current)) return true;
         const className = typeof current.getAttribute === "function" ? current.getAttribute("class") : "";
         if (typeof className === "string" && className.split(/\s+/).some((name) => INTERACTIVE_TARGET_CLASSES.has(name))) return true;
         current = current.parentNode;
