@@ -6,10 +6,28 @@
 - **정상 Demo**: Main `8080`, Identity `8081`, Account `8082`
 - **취약 Demo**: Main `8180`, Identity `8181`, Account `8182`
 - 각 Demo는 별도 Main·Identity·Account 앱과 JWT 키·Session·In-Memory 저장소를 사용합니다. 은행 화면과 표준 API 경로는 같습니다.
+- 취약 Demo에는 의도된 보안 결함이 포함됩니다. 가상 데이터만 사용하는 로컬 검증 환경으로 유지하고, 외부 네트워크에 공개하거나 실제 개인정보·금융 자료와 연결하지 마세요.
 
 ## 2. 사전 요구사항
 - Git
-- Docker Desktop 또는 Docker Engine + Docker Compose
+- 프로젝트 Gradle 설정에 맞는 JDK
+- Docker Desktop 또는 Docker Engine + Docker Compose (Compose 실행 시)
+
+### Gradle 실행 JAR 빌드
+
+Compose 없이 정상 또는 취약 서비스 JAR만 빌드할 때는 Repository 루트에서 실행합니다.
+
+```powershell
+# Windows PowerShell
+.\gradlew.bat :demo:normal:main-service:bootJar :demo:normal:identity-service:bootJar :demo:normal:account-service:bootJar
+.\gradlew.bat :demo:vulnerable:main-service:bootJar :demo:vulnerable:identity-service:bootJar :demo:vulnerable:account-service:bootJar
+```
+
+```bash
+# macOS 또는 Linux
+./gradlew :demo:normal:main-service:bootJar :demo:normal:identity-service:bootJar :demo:normal:account-service:bootJar
+./gradlew :demo:vulnerable:main-service:bootJar :demo:vulnerable:identity-service:bootJar :demo:vulnerable:account-service:bootJar
+```
 
 ## 3. 최초 실행 방법
 본 Demo는 멀티모듈 구조이므로 **전체 저장소를 Clone**한 뒤 루트 디렉터리에서 실행해야 합니다.
@@ -57,6 +75,7 @@ docker compose -f docker-compose.vulnerable.yml --env-file ../.env.vulnerable do
 - JWT 서명용 RSA 키(2048비트)는 각 Compose 프로젝트의 `jwt-init`을 통해 별도 Docker Named Volume에 자동 생성 및 보관됩니다.
 - 생성된 키는 해당 프로젝트 안에서만 재사용됩니다. 취약 Demo는 정상 Demo의 JWT 키 Volume을 참조하지 않습니다.
 - 은행 HTML/CSS/JS 원본은 `demo/normal/main-service/src/main/resources/static/demo/`이며, 취약 Main JAR은 빌드 시 같은 리소스를 포함합니다.
+- 각 JVM의 Map in Boot Snapshot·Graph·Evidence·Finding은 해당 서비스 구조 분석 결과로 별도 저장됩니다. Lab의 HTTP 요청이나 응답 코드는 Snapshot Finding을 생성·갱신하지 않으며, 분석 상태가 `PARTIAL`이면 그 상태를 그대로 확인해야 합니다.
 
 ## 7. Identity Session 로그인 사용 방법
 Identity의 기존 `/api/auth/login` 요청 본문과 `accessToken`, `expiresIn`, `user` 응답 계약은 유지됩니다. 브라우저에서 Session 인증을 함께 사용하려면 로그인 전에 CSRF Token을 발급받아야 합니다.
@@ -88,6 +107,7 @@ await fetch("http://localhost:8081/api/auth/login", {
 ## 8. 포트 및 CORS 설정
 
 - 기본 호스트 포트: 정상 Main/Identity/Account `8080/8081/8082`, 취약 `8180/8181/8182`
+- 문서의 포트는 사용자용 Compose 기본값입니다. 개발 검증에 사용하는 호스트 포트 재정의는 로컬 비추적 설정에서 별도로 관리합니다.
 - 컨테이너 내부 포트: Main/Identity/Account 모두 `8080/8081/8082`
 - Compose 내부 서비스 주소: `identity-service:8081`, `account-service:8082`
 - 각 환경변수 파일의 `MAIN_PORT`, `IDENTITY_PORT`, `ACCOUNT_PORT`는 해당 Stack의 호스트 공개 포트만 Override
