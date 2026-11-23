@@ -1,4 +1,4 @@
 rootProject.name = 'map-in-boot'
 
 include 'map-in-boot-core', 'map-in-boot-starter', 'map-in-boot-security'
-include 'demo:main-service', 'demo:identity-service', 'demo:account-service'
+include 'demo:normal:main-service', 'demo:normal:identity-service', 'demo:normal:account-service'
