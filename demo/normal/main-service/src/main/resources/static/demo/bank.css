@@ -1818,7 +1818,7 @@ body[data-page="login"] > .login-main {
 
 .lab-context-item .status-message,
 .lab-result-body .status-message,
-.lab-comparison-panel .status-message {
+.lab-expectation-panel .status-message {
     margin-top: 5px;
 }
 
@@ -1829,11 +1829,11 @@ body[data-page="login"] > .login-main {
 }
 
 .lab-result-body,
-.lab-comparison-panel {
+.lab-expectation-panel {
     margin-top: 14px;
 }
 
-.lab-comparison-panel {
+.lab-expectation-panel {
     padding-top: 18px;
     border-top: 1px solid var(--line);
 }

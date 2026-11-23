@@ -7,6 +7,12 @@ jar {
     enabled = false
 }
 
+tasks.named('processResources') {
+    from(rootProject.file('demo/normal/main-service/src/main/resources/static/demo')) {
+        into 'static/demo'
+    }
+}
+
 dependencies {
     implementation project(':map-in-boot-starter')
     implementation project(':map-in-boot-security')

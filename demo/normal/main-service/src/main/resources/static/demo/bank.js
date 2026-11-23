@@ -102,8 +102,7 @@
             service: "Main",
             authContext: "anonymous",
             business: "계좌 상세 업무에서 기존 요약 API의 보호 적용 여부를 비교합니다.",
-            normal: { method: "GET", path: "/api/legacy/account-summary/ACC001" },
-            vulnerable: { method: "GET", path: "/api/legacy/account-summary/ACC001" },
+            request: { method: "GET", path: "/api/legacy/account-summary/ACC001" },
             expected: { normal: [401], vulnerable: [200] },
             relatedPath: "/demo/accounts/detail.html?accountId=ACC001",
             rule: "SecurityFilterChain Matcher 적용 범위",
@@ -113,7 +112,7 @@
                 prerequisites: ["로그인하지 않은 브라우저 또는 별도 HTTP 클라이언트", "로그인·Bearer JWT 불필요"],
                 startPath: "/demo/accounts/detail.html?accountId=ACC001",
                 input: ["계좌 식별자 ACC001", "화면 표시 계좌번호와 내부 API 식별자 구분"],
-                steps: ["로그아웃 상태 또는 인증 없는 HTTP 클라이언트를 준비합니다.", "정상 API에 ACC001을 요청해 HTTP 401을 확인합니다.", "같은 ACC001을 취약 API에 요청해 HTTP 200과 계좌 요약 반환 여부를 확인합니다."],
+                steps: ["로그인하지 않은 브라우저 또는 인증 없는 HTTP 클라이언트를 준비합니다.", "현재 접속한 Demo에 ACC001 요약 조회를 한 번 요청하고 실제 응답을 기록합니다.", "같은 요청을 다른 Demo에서 별도로 실행해 두 실제 응답을 비교합니다."],
                 verification: "인증 없는 요청의 취약 경로에서 계좌 요약이 반환되면 보호 경계가 누락된 상태입니다.",
                 limitations: ["V01이 HTTP 503이면 내부 서비스 인증 설정 미완료로 분류합니다.", "503은 취약점 재현 성공으로 표시하지 않습니다."]
             }
@@ -124,8 +123,7 @@
             service: "Main",
             authContext: "anonymous",
             business: "영업점 보고서 API에 선행 Chain이 어떻게 적용되는지 비교합니다.",
-            normal: { method: "GET", path: "/api/staff/reports/summary" },
-            vulnerable: { method: "GET", path: "/api/staff/reports/summary" },
+            request: { method: "GET", path: "/api/staff/reports/summary" },
             expected: { normal: [401], vulnerable: [200] },
             relatedPath: "/demo/staff/reports.html",
             rule: "SecurityFilterChain 순서와 Matcher",
@@ -135,9 +133,9 @@
                 prerequisites: ["로그인하지 않은 브라우저 또는 별도 HTTP 클라이언트", "직원 계정 불필요"],
                 startPath: "/demo/staff/reports.html",
                 input: ["직원 보고서 요약 요청", "별도 입력값 없음"],
-                steps: ["비로그인 상태를 준비합니다.", "정상 직원 보고서 API에 요청해 HTTP 401을 확인합니다.", "같은 조건으로 취약 보고서 API를 호출해 HTTP 200과 보고서 반환 여부를 확인합니다."],
+                steps: ["로그인하지 않은 상태를 준비합니다.", "현재 접속한 Demo에서 직원 보고서 요청을 한 번 실행하고 실제 응답을 기록합니다.", "같은 요청을 다른 Demo에서도 실행해 실제 보고서 반환 여부를 확인합니다."],
                 verification: "익명 요청의 취약 경로에서 직원 보고서가 반환되면 선행 SecurityFilterChain 보호가 누락된 상태입니다.",
-                limitations: ["일반 직원 화면은 정상 API만 사용합니다.", "취약 경로의 데이터 반환을 별도 HTTP 요청으로 확인합니다."]
+                limitations: ["일반 직원 화면은 로그인한 직원의 실제 업무 조건으로 같은 표준 경로를 호출합니다."]
             }
         }],
         ["03", {
@@ -146,8 +144,7 @@
             service: "Account",
             authContext: "anonymous",
             business: "직원 고객 검색 화면의 Role 보호 여부를 익명 요청으로 비교합니다.",
-            normal: { method: "GET", path: "/api/staff/customers/search?q=CUST" },
-            vulnerable: { method: "GET", path: "/api/staff/customers/search?q=CUST" },
+            request: { method: "GET", path: "/api/staff/customers/search?q=CUST" },
             expected: { normal: [401], vulnerable: [200] },
             relatedPath: "/demo/staff/customers.html",
             rule: "Role 기반 접근 제어와 permitAll 경계",
@@ -157,9 +154,9 @@
                 prerequisites: ["로그인하지 않은 상태", "직원 Role 불필요"],
                 startPath: "/demo/staff/customers.html",
                 input: ["검색어 q=CUST"],
-                steps: ["인증 없는 HTTP 클라이언트를 준비합니다.", "q=CUST로 정상 직원 검색 API를 호출해 HTTP 401을 확인합니다.", "같은 q=CUST를 취약 검색 API에 호출해 HTTP 200과 고객 검색 결과 여부를 확인합니다."],
+                steps: ["인증 없는 HTTP 클라이언트를 준비합니다.", "현재 접속한 Demo에서 q=CUST 고객 검색 요청을 한 번 실행하고 실제 응답을 기록합니다.", "같은 요청을 다른 Demo에서도 실행해 고객 검색 결과 반환 여부를 확인합니다."],
                 verification: "익명 취약 경로에서 고객 검색 결과가 반환되면 Role 보호와 공개 경계가 잘못 적용된 상태입니다.",
-                limitations: ["일반 직원 검색 화면에서 직원으로 로그인하는 정상 업무와 익명 취약 API 요청을 혼동하지 않습니다."]
+                limitations: ["익명 요청은 로그인한 직원의 검색 화면 업무와 구분해 실행합니다."]
             }
         }],
         ["04", {
@@ -168,20 +165,19 @@
             service: "Account",
             authContext: "customer",
             business: "고객 A JWT로 고객 B의 직원 상세를 요청해 Method Security의 소유 범위를 비교합니다.",
-            normal: { method: "GET", path: "/api/staff/customers/CUST002" },
-            vulnerable: { method: "GET", path: "/api/staff/customers/CUST002" },
+            request: { method: "GET", path: "/api/staff/customers/CUST002" },
             expected: { normal: [403], vulnerable: [200] },
             relatedPath: "/demo/staff/customers.html",
             rule: "Method Security Proxy 적용과 self-invocation",
             guide: {
                 account: "customer.a",
                 role: "ROLE_CUSTOMER",
-                prerequisites: ["고객 A로 정상 로그인", "고객 A JWT 준비", "직원 계정 불필요"],
+                prerequisites: ["현재 접속한 Demo의 Identity에서 고객 A로 로그인", "고객 A JWT 준비", "다른 Demo 비교 시 해당 Identity에서 별도 로그인", "직원 계정 불필요"],
                 startPath: "/demo/staff/customers.html",
                 input: ["고객 B 식별자 CUST002"],
-                steps: ["customer.a로 로그인해 고객 A JWT를 준비합니다.", "CUST002를 대상 고객으로 지정합니다.", "정상 직원 고객 상세 API에서 HTTP 403을 확인합니다.", "같은 JWT와 CUST002로 취약 API를 호출해 HTTP 200 및 고객 B 기본정보 반환 여부를 확인합니다."],
+                steps: ["현재 접속한 Demo에서 customer.a로 로그인해 해당 Demo의 JWT를 준비합니다.", "CUST002를 대상 고객으로 지정합니다.", "고객 상세 요청을 한 번 실행하고 실제 응답을 기록합니다.", "다른 Demo에서도 해당 Identity에 로그인한 뒤 같은 요청을 실행해 고객 B 기본정보 반환 여부를 확인합니다."],
                 verification: "고객 A JWT만으로 고객 B 상세가 취약 경로에서 반환되면 객체 권한 검사가 누락된 상태입니다.",
-                limitations: ["일반 직원 상세 화면은 정상 API를 사용합니다.", "취약 요청은 Lab 실행 보조 기능 또는 별도 HTTP 클라이언트에서 수행합니다."]
+                limitations: ["Demo마다 발급 키가 다르므로 JWT를 다른 Demo에 복사하지 않습니다.", "화면의 기대값은 실제 응답이 아닙니다."]
             }
         }],
         ["05", {
@@ -190,20 +186,19 @@
             service: "Account",
             authContext: "customer",
             business: "고객 A JWT로 고객 B의 계좌를 조회해 JWT 주체와 Account Owner 비교를 확인합니다.",
-            normal: { method: "GET", path: "/api/accounts/ACC002" },
-            vulnerable: { method: "GET", path: "/api/accounts/ACC002" },
+            request: { method: "GET", path: "/api/accounts/ACC002" },
             expected: { normal: [403], vulnerable: [200] },
             relatedPath: "/demo/accounts/detail.html?accountId=ACC002",
             rule: "JWT Principal과 리소스 Owner 비교",
             guide: {
                 account: "customer.a",
                 role: "ROLE_CUSTOMER",
-                prerequisites: ["고객 A로 정상 로그인", "고객 A JWT 준비"],
+                prerequisites: ["현재 접속한 Demo의 Identity에서 고객 A로 로그인", "고객 A JWT 준비", "다른 Demo 비교 시 해당 Identity에서 별도 로그인"],
                 startPath: "/demo/accounts/detail.html?accountId=ACC002",
                 input: ["고객 B 내부 계좌 식별자 ACC002", "표시 계좌번호 0000-00-000200과 구분"],
-                steps: ["customer.a로 로그인합니다.", "일반 내 계좌 화면에서 본인 계좌가 조회되는지 확인합니다.", "고객 A JWT를 준비하고 ACC002를 대상 계좌로 지정합니다.", "정상 계좌 상세 API에서 HTTP 403을 확인합니다.", "같은 JWT로 취약 API를 호출해 HTTP 200 및 고객 B 계좌 정보 반환 여부를 확인합니다."],
+                steps: ["현재 접속한 Demo의 Identity에서 customer.a로 로그인합니다.", "ACC002를 대상 계좌로 지정합니다.", "계좌 상세 요청을 한 번 실행하고 실제 응답을 기록합니다.", "다른 Demo에서도 고객 A로 별도 로그인한 뒤 같은 요청을 실행해 고객 B 계좌 정보 반환 여부를 확인합니다."],
                 verification: "고객 A 인증정보만으로 고객 B 계좌 정보가 반환되면 객체 단위 접근제어가 누락된 상태입니다.",
-                limitations: ["일반 계좌 화면을 여는 것만으로 V05가 재현되는 것은 아닙니다.", "취약 API 요청을 별도로 수행해야 합니다."]
+                limitations: ["다른 Demo의 JWT를 복사하지 않습니다.", "화면의 기대값은 실제 응답이 아닙니다."]
             }
         }],
         ["06", {
@@ -212,20 +207,19 @@
             service: "Identity",
             authContext: "customerSession",
             business: "고객 A의 Session으로 고객 B 프로필을 요청해 Session 주체 비교를 확인합니다.",
-            normal: { method: "GET", path: "/api/session/customers/CUST002/profile" },
-            vulnerable: { method: "GET", path: "/api/session/customers/CUST002/profile" },
+            request: { method: "GET", path: "/api/session/customers/CUST002/profile" },
             expected: { normal: [403], vulnerable: [200] },
             relatedPath: "/demo/my/profile.html",
             rule: "Session Principal과 프로필 Owner 비교",
             guide: {
                 account: "customer.a",
                 role: "고객 A Session",
-                prerequisites: ["Identity에 customer.a로 정상 로그인", "고객 A의 실제 Session Cookie", "Bearer JWT로 대체하지 않음"],
+                prerequisites: ["현재 접속한 Demo의 Identity에 customer.a로 로그인", "해당 Demo의 고객 A Session Cookie", "다른 Demo 비교 시 별도 Session", "Bearer JWT로 대체하지 않음"],
                 startPath: "/demo/my/profile.html",
                 input: ["고객 B 식별자 CUST002", "Session Cookie"],
-                steps: ["customer.a로 로그인해 격리된 Session Cookie를 준비합니다.", "CUST002를 대상 고객으로 지정합니다.", "정상 Session 프로필 API를 호출해 HTTP 403을 확인합니다.", "동일한 Session Cookie로 취약 API를 호출해 HTTP 200 및 타인 프로필 반환 여부를 확인합니다."],
+                steps: ["현재 접속한 Demo의 Identity에서 customer.a로 로그인해 Session을 준비합니다.", "CUST002를 대상 고객으로 지정합니다.", "Session 프로필 요청을 한 번 실행하고 실제 응답을 기록합니다.", "다른 Demo에서도 별도 로그인해 같은 요청을 실행하고 타인 프로필 반환 여부를 확인합니다."],
                 verification: "고객 A Session으로 고객 B 프로필이 취약 경로에서 반환되면 Session 주체와 Owner 검사가 누락된 상태입니다.",
-                limitations: ["JWT와 Session Cookie를 혼합하지 않습니다.", "브라우저 Cookie Header를 임의 조작하지 않고 별도 HTTP 클라이언트 또는 격리된 브라우저 문맥을 사용합니다."]
+                limitations: ["JWT와 Session Cookie를 혼합하지 않습니다.", "브라우저 Cookie Header를 수동으로 만들지 않고 현재 Demo의 로그인 Session을 사용합니다."]
             }
         }],
         ["07", {
@@ -234,21 +228,23 @@
             service: "Account",
             authContext: "staff",
             business: "직원 A JWT와 다른 직원 식별 Header를 함께 사용해 담당 범위 검사를 비교합니다.",
-            normal: { method: "GET", path: "/api/staff/customers/CUST002/contact" },
-            vulnerable: { method: "GET", path: "/api/staff/customers/CUST002/contact" },
+            request: {
+                method: "GET",
+                path: "/api/staff/customers/CUST002/contact",
+                headers: { "X-Staff-Id": "STAFF002" }
+            },
             expected: { normal: [403], vulnerable: [200] },
             relatedPath: "/demo/staff/customer.html?id=CUST002",
             rule: "JWT 직원 주체와 담당 Assignment 비교",
-            forgedStaffId: "STAFF002",
             guide: {
                 account: "staff.a",
                 role: "ROLE_STAFF",
-                prerequisites: ["직원 A로 정상 로그인", "직원 A JWT 준비", "취약 요청에만 X-Staff-Id Header 사용"],
+                prerequisites: ["현재 접속한 Demo의 Identity에서 직원 A로 로그인", "직원 A JWT 준비", "다른 Demo 비교 시 해당 Identity에서 별도 로그인", "양쪽 요청에 X-Staff-Id Header 사용"],
                 startPath: "/demo/staff/customer.html?id=CUST002",
                 input: ["담당하지 않는 고객 CUST002", "X-Staff-Id: STAFF002"],
-                steps: ["staff.a로 로그인해 직원 A JWT를 준비합니다.", "담당하지 않는 고객 CUST002를 선택합니다.", "정상 연락처 API에서 HTTP 403을 확인합니다.", "동일한 직원 A JWT를 유지하고 취약 요청에만 X-Staff-Id: STAFF002를 추가합니다.", "취약 API에서 HTTP 200 및 고객 B 연락처 반환 여부를 확인합니다."],
+                steps: ["현재 접속한 Demo에서 staff.a로 로그인해 해당 Demo의 JWT를 준비합니다.", "담당하지 않는 고객 CUST002를 선택합니다.", "직원 JWT와 X-Staff-Id: STAFF002를 포함한 요청을 한 번 실행하고 실제 응답을 기록합니다.", "다른 Demo에서도 직원 A로 별도 로그인해 같은 요청을 실행하고 고객 B 연락처 반환 여부를 확인합니다."],
                 verification: "JWT 직원 주체와 다른 직원 ID Header를 권한 근거로 신뢰해 미담당 고객 연락처가 반환되면 Header 기반 권한 검증이 취약한 상태입니다.",
-                limitations: ["일반 영업점 업무 화면에는 X-Staff-Id Header를 사용하지 않습니다.", "Header 값은 취약 요청 비교를 위한 입력입니다."]
+                limitations: ["두 실행 환경에 같은 Header를 보냅니다.", "다른 Demo의 JWT를 복사하지 않습니다."]
             }
         }],
         ["08", {
@@ -256,20 +252,19 @@
             title: "인증 갱신 Filter 순서",
             service: "Identity",
             authContext: "customer",
-            business: "같은 고객 JWT로 정상·취약 Refresh 경로의 실제 응답 차이를 확인합니다.",
-            normal: { method: "POST", path: "/api/auth/refresh" },
-            vulnerable: { method: "POST", path: "/api/auth/refresh" },
+            business: "각 실행 환경에서 로그인해 발급받은 유효 고객 JWT로 Refresh Filter 적용 결과를 확인합니다.",
+            request: { method: "POST", path: "/api/auth/refresh" },
             expected: { normal: [200], vulnerable: [401] },
             relatedPath: "/demo/my/security.html",
             rule: "RefreshTokenFilter와 Bearer 인증 Filter 순서",
             guide: {
                 account: "customer.a",
                 role: "ROLE_CUSTOMER",
-                prerequisites: ["고객 A로 정상 로그인", "유효한 JWT 준비", "JWT 원문은 화면에 출력하지 않음"],
+                prerequisites: ["현재 접속한 Demo에서 고객 A로 로그인", "해당 Demo가 발급한 유효 JWT", "다른 Demo 비교 시 별도 로그인", "JWT 원문은 화면에 출력하지 않음"],
                 startPath: "/demo/my/security.html",
                 input: ["동일한 유효 고객 JWT", "Refresh 요청"],
-                steps: ["customer.a로 로그인합니다.", "유효한 JWT를 별도 안전한 검증 문맥에 준비합니다.", "정상 Refresh API를 호출해 HTTP 200을 확인합니다.", "같은 JWT로 취약 Refresh API를 호출해 HTTP 401을 확인합니다.", "두 경로에 적용되는 RefreshTokenFilter와 Bearer 인증 Filter 순서 차이를 확인합니다."],
-                verification: "동일한 유효 JWT에서 정상·취약 Refresh 경로의 응답이 달라지면 Filter 적용 순서와 경로 보호 차이가 재현된 것입니다.",
+                steps: ["현재 접속한 Demo에서 customer.a로 로그인합니다.", "그 Demo에서 발급한 JWT로 Refresh 요청을 한 번 실행하고 실제 응답을 기록합니다.", "다른 Demo에서도 별도 로그인해 같은 요청을 실행하고 응답을 비교합니다.", "각 실행 환경의 RefreshTokenFilter와 Bearer 인증 Filter 순서를 별도로 확인합니다."],
+                verification: "각 실행 환경에서 발급된 유효 JWT의 실제 응답을 기록한 뒤 Filter 적용 순서와 함께 판단합니다.",
                 limitations: ["취약 응답이 200이어야만 취약점인 것은 아닙니다.", "JWT 원문·Refresh Token을 화면에 표시하거나 저장하지 않습니다."]
             }
         }],
@@ -278,23 +273,25 @@
             title: "본인확인 전 대출 신청",
             service: "Account",
             authContext: "unverifiedCustomer",
-            business: "본인확인 전 고객 JWT로 같은 대출 신청을 정상·취약 경로에 각각 요청합니다.",
-            normal: { method: "POST", path: "/api/loans/applications" },
-            vulnerable: { method: "POST", path: "/api/loans/applications" },
+            business: "본인확인 전 고객 JWT로 현재 실행 환경의 표준 대출 신청 요청을 실행합니다.",
+            request: {
+                method: "POST",
+                path: "/api/loans/applications",
+                body: { productId: "LOAN-BASIC", amount: 1000000, purpose: "LIVING_COST" }
+            },
             expected: { normal: [403], vulnerable: [201] },
             relatedPath: "/demo/loans/apply.html?productId=LOAN-BASIC",
             rule: "JWT identity_verified 상태 검사",
             sideEffect: true,
-            body: { productId: "LOAN-BASIC", amount: 1000000, purpose: "LIVING_COST" },
             guide: {
                 account: "customer.a (identityVerified=false)",
                 role: "ROLE_CUSTOMER",
                 prerequisites: ["고객 A로 로그인", "identityVerified=false인 실제 고객 JWT", "LOAN-BASIC 판매 상품"],
                 startPath: "/demo/loans/apply.html?productId=LOAN-BASIC",
                 input: ["productId=LOAN-BASIC", "amount=1000000", "purpose=LIVING_COST"],
-                steps: ["customer.a로 로그인하고 Identity 상태에서 본인확인 전 상태를 확인합니다.", "LOAN-BASIC과 신청금액 1000000, 목적 LIVING_COST를 준비합니다.", "정상 N09에 POST해 HTTP 403과 본인확인 필요 오류를 확인합니다.", "취약 V09는 명시적으로 확인한 경우에만 같은 Body로 실행합니다.", "V09가 HTTP 201과 신청번호를 반환하면 내 대출 목록에서 실제 저장 결과를 확인합니다."],
+                steps: ["현재 접속한 Demo의 Identity에서 본인확인 전 customer.a로 로그인합니다.", "LOAN-BASIC과 신청금액 1000000, 목적 LIVING_COST를 준비합니다.", "확인창의 실제 저장 경고를 읽고 직접 동의한 경우에만 현재 Demo의 대출 신청을 한 번 실행합니다.", "HTTP 201과 신청번호가 반환되면 내 대출 목록에서 실제 저장 여부를 확인합니다.", "다른 Demo 비교는 해당 Identity에서 별도 로그인한 뒤 별도 신청으로 수행합니다."],
                 verification: "본인확인 전 고객의 취약 POST가 HTTP 201로 실제 대출 신청을 저장하면 identity_verified 보호가 누락된 상태입니다.",
-                limitations: ["V09는 실제 대출 데이터를 변경할 수 있습니다.", "화면 진입 시 자동 POST·중복 POST·네트워크 불명확 상태의 자동 재요청을 금지합니다.", "이미 OTP를 완료한 고객의 JWT를 미확인 상태로 취급하거나 Claim을 조작하지 않습니다."]
+                limitations: ["모든 실행 환경에서 실제 대출 데이터가 변경될 수 있습니다.", "화면 진입 시 자동 POST·중복 POST·네트워크 불명확 상태의 자동 재요청을 금지합니다.", "이미 OTP를 완료한 고객의 JWT를 미확인 상태로 취급하거나 Claim을 조작하지 않습니다."]
             }
         }],
         ["10", {
@@ -303,19 +300,18 @@
             service: "Main",
             authContext: "customer",
             business: "Main 포털을 통해 고객 A가 고객 B 계좌 요약을 요청할 때 최종 Owner 검사를 비교합니다.",
-            normal: { method: "GET", path: "/api/portal/accounts/ACC002/summary" },
-            vulnerable: { method: "GET", path: "/api/portal/accounts/ACC002/summary" },
+            request: { method: "GET", path: "/api/portal/accounts/ACC002/summary" },
             expected: { normal: [403], vulnerable: [200] },
             relatedPath: "/demo/accounts/detail.html?accountId=ACC002",
             rule: "Main 사용자 주체와 Account 내부 Owner 비교",
             guide: {
                 account: "customer.a",
                 role: "ROLE_CUSTOMER",
-                prerequisites: ["고객 A로 정상 로그인", "고객 A JWT 준비", "Main·Account 서비스가 모두 실행 중"],
+                prerequisites: ["현재 접속한 Demo에서 고객 A로 로그인", "해당 Demo의 고객 A JWT", "Main·Account 서비스가 모두 실행 중", "다른 Demo 비교 시 별도 로그인"],
                 startPath: "/demo/accounts/detail.html?accountId=ACC002",
                 input: ["고객 B 내부 계좌 식별자 ACC002", "Main Portal 경유 요청"],
-                steps: ["customer.a로 로그인해 고객 A JWT를 준비합니다.", "고객 B 계좌 ACC002를 대상으로 지정합니다.", "Main 정상 Portal API를 호출해 HTTP 403을 확인합니다.", "동일한 JWT로 Main 취약 Portal API를 호출해 HTTP 200 및 타인 계좌 요약 반환 여부를 확인합니다.", "Main에서 Account로 전달되는 내부 요청 경계와 최종 Owner 검사를 함께 확인합니다."],
-                verification: "Main Portal 경유 취약 경로에서 고객 B 계좌 요약이 반환되면 최종 Owner 검사가 누락된 상태입니다.",
+                steps: ["현재 접속한 Demo의 Identity에서 customer.a로 로그인합니다.", "고객 B 계좌 ACC002를 대상으로 지정합니다.", "Main Portal 요청을 한 번 실행하고 실제 응답을 기록합니다.", "다른 Demo에서도 고객 A로 별도 로그인해 같은 요청을 실행하고 타인 계좌 요약 반환 여부를 확인합니다.", "각 Main에서 Account로 전달되는 내부 요청과 최종 Owner 검사를 확인합니다."],
+                verification: "Main Portal의 실제 응답과 Account 소유자 검사를 함께 확인합니다.",
                 limitations: ["브라우저에서 Account /internal API를 직접 호출하지 않습니다.", "내부 서비스 인증 설정이 빠져 503이면 환경 문제로 분류하며 취약점 성공으로 표시하지 않습니다."]
             }
         }]
@@ -4267,8 +4263,7 @@
         const contextKey = labContextKey(scenario);
         const context = contextKey ? state.labContexts[contextKey] : null;
         return {
-            normal: null,
-            vulnerable: null,
+            result: null,
             running: false,
             status: "NOT_RUN",
             contextKey,
@@ -4336,13 +4331,13 @@
             return;
         }
         queryAll("[data-lab-result-body]", root).forEach((panel) => panel.replaceChildren());
-        queryAll("[data-lab-comparison]", root).forEach((panel) => {
+        queryAll("[data-lab-expectation]", root).forEach((panel) => {
             panel.replaceChildren();
-            showStatus(panel, "is-empty", "비교 대기", "인증 문맥이 교체되어 이전 비교 결과를 폐기했습니다.");
+            showStatus(panel, "is-empty", "기대 응답", "인증 문맥이 교체되어 이전 실행 결과를 폐기했습니다.");
         });
         const stateElement = query("[data-lab-run-state]", root);
         if (stateElement) {
-            showStatus(stateElement, "is-empty", "실행 대기", "인증 문맥이 교체되어 이전 결과를 폐기했습니다. 정상·취약 경로를 다시 실행해 주세요.");
+            showStatus(stateElement, "is-empty", "실행 대기", "인증 문맥이 교체되어 이전 결과를 폐기했습니다. 현재 Demo에서 같은 요청을 다시 실행해 주세요.");
         }
     }
 
@@ -4456,7 +4451,7 @@
             : "Lab은 인증을 우회하거나 Token을 생성하지 않습니다. 외부에서 발급한 실제 테스트 Token만 일시적으로 준비합니다.");
         if (requiredKey === "customerSession") {
             const status = document.createElement("div");
-            showStatus(status, "is-empty", "Session 문맥은 자동 준비하지 않습니다", "Cookie를 복사하거나 수동 Cookie Header를 만들지 않습니다. 별도 HTTP 클라이언트에서 고객 A Session으로 N06/V06을 실행한 뒤 실제 결과를 기록해 주세요.");
+            showStatus(status, "is-empty", "고객 A Session 확인 필요", "현재 Demo의 Identity에 고객 A로 로그인한 브라우저 Session Cookie를 사용합니다. 다른 Demo 비교는 별도 브라우저 프로필에서 로그인해 실행하세요.");
             section.append(status);
         } else if (requiredKey === "anonymous") {
             const status = document.createElement("div");
@@ -4506,13 +4501,10 @@
         return rawBody ? "JSON이 아닌 응답 본문입니다." : "응답 본문이 없습니다.";
     }
 
-    async function executeLabRequest(scenario, variant) {
-        const endpoint = scenario[variant];
+    async function executeLabRequest(scenario) {
+        const endpoint = scenario.request;
         const context = labContextFor(scenario);
-        if (scenario.authContext === "customerSession") {
-            return { blocked: true, requestStarted: false, summary: "Session Cookie를 자동 구성하지 않으므로 별도 HTTP 클라이언트 검증이 필요합니다." };
-        }
-        if (scenario.authContext !== "anonymous" && !context) {
+        if (scenario.authContext !== "anonymous" && scenario.authContext !== "customerSession" && !context) {
             return { blocked: true, requestStarted: false, summary: "필요한 실제 인증 문맥을 먼저 준비해 주세요." };
         }
         const origin = labServiceOrigin(scenario.service);
@@ -4520,21 +4512,19 @@
             return { networkError: true, requestStarted: false, summary: "서비스 주소를 계산하지 못했습니다." };
         }
         const headers = new Headers({ Accept: "application/json" });
+        Object.entries(endpoint.headers || {}).forEach(([name, value]) => headers.set(name, value));
         if (context?.token) {
             headers.set("Authorization", `Bearer ${context.token}`);
-        }
-        if (variant === "vulnerable" && scenario.forgedStaffId) {
-            headers.set("X-Staff-Id", scenario.forgedStaffId);
         }
         const options = {
             method: endpoint.method,
             headers,
-            credentials: "omit",
+            credentials: scenario.authContext === "customerSession" ? "include" : "omit",
             cache: "no-store"
         };
-        if (scenario.body) {
+        if (endpoint.body) {
             headers.set("Content-Type", "application/json");
-            options.body = JSON.stringify(scenario.body);
+            options.body = JSON.stringify(endpoint.body);
         }
         try {
             const response = await fetch(`${origin}${endpoint.path}`, options);
@@ -4571,114 +4561,83 @@
         return status === null || status === undefined ? "응답 없음" : String(status);
     }
 
-    function labExpectedResult(scenario, variant, result) {
-        return !result?.blocked && !result?.networkError
-            && scenario.expected[variant].includes(result.status);
-    }
-
-    function updateLabRunStatus(scenario, run) {
+    function updateLabRunStatus(run) {
         if (run.running) {
             run.status = "RUNNING";
             return;
         }
-        if (run.normal && run.vulnerable) {
-            if (run.normal.blocked || run.vulnerable.blocked) {
-                run.status = "BLOCKED";
-            } else if (run.normal.networkError || run.vulnerable.networkError
-                    || isLabServiceError(run.normal.status) || isLabServiceError(run.vulnerable.status)) {
-                run.status = "ERROR";
-            } else if (labExpectedResult(scenario, "normal", run.normal)
-                    && labExpectedResult(scenario, "vulnerable", run.vulnerable)) {
-                run.status = "PASSED";
-            } else {
-                run.status = "MISMATCH";
-            }
-            return;
-        }
-        const latest = run.normal || run.vulnerable;
-        run.status = latest?.blocked
+        const result = run.result;
+        run.status = result?.blocked
             ? "BLOCKED"
-            : latest?.networkError || isLabServiceError(latest?.status)
+            : result?.networkError || isLabServiceError(result?.status)
                 ? "ERROR"
-                : latest
-                    ? "READY"
+                : result
+                    ? "RESPONSE_RECEIVED"
                     : "NOT_RUN";
     }
 
-    function renderLabResult(panel, scenario, variant, result) {
+    function renderLabResult(panel, scenario, result) {
         panel.replaceChildren();
-        const expected = scenario.expected[variant].join(" 또는 ");
         const status = document.createElement("div");
         if (result.blocked) {
-            showStatus(status, "is-empty", "실행 차단", result.summary);
+            showStatus(status, "is-empty", "요청 실행 차단", result.summary);
         } else if (result.networkError) {
             showStatus(status, "is-server-error", "실제 HTTP 결과 미확정", result.summary);
         } else if (isLabServiceError(result.status)) {
             showStatus(status, "is-server-error", `HTTP ${result.status} 서비스 오류`, result.summary);
-        } else if (labExpectedResult(scenario, variant, result)) {
-            showStatus(status, "is-success", `HTTP ${result.status} 응답`, result.summary);
         } else {
-            showStatus(status, "is-error", `예상과 다른 HTTP ${result.status} 응답`, result.summary);
+            showStatus(status, "is-empty", `HTTP ${result.status} 응답 수신`, result.summary);
         }
         panel.append(status);
         appendInfoRows(panel, [
-            ["기대 상태", expected],
-            ["실제 상태", labStatusLabel(result.status)],
+            ["실제 요청", `${scenario.request.method} ${scenario.request.path}`],
+            ["현재 응답", labStatusLabel(result.status)],
             ["응답 요약", result.summary]
         ]);
     }
 
-    function renderLabComparison(panel, scenario, run) {
+    function renderLabExpectations(panel, scenario, run) {
         panel.replaceChildren();
-        if (!run.normal || !run.vulnerable) {
-            showStatus(panel, "is-empty", "비교 대기", "정상·취약 요청을 모두 실행하면 실제 HTTP 결과를 비교합니다.");
-            return;
-        }
-        if (run.status === "BLOCKED") {
-            showStatus(panel, "is-empty", "비교 차단", "필요한 인증 문맥 또는 Session 실행 조건이 준비되지 않았습니다.");
+        if (!run.result) {
+            showStatus(panel, "is-empty", "기대 HTTP 응답", "정상 환경과 취약 환경의 기대값입니다. 현재 실행 환경을 판별하거나 실제 응답으로 단정하지 않습니다.");
+        } else if (run.status === "BLOCKED") {
+            showStatus(panel, "is-empty", "요청을 보내지 않았습니다", "필요한 인증 문맥 또는 Session 조건을 먼저 준비해 주세요.");
         } else if (run.status === "ERROR") {
-            const hasServiceError = isLabServiceError(run.normal.status) || isLabServiceError(run.vulnerable.status);
-            showStatus(panel, "is-server-error", "비교 미완료", hasServiceError
-                ? "내부 서비스 설정 또는 실행 환경을 확인한 뒤 다시 검증해 주세요. 보안 검증 성공으로 처리하지 않습니다."
-                : "네트워크 결과가 확정되지 않아 안전하게 성공 처리하지 않습니다.");
-        } else if (run.status === "PASSED") {
-            showStatus(panel, "is-success", "기대 상태 비교 완료", "정상·취약 경로의 실제 응답이 시나리오 계약과 일치합니다.");
+            showStatus(panel, "is-server-error", "실제 응답 미확정", "네트워크 또는 서비스 오류를 확인해 주세요. 보안 검증 성공으로 처리하지 않습니다.");
         } else {
-            showStatus(panel, "is-error", "기대 상태와 불일치", "실제 Backend 응답을 확인하고 사전조건과 실행 환경을 점검해 주세요.");
+            showStatus(panel, "is-empty", "환경별 기대값", "같은 요청을 다른 Demo에서도 별도로 실행해 실제 응답을 기록합니다.");
         }
         appendInfoRows(panel, [
-            ["정상 경로", `${labStatusLabel(run.normal.status)} · ${run.normal.summary}`],
-            ["취약 경로", `${labStatusLabel(run.vulnerable.status)} · ${run.vulnerable.summary}`],
-            ["비교 상태", run.status]
+            ["정상 환경", scenario.expected.normal.join(" 또는 ")],
+            ["취약 환경", scenario.expected.vulnerable.join(" 또는 ")]
         ]);
     }
 
-    async function runLabVariant(scenario, variant, root, requestId, button, panel, comparisonPanel, stateElement) {
+    async function runLabRequest(scenario, root, requestId, button, panel, expectationPanel, stateElement) {
         const run = currentLabRun(scenario);
         if (run.running) {
             return;
         }
         const context = labContextFor(scenario);
-        if (variant === "vulnerable" && scenario.sideEffect
-                && hasLabSubmission(scenario, context?.userId)) {
+        if (scenario.sideEffect && hasLabSubmission(scenario, context?.userId)) {
             showStatus(stateElement, "is-empty", "재실행 차단", "같은 사용자의 상태 변경 요청이 이미 실행되었습니다. 내 대출 목록에서 먼저 결과를 확인해 주세요.");
             return;
         }
-        if (scenario.sideEffect && run[variant] && !run[variant].blocked) {
-            showStatus(stateElement, "is-empty", "재실행 차단", "실제 저장 결과가 확정되지 않았을 수 있어 같은 취약 POST를 자동 또는 반복 실행하지 않습니다. 내 대출 목록에서 먼저 확인해 주세요.");
+        if (scenario.sideEffect && run.result && !run.result.blocked) {
+            showStatus(stateElement, "is-empty", "재실행 차단", "실제 저장 결과가 확정되지 않았을 수 있어 같은 POST를 다시 실행하지 않습니다. 내 대출 목록에서 먼저 확인해 주세요.");
             return;
         }
-        if (variant === "vulnerable" && scenario.sideEffect
-                && !window.confirm("취약 경로는 실제 대출 신청을 저장할 수 있습니다. 중복 신청 가능성을 이해했고 이 작업을 직접 실행하시겠습니까?")) {
+        if (scenario.sideEffect
+                && !window.confirm("현재 접속한 Demo에서 실제 대출 신청을 저장할 수 있습니다. 중복 신청 가능성을 이해했고 이 작업을 직접 실행하시겠습니까?")) {
             return;
         }
         run.running = true;
-        updateLabRunStatus(scenario, run);
+        updateLabRunStatus(run);
         button.disabled = true;
-        showStatus(stateElement, "is-loading", `${variant === "normal" ? "정상" : "취약"} 경로 실행 중`, "실제 Backend 응답을 기다리는 중입니다.");
+        showStatus(stateElement, "is-loading", "요청 실행 중", "현재 접속한 Demo의 실제 Backend 응답을 기다리는 중입니다.");
         let result;
         try {
-            result = await executeLabRequest(scenario, variant);
+            result = await executeLabRequest(scenario);
         } catch {
             result = {
                 status: null,
@@ -4691,7 +4650,7 @@
         }
         result.contextKey = run.contextKey;
         result.contextGeneration = run.contextGeneration;
-        if (variant === "vulnerable" && scenario.sideEffect) {
+        if (scenario.sideEffect) {
             recordLabSubmission(scenario, run, result);
         }
         if (state.labRuns.get(scenario.id) !== run || !labRunMatchesContext(scenario, run)) {
@@ -4700,13 +4659,13 @@
             }
             return;
         }
-        run[variant] = result;
+        run.result = result;
         run.running = false;
-        updateLabRunStatus(scenario, run);
+        updateLabRunStatus(run);
         if (isCurrentScreen(root, requestId)) {
-            renderLabResult(panel, scenario, variant, result);
-            renderLabComparison(comparisonPanel, scenario, run);
-            showStatus(stateElement, run.status === "PASSED" ? "is-success" : run.status === "ERROR" ? "is-server-error" : "is-auth", `현재 실행 상태 ${run.status}`, "정상·취약 결과를 각각 확인하세요.");
+            renderLabResult(panel, scenario, result);
+            renderLabExpectations(expectationPanel, scenario, run);
+            showStatus(stateElement, run.status === "ERROR" ? "is-server-error" : "is-empty", "현재 Demo 응답 확인", "기대값은 환경별 기준으로 표시되며 실제 응답은 위에 기록됩니다.");
         }
         if (button.isConnected) {
             button.disabled = false;
@@ -4754,14 +4713,14 @@
         appendLabGuideList(section, "실제 재현 절차", guide.steps, true);
         const comparison = document.createElement("div");
         comparison.className = "lab-guide-section";
-        appendText(comparison, "h3", "정상·취약 응답 비교");
+        appendText(comparison, "h3", "환경별 기대 응답");
         appendInfoRows(comparison, [
-            ["정상 요청", `${scenario.normal.method} ${scenario.normal.path}`],
-            ["취약 요청", `${scenario.vulnerable.method} ${scenario.vulnerable.path}`],
-            ["예상 HTTP 응답", `정상 ${scenario.expected.normal.join("/")} · 취약 ${scenario.expected.vulnerable.join("/")}`]
+            ["표준 요청", `${scenario.request.method} ${scenario.request.path}`],
+            ["정상 환경", scenario.expected.normal.join("/")],
+            ["취약 환경", scenario.expected.vulnerable.join("/")]
         ]);
-        appendText(comparison, "p", "일반 금융 화면은 정상 API를 사용합니다. 취약 요청은 Lab 실행 보조 기능 또는 별도 HTTP 클라이언트에서 해당 Endpoint를 직접 호출해야 합니다.", "lab-guide-note");
-        appendText(comparison, "p", "위 기대값은 실제 실행 결과가 아닙니다. 요청을 실행한 경우에만 실제 HTTP Status와 응답을 별도로 확인합니다.", "lab-guide-note");
+        appendText(comparison, "p", "현재 접속한 Demo에 한 번 요청합니다. 다른 Demo에서 같은 요청을 별도로 실행해 실제 응답을 비교합니다.", "lab-guide-note");
+        appendText(comparison, "p", "기대값은 환경별 기준이며 현재 실행 환경을 판별하거나 실제 응답으로 단정하지 않습니다.", "lab-guide-note");
         section.append(comparison);
         appendLabGuideList(section, "취약점 확인 기준", [guide.verification]);
         appendLabGuideList(section, "실행 환경 확인", guide.limitations);
@@ -4774,8 +4733,8 @@
         const intro = document.createElement("section");
         intro.className = "customer-finance-card lab-intro-card";
         appendText(intro, "h2", "공개 시나리오 안내");
-        appendText(intro, "p", "N/V 시나리오의 요청 계약과 기대 상태를 공개합니다. 실제 Backend 권한 검사를 대신하지 않으며, 토큰·Session Cookie·응답 본문을 화면에 노출하지 않습니다.");
-        appendText(intro, "p", "N09/V09는 실제 대출 신청 저장을 발생시킬 수 있어 취약 요청 직전에 별도 확인을 요구합니다.");
+        appendText(intro, "p", "시나리오의 표준 요청과 환경별 기대 상태를 표시합니다. 토큰·Session Cookie·응답 본문은 화면에 노출하지 않습니다.");
+        appendText(intro, "p", "대출 신청 요청은 실제 저장을 일으킬 수 있어 실행 전에 확인을 요구합니다.");
         root.append(intro);
         const section = document.createElement("section");
         section.className = "customer-finance-card lab-scenario-section";
@@ -4820,10 +4779,10 @@
         appendInfoRows(overview, [
             ["서비스", scenario.service],
             ["인증 문맥", scenario.authContext === "anonymous" ? "익명" : scenario.authContext === "customerSession" ? "고객 A Session" : labContextRules[scenario.authContext].label],
-            ["정상 API", `${scenario.normal.method} ${scenario.normal.path}`],
-            ["취약 API", `${scenario.vulnerable.method} ${scenario.vulnerable.path}`],
-            ["기대 상태", `${scenario.expected.normal.join("/")} / ${scenario.expected.vulnerable.join("/")}`],
-            ["부작용", scenario.sideEffect ? "취약 경로가 실제 신청을 저장할 수 있음" : "조회 또는 인증 응답 비교"]
+            ["표준 요청", `${scenario.request.method} ${scenario.request.path}`],
+            ["정상 환경 기대", scenario.expected.normal.join("/")],
+            ["취약 환경 기대", scenario.expected.vulnerable.join("/")],
+            ["부작용", scenario.sideEffect ? "실제 대출 신청을 저장할 수 있음" : "조회 또는 인증 응답"]
         ]);
         const relatedActions = document.createElement("div");
         relatedActions.className = "page-actions";
@@ -4845,56 +4804,40 @@
 
         const actionSection = document.createElement("section");
         actionSection.className = "customer-finance-card lab-run-card";
-        appendText(actionSection, "h2", "실제 요청 실행");
+        appendText(actionSection, "h2", "표준 요청 실행");
         const stateElement = document.createElement("div");
         stateElement.dataset.labRunState = "true";
-        showStatus(stateElement, "is-empty", "실행 대기", "정상·취약 버튼을 각각 눌러 실제 응답을 확인하세요.");
+        showStatus(stateElement, "is-empty", "실행 대기", "현재 접속한 Demo에 표준 요청 한 번을 보냅니다.");
         actionSection.append(stateElement);
         const actionGrid = document.createElement("div");
         actionGrid.className = "lab-run-stack";
-        const normalPanel = document.createElement("article");
-        normalPanel.className = "lab-result-panel";
-        appendText(normalPanel, "h3", "정상 API");
-        const normalButton = document.createElement("button");
-        normalButton.className = "button button-primary";
-        normalButton.type = "button";
-        normalButton.textContent = "정상 경로 실행";
-        normalPanel.append(normalButton);
-        const normalResult = document.createElement("div");
-        normalResult.className = "lab-result-body";
-        normalResult.dataset.labResultBody = "true";
-        normalPanel.append(normalResult);
-        const vulnerablePanel = document.createElement("article");
-        vulnerablePanel.className = "lab-result-panel";
-        appendText(vulnerablePanel, "h3", "취약 API");
-        const vulnerableButton = document.createElement("button");
-        vulnerableButton.className = "button button-secondary";
-        vulnerableButton.type = "button";
-        vulnerableButton.textContent = "취약 경로 실행";
-        vulnerablePanel.append(vulnerableButton);
-        const vulnerableResult = document.createElement("div");
-        vulnerableResult.className = "lab-result-body";
-        vulnerableResult.dataset.labResultBody = "true";
-        vulnerablePanel.append(vulnerableResult);
-        actionGrid.append(normalPanel, vulnerablePanel);
+        const resultPanel = document.createElement("article");
+        resultPanel.className = "lab-result-panel";
+        appendText(resultPanel, "h3", "현재 접속한 Demo");
+        const requestButton = document.createElement("button");
+        requestButton.className = "button button-primary";
+        requestButton.type = "button";
+        requestButton.textContent = "요청 실행";
+        resultPanel.append(requestButton);
+        const resultBody = document.createElement("div");
+        resultBody.className = "lab-result-body";
+        resultBody.dataset.labResultBody = "true";
+        resultPanel.append(resultBody);
+        actionGrid.append(resultPanel);
         actionSection.append(actionGrid);
-        const comparison = document.createElement("div");
-        comparison.className = "lab-comparison-panel";
-        actionSection.append(comparison);
+        const expectations = document.createElement("div");
+        expectations.className = "lab-expectation-panel";
+        expectations.dataset.labExpectation = "true";
+        actionSection.append(expectations);
         root.append(actionSection);
 
         const run = currentLabRun(scenario);
-        normalButton.addEventListener("click", () => runLabVariant(scenario, "normal", root, requestId, normalButton, normalResult, comparison, stateElement));
-        vulnerableButton.addEventListener("click", () => runLabVariant(scenario, "vulnerable", root, requestId, vulnerableButton, vulnerableResult, comparison, stateElement));
-        if (run.normal) {
-            renderLabResult(normalResult, scenario, "normal", run.normal);
+        requestButton.addEventListener("click", () => runLabRequest(scenario, root, requestId, requestButton, resultBody, expectations, stateElement));
+        if (run.result) {
+            renderLabResult(resultBody, scenario, run.result);
         }
-        if (run.vulnerable) {
-            renderLabResult(vulnerableResult, scenario, "vulnerable", run.vulnerable);
-        }
-        updateLabRunStatus(scenario, run);
-        comparison.dataset.labComparison = "true";
-        renderLabComparison(comparison, scenario, run);
+        updateLabRunStatus(run);
+        renderLabExpectations(expectations, scenario, run);
         renderLabSdkPanel(root, scenario);
     }
 
