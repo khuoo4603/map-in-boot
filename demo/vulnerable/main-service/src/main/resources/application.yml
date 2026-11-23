@@ -1,0 +1,20 @@
+server:
+  port: ${MAIN_PORT:8080}
+
+spring:
+  application:
+    name: main-service
+
+demo:
+  jwt:
+    public-key-path: ${JWT_PUBLIC_KEY_PATH:}
+    issuer: ${JWT_ISSUER:demo-identity}
+    audience: ${JWT_AUDIENCE:demo-services}
+
+
+app:
+  services:
+    identity-url: ${IDENTITY_BASE_URL:http://localhost:8081}
+    account-url: ${ACCOUNT_BASE_URL:http://localhost:8082}
+    account-service-username: ${DEMO_INTERNAL_SERVICE_USERNAME:}
+    account-service-secret: ${DEMO_INTERNAL_SERVICE_SECRET:}
