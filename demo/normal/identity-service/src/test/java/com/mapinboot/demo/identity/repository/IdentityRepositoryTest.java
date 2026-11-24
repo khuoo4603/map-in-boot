@@ -1,7 +1,6 @@
 package com.mapinboot.demo.identity.repository;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.mapinboot.demo.identity.model.DemoIdentityState;
 import com.mapinboot.demo.identity.model.DemoUser;
@@ -19,12 +18,12 @@ import org.springframework.security.crypto.password.PasswordEncoder;
 class IdentityRepositoryTest {
 
     private final PasswordEncoder passwordEncoder = new BCryptPasswordEncoder();
-    private final String rawPassword = "testPassword123!";
+    private final String rawPassword = "demotest";
 
     @Test
     @DisplayName("사용자 6개 계정 구성 및 BCrypt 해시 저장 검증")
     void testUserFixturesAndBcryptHash() {
-        InMemoryUserRepository userRepository = new InMemoryUserRepository(passwordEncoder, rawPassword);
+        InMemoryUserRepository userRepository = new InMemoryUserRepository(passwordEncoder);
         userRepository.initFixtures();
 
         assertThat(userRepository.findAll()).hasSize(6);
@@ -58,15 +57,10 @@ class IdentityRepositoryTest {
         // BCrypt 해시 저장 및 원문 일치 검증
         assertThat(customerA.getPasswordHash()).isNotEqualTo(rawPassword);
         assertThat(passwordEncoder.matches(rawPassword, customerA.getPasswordHash())).isTrue();
-    }
-
-    @Test
-    @DisplayName("환경변수 누락 시 안전한 실패 처리 검증")
-    void testMissingPasswordEnvironmentVariable() {
-        InMemoryUserRepository missingRepo = new InMemoryUserRepository(passwordEncoder, null);
-        assertThatThrownBy(missingRepo::initFixtures)
-                .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("DEMO_TEST_PASSWORD");
+        userRepository.findAll().forEach(user -> {
+            assertThat(user.getPasswordHash()).isNotEqualTo(rawPassword);
+            assertThat(passwordEncoder.matches(rawPassword, user.getPasswordHash())).isTrue();
+        });
     }
 
     @Test

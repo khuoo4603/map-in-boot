@@ -8,7 +8,6 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Repository;
 
@@ -18,16 +17,14 @@ import org.springframework.stereotype.Repository;
 @Repository
 public class InMemoryUserRepository {
 
+    private static final String DEMO_TEST_PASSWORD = "demotest";
+
     private final Map<String, DemoUser> usersByUsername = new ConcurrentHashMap<>();
     private final Map<String, DemoUser> usersByUserId = new ConcurrentHashMap<>();
     private final PasswordEncoder passwordEncoder;
-    private final String demoTestPassword;
 
-    public InMemoryUserRepository(
-            PasswordEncoder passwordEncoder,
-            @Value("${DEMO_TEST_PASSWORD:#{null}}") String demoTestPassword) {
+    public InMemoryUserRepository(PasswordEncoder passwordEncoder) {
         this.passwordEncoder = passwordEncoder;
-        this.demoTestPassword = demoTestPassword;
     }
 
     /**
@@ -35,14 +32,10 @@ public class InMemoryUserRepository {
      */
     @PostConstruct
     public void initFixtures() {
-        if (demoTestPassword == null || demoTestPassword.isBlank()) {
-            throw new IllegalStateException("DEMO_TEST_PASSWORD 환경변수 누락으로 초기화 중단");
-        }
-
         usersByUsername.clear();
         usersByUserId.clear();
 
-        String encodedPassword = passwordEncoder.encode(demoTestPassword);
+        String encodedPassword = passwordEncoder.encode(DEMO_TEST_PASSWORD);
 
         // 6개 기본 계정 Fixture 등록
         saveUser(new DemoUser("USER001", "customer.a", encodedPassword, Set.of("ROLE_CUSTOMER"), true));

@@ -1121,7 +1121,7 @@
             authState,
             error ? "is-error" : "is-empty",
             error ? "로그인 상태를 확인하지 못했습니다" : "로그인하고 금융 서비스를 이용하세요",
-            error ? "로그인 화면에서 다시 확인해 주세요." : "로그인하면 현재 사용자와 역할을 확인할 수 있습니다."
+            error ? "로그인 화면에서 다시 확인해 주세요." : ""
         );
         loginLinks.forEach((linkElement) => { linkElement.hidden = false; });
         logoutButtons.forEach((button) => { button.hidden = true; });
@@ -1303,8 +1303,7 @@
     function renderHeading(root, eyebrow, title, detail) {
         const heading = document.createElement("section");
         heading.className = "customer-heading";
-        heading.innerHTML = `<p class="eyebrow"></p><h1></h1><p class="customer-heading-detail"></p>`;
-        query(".eyebrow", heading).textContent = eyebrow;
+        heading.innerHTML = `<h1></h1><p class="customer-heading-detail"></p>`;
         query("h1", heading).textContent = title;
         query(".customer-heading-detail", heading).textContent = detail;
         root.append(heading);
@@ -4187,7 +4186,7 @@
         header.innerHTML = `<div class="shell header-inner login-header"><a class="brand" href="/demo/"><span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 32 32"><path d="M6 14.5 16 7l10 7.5" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2.4"/><path d="M8.5 14.5v9h15v-9M5.5 25.5h21" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2.4"/><path d="M12 17v4.5M16 17v4.5M20 17v4.5" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"/></svg></span><span class="brand-text"><strong>Demo Bank</strong><small>금융 Demo 포털</small></span></a><a class="utility-link" href="/demo/">홈으로</a></div>`;
         const main = document.createElement("main");
         main.className = "shell login-main";
-        main.innerHTML = `<section class="login-layout"><div class="login-copy"><p class="eyebrow">Demo Bank 로그인</p><h1>안전한 금융 서비스를<br><span>시작해 보세요</span></h1><p>등록된 테스트 계정으로 로그인하면 현재 사용자와 역할을 확인할 수 있습니다.</p><div class="status-message is-auth login-notice"><strong>테스트 환경 안내</strong><span>비밀번호는 화면에 저장하거나 표시하지 않으며 Identity 서비스에서 확인합니다.</span></div></div><div class="card login-card"><div class="card-heading"><div><p class="section-label">로그인</p><h2>Demo Bank 이용</h2></div><span class="heading-icon" aria-hidden="true"><svg viewBox="0 0 24 24" role="img"><circle cx="12" cy="8" fill="none" r="3.2" stroke="currentColor" stroke-width="1.7"/><path d="M5.5 19c.8-3 3-4.5 6.5-4.5s5.7 1.5 6.5 4.5" fill="none" stroke="currentColor" stroke-linecap="round" stroke-width="1.7"/></svg></span></div><div class="account-picker" aria-label="테스트 계정 선택"><p class="field-label">테스트 계정</p><div class="account-options"><button type="button" data-account="customer.a">고객 A</button><button type="button" data-account="customer.b">고객 B</button><button type="button" data-account="staff.a">직원 A</button><button type="button" data-account="staff.b">직원 B</button><button type="button" data-account="bank.admin">은행 관리자</button></div></div><form class="login-form" data-login-form novalidate><label class="field-label" for="username">사용자명</label><input class="field" id="username" name="username" autocomplete="username" required><label class="field-label" for="password">비밀번호</label><input class="field" id="password" name="password" type="password" autocomplete="current-password" required><div class="status-message is-error" data-login-error role="alert" hidden></div><button class="button button-primary button-wide" data-login-submit type="submit">로그인</button></form><p class="login-return" data-return-target></p></div></section>`;
+        main.innerHTML = `<section class="login-layout" aria-labelledby="login-title"><div class="login-copy"><h1 id="login-title">안전한 금융 서비스를<br><span>시작해 보세요</span></h1></div><div class="card login-card"><div class="card-heading"><div><h2>Demo Bank 이용</h2></div><span class="heading-icon" aria-hidden="true"><svg viewBox="0 0 24 24" role="img"><circle cx="12" cy="8" fill="none" r="3.2" stroke="currentColor" stroke-width="1.7"/><path d="M5.5 19c.8-3 3-4.5 6.5-4.5s5.7 1.5 6.5 4.5" fill="none" stroke="currentColor" stroke-linecap="round" stroke-width="1.7"/></svg></span></div><div class="account-picker" aria-label="테스트 계정 선택"><p class="field-label">테스트 계정</p><div class="account-options"><button type="button" data-account="customer.a">고객 A</button><button type="button" data-account="customer.b">고객 B</button><button type="button" data-account="staff.a">직원 A</button><button type="button" data-account="staff.b">직원 B</button><button type="button" data-account="bank.admin">은행 관리자</button></div></div><form class="login-form" data-login-form novalidate><label class="field-label" for="username">사용자명</label><input class="field" id="username" name="username" autocomplete="username" required><label class="field-label" for="password">비밀번호</label><input class="field" id="password" name="password" type="password" autocomplete="current-password" required><div class="status-message is-error" data-login-error role="alert" hidden></div><button class="button button-primary button-wide" data-login-submit type="submit">로그인</button></form></div></section>`;
         const footer = document.createElement("footer");
         footer.className = "site-footer";
         footer.innerHTML = `<div class="shell footer-inner"><div><strong>Demo Bank</strong><p>금융 서비스 포털</p></div><p>안전하고 편리한 금융 생활</p></div>`;
@@ -4197,10 +4196,6 @@
 
     function bindLoginPage() {
         const destination = safeReturnTo();
-        const target = query("[data-return-target]");
-        if (target) {
-            target.textContent = `로그인 후 ${destination} 화면으로 이동합니다.`;
-        }
         queryAll("[data-account]").forEach((button) => {
             if (button.dataset.bound === "true") {
                 return;
@@ -4208,7 +4203,9 @@
             button.dataset.bound = "true";
             button.addEventListener("click", () => {
                 const username = query("[name=username]");
+                const password = query("[name=password]");
                 username.value = button.dataset.account || "";
+                password.value = "demotest";
                 username.focus();
             });
         });

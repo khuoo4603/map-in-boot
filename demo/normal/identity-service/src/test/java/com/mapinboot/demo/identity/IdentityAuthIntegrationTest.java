@@ -72,7 +72,6 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  */
 @SpringBootTest
 @TestPropertySource(properties = {
-    "DEMO_TEST_PASSWORD=demoTestSecret123!",
     "demo.jwt.issuer=demo-identity",
     "demo.jwt.audience=demo-services",
     "spring.profiles.active=develop",
@@ -390,7 +389,7 @@ class IdentityAuthIntegrationTest {
                         .cookie(existingSessionCookie, csrf.cookie())
                         .header("X-XSRF-TOKEN", csrf.token())
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"username\":\"customer.a\",\"password\":\"demoTestSecret123!\"}"))
+                        .content("{\"username\":\"customer.a\",\"password\":\"demotest\"}"))
                 .andExpect(status().isOk())
                 .andReturn();
 
@@ -442,7 +441,7 @@ class IdentityAuthIntegrationTest {
         mockMvc.perform(post("/api/auth/login")
                         .cookie(csrf.cookie())
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"username\":\"customer.a\",\"password\":\"demoTestSecret123!\"}"))
+                        .content("{\"username\":\"customer.a\",\"password\":\"demotest\"}"))
                 .andExpect(status().isForbidden());
     }
 
@@ -509,7 +508,7 @@ class IdentityAuthIntegrationTest {
                         .cookie(csrf.cookie())
                         .header("X-XSRF-TOKEN", csrf.token())
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"username\":\"mib.dev\",\"password\":\"demoTestSecret123!\"}"))
+                        .content("{\"username\":\"mib.dev\",\"password\":\"demotest\"}"))
                 .andExpect(status().isOk())
                 .andReturn();
         Cookie adminSession = login.getResponse().getCookie("MIB_IDENTITY_SESSION");
@@ -740,7 +739,7 @@ class IdentityAuthIntegrationTest {
 
     private MvcResult login(String username, CsrfSession csrf) throws Exception {
         String loginJson = "{\"username\":\"" + username
-                + "\",\"password\":\"demoTestSecret123!\"}";
+                + "\",\"password\":\"demotest\"}";
         return mockMvc.perform(post("/api/auth/login")
                         .cookie(csrf.cookie())
                         .header("X-XSRF-TOKEN", csrf.token())

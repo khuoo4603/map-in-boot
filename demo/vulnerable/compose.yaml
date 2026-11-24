@@ -1,9 +1,8 @@
-name: ${COMPOSE_PROJECT_NAME:-mapinboot-demo-vulnerable}
+name: mapinboot-demo-vulnerable
 
 services:
   jwt-init:
     image: alpine:3.20
-    container_name: ${COMPOSE_PROJECT_NAME:-mapinboot-demo-vulnerable}-jwt-init
     command: >
       sh -c "
       set -eu;
@@ -30,9 +29,8 @@ services:
       - demo-net
 
   identity-service:
-    container_name: ${COMPOSE_PROJECT_NAME:-mapinboot-demo-vulnerable}-identity
     build:
-      context: .
+      context: ../..
       dockerfile: demo/vulnerable/identity-service/Dockerfile
     entrypoint: ["sh", "-c", "mkdir -p /keys && ln -sf /keys-private/* /keys/ 2>/dev/null; ln -sf /keys-public/* /keys/ 2>/dev/null; exec java -jar app.jar"]
     ports:
@@ -43,7 +41,6 @@ services:
       MAPINBOOT_WEB_ENABLED: "${MAPINBOOT_WEB_ENABLED:-false}"
       MAPINBOOT_WEB_ANONYMOUS_PREVIEW: "${MAPINBOOT_WEB_ANONYMOUS_PREVIEW:-false}"
       DEMO_CORS_ALLOWED_ORIGINS: "${DEMO_CORS_ALLOWED_ORIGINS:-http://localhost:8180,http://127.0.0.1:8180}"
-      DEMO_TEST_PASSWORD: "${DEMO_TEST_PASSWORD}"
       JWT_PRIVATE_KEY_PATH: "/keys/jwt-private.pem"
       JWT_PUBLIC_KEY_PATH: "/keys/jwt-public.pem"
       JWT_ISSUER: "${JWT_ISSUER:-demo-identity}"
@@ -58,9 +55,8 @@ services:
       - demo-net
 
   account-service:
-    container_name: ${COMPOSE_PROJECT_NAME:-mapinboot-demo-vulnerable}-account
     build:
-      context: .
+      context: ../..
       dockerfile: demo/vulnerable/account-service/Dockerfile
     entrypoint: ["sh", "-c", "mkdir -p /keys && ln -sf /keys-public/* /keys/ 2>/dev/null; exec java -jar app.jar"]
     ports:
@@ -74,8 +70,6 @@ services:
       JWT_PUBLIC_KEY_PATH: "/keys/jwt-public.pem"
       JWT_ISSUER: "${JWT_ISSUER:-demo-identity}"
       JWT_AUDIENCE: "${JWT_AUDIENCE:-demo-services}"
-      DEMO_INTERNAL_SERVICE_USERNAME: "${DEMO_INTERNAL_SERVICE_USERNAME:-}"
-      DEMO_INTERNAL_SERVICE_SECRET: "${DEMO_INTERNAL_SERVICE_SECRET:-}"
     volumes:
       - jwt-public-keys:/keys-public:ro
     depends_on:
@@ -85,9 +79,8 @@ services:
       - demo-net
 
   main-service:
-    container_name: ${COMPOSE_PROJECT_NAME:-mapinboot-demo-vulnerable}-main
     build:
-      context: .
+      context: ../..
       dockerfile: demo/vulnerable/main-service/Dockerfile
     entrypoint: ["sh", "-c", "mkdir -p /keys && ln -sf /keys-public/* /keys/ 2>/dev/null; exec java -jar app.jar"]
     ports:
@@ -103,8 +96,6 @@ services:
       JWT_PUBLIC_KEY_PATH: "/keys/jwt-public.pem"
       JWT_ISSUER: "${JWT_ISSUER:-demo-identity}"
       JWT_AUDIENCE: "${JWT_AUDIENCE:-demo-services}"
-      DEMO_INTERNAL_SERVICE_USERNAME: "${DEMO_INTERNAL_SERVICE_USERNAME:-}"
-      DEMO_INTERNAL_SERVICE_SECRET: "${DEMO_INTERNAL_SERVICE_SECRET:-}"
     volumes:
       - jwt-public-keys:/keys-public:ro
     depends_on:
@@ -123,4 +114,3 @@ volumes:
 
 networks:
   demo-net:
-    name: ${COMPOSE_PROJECT_NAME:-mapinboot-demo-vulnerable}-net

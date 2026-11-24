@@ -221,14 +221,6 @@ select:focus-visible {
     color: var(--color-brand);
 }
 
-.intro-copy {
-    margin: 0 2px 4px 0;
-    color: var(--color-muted-text);
-    font-size: 13px;
-    letter-spacing: -0.04em;
-    text-align: right;
-}
-
 .portal-grid {
     display: grid;
     grid-template-columns: minmax(210px, 0.8fr) minmax(360px, 1.55fr) minmax(220px, 0.8fr);
@@ -646,16 +638,6 @@ body[data-page="login"] > .login-main {
     color: var(--color-brand);
 }
 
-.login-copy > p:not(.eyebrow) {
-    margin: 20px 0 0;
-    color: var(--color-muted-text);
-    font-size: 14px;
-    letter-spacing: -0.04em;
-}
-
-.login-notice {
-    margin-top: 28px;
-}
 
 .login-card {
     min-height: 0;
@@ -710,13 +692,6 @@ body[data-page="login"] > .login-main {
 
 .login-form .status-message {
     margin-top: 5px;
-}
-
-.login-return {
-    margin: 15px 0 0;
-    color: var(--color-muted-text);
-    font-size: 11px;
-    text-align: center;
 }
 
 .site-footer {
@@ -829,11 +804,6 @@ body[data-page="login"] > .login-main {
     .portal-intro {
         align-items: start;
         flex-direction: column;
-    }
-
-    .intro-copy {
-        margin: 0;
-        text-align: left;
     }
 
     .portal-grid {

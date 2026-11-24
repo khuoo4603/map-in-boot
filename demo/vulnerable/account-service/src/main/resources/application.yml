@@ -11,5 +11,5 @@ demo:
     issuer: ${JWT_ISSUER:demo-identity}
     audience: ${JWT_AUDIENCE:demo-services}
   internal:
-    service-username: ${DEMO_INTERNAL_SERVICE_USERNAME:}
-    service-secret: ${DEMO_INTERNAL_SERVICE_SECRET:}
+    service-username: ${DEMO_INTERNAL_SERVICE_USERNAME:main-service}
+    service-secret: ${DEMO_INTERNAL_SERVICE_SECRET:mapinboot-vulnerable-demo-internal-service-secret}
