@@ -1,0 +1,284 @@
+package com.mapinboot.demo.account.config;
+
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.security.KeyFactory;
+import java.security.interfaces.RSAPublicKey;
+import java.security.spec.X509EncodedKeySpec;
+import java.util.ArrayList;
+import java.util.Base64;
+import java.util.Collection;
+import java.util.List;
+import com.mapinboot.starter.autoconfigure.MapInBootProperties;
+import com.mapinboot.starter.web.access.WebAccessGuard;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.core.annotation.Order;
+import org.springframework.core.env.Environment;
+import org.springframework.core.convert.converter.Converter;
+import org.springframework.security.config.Customizer;
+import org.springframework.http.HttpMethod;
+import org.springframework.security.authentication.AbstractAuthenticationToken;
+import org.springframework.security.config.annotation.web.builders.HttpSecurity;
+import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
+import org.springframework.security.config.annotation.method.configuration.EnableMethodSecurity;
+import org.springframework.security.config.annotation.web.configurers.AbstractHttpConfigurer;
+import org.springframework.security.config.http.SessionCreationPolicy;
+import org.springframework.security.core.GrantedAuthority;
+import org.springframework.security.core.authority.SimpleGrantedAuthority;
+import org.springframework.security.oauth2.core.DelegatingOAuth2TokenValidator;
+import org.springframework.security.oauth2.core.OAuth2Error;
+import org.springframework.security.oauth2.core.OAuth2TokenValidator;
+import org.springframework.security.oauth2.core.OAuth2TokenValidatorResult;
+import org.springframework.security.oauth2.jwt.Jwt;
+import org.springframework.security.oauth2.jwt.JwtDecoder;
+import org.springframework.security.oauth2.jwt.JwtValidators;
+import org.springframework.security.oauth2.jwt.NimbusJwtDecoder;
+import org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationToken;
+import org.springframework.security.core.userdetails.User;
+import org.springframework.security.core.userdetails.UserDetailsService;
+import org.springframework.security.core.userdetails.UsernameNotFoundException;
+import org.springframework.security.crypto.factory.PasswordEncoderFactories;
+import org.springframework.security.crypto.password.PasswordEncoder;
+import org.springframework.security.web.SecurityFilterChain;
+import org.springframework.web.cors.CorsConfiguration;
+import org.springframework.web.cors.CorsConfigurationSource;
+import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
+
+/**
+ * Account 서비스 Spring Security 및 JWT Resource Server 설정
+ */
+@Configuration
+@EnableWebSecurity
+@EnableMethodSecurity
+public class AccountSecurityConfig {
+
+    private final String publicKeyPath;
+    private final String issuer;
+    private final String audience;
+    private final String corsAllowedOrigins;
+    private final String internalServiceUsername;
+    private final String internalServiceSecret;
+
+    public AccountSecurityConfig(
+            @Value("${demo.jwt.public-key-path:}") String publicKeyPath,
+            @Value("${demo.jwt.issuer:demo-identity}") String issuer,
+            @Value("${demo.jwt.audience:demo-services}") String audience,
+            @Value("${DEMO_CORS_ALLOWED_ORIGINS:}") String corsAllowedOrigins,
+            @Value("${demo.internal.service-username:}") String internalServiceUsername,
+            @Value("${demo.internal.service-secret:}") String internalServiceSecret) {
+        this.publicKeyPath = publicKeyPath;
+        this.issuer = issuer;
+        this.audience = audience;
+        this.corsAllowedOrigins = corsAllowedOrigins;
+        this.internalServiceUsername = internalServiceUsername;
+        this.internalServiceSecret = internalServiceSecret;
+    }
+
+    /**
+     * 내부 서비스 호출자 전용 HTTP Basic 보안 체인
+     */
+    @Bean
+    @Order(1)
+    public SecurityFilterChain internalSecurityFilterChain(HttpSecurity http) throws Exception {
+        http
+            .securityMatcher("/internal/**")
+            .csrf(AbstractHttpConfigurer::disable)
+            .cors(cors -> cors.configurationSource(corsConfigurationSource()))
+            .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
+            .authorizeHttpRequests(auth -> auth
+                .anyRequest().hasAuthority("ROLE_INTERNAL_SERVICE"))
+            .httpBasic(Customizer.withDefaults());
+
+        return http.build();
+    }
+
+    /**
+     * 외부 환경변수 기반 내부 서비스 계정 인증 정보 구성
+     */
+    @Bean
+    public UserDetailsService internalServiceUserDetailsService() {
+        PasswordEncoder passwordEncoder = PasswordEncoderFactories.createDelegatingPasswordEncoder();
+        String encodedSecret = internalServiceSecret.isBlank()
+                ? null
+                : passwordEncoder.encode(internalServiceSecret);
+
+        return username -> {
+            if (internalServiceUsername.isBlank()
+                    || internalServiceSecret.isBlank()
+                    || !internalServiceUsername.equals(username)) {
+                throw new UsernameNotFoundException("내부 서비스 인증 실패");
+            }
+            return User.withUsername(internalServiceUsername)
+                    .password(encodedSecret)
+                    .roles("INTERNAL_SERVICE")
+                    .build();
+        };
+    }
+
+    /**
+     * 보안 필터 체인 구성
+     */
+    @Bean
+    @Order(100)
+    public SecurityFilterChain securityFilterChain(
+            HttpSecurity http,
+            JwtDecoder jwtDecoder,
+            MapInBootProperties mapInBootProperties,
+            Environment environment) throws Exception {
+        http
+            .csrf(AbstractHttpConfigurer::disable)
+            .cors(cors -> cors.configurationSource(corsConfigurationSource()))
+            .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
+            .authorizeHttpRequests(auth -> {
+                // SDK 정식 UI 정적 자원은 호스트 인증 없이 읽기 허용
+                auth.requestMatchers(HttpMethod.GET, WebAccessGuard.publicUiPaths()).permitAll();
+                if (WebAccessGuard.isAnonymousPreviewEnabled(mapInBootProperties, environment)) {
+                    auth.requestMatchers(HttpMethod.GET, WebAccessGuard.previewApiPaths()).permitAll();
+                }
+                auth.requestMatchers("/error").permitAll();
+                auth.requestMatchers(
+                    HttpMethod.GET,
+                    "/api/public/savings/products",
+                    "/api/public/savings/products/*",
+                    "/api/public/loans/products",
+                    "/api/public/loans/products/*"
+                ).permitAll();
+                auth.requestMatchers(HttpMethod.POST, "/api/loans/applications")
+                    .hasAuthority("ROLE_CUSTOMER");
+                auth.requestMatchers(
+                    HttpMethod.GET,
+                    "/api/loans/applications/my",
+                    "/api/loans/applications/my/*"
+                ).hasAuthority("ROLE_CUSTOMER");
+                auth.requestMatchers(
+                    HttpMethod.GET,
+                    "/api/staff/assigned-customers",
+                    "/api/staff/assigned-customers/*/savings",
+                    "/api/staff/assigned-customers/*/loans"
+                ).hasAuthority("ROLE_STAFF");
+                // 직원 고객 검색은 직원 권한으로 제한
+                auth.requestMatchers(HttpMethod.GET, "/api/staff/customers/search")
+                    .permitAll();
+                // 담당 고객 연락처는 직원 권한으로 제한
+                auth.requestMatchers(HttpMethod.GET, "/api/staff/customers/*/contact")
+                    .hasAuthority("ROLE_STAFF");
+                // 계좌 상세는 고객 권한으로 제한
+                auth.requestMatchers(HttpMethod.GET, "/api/accounts/*").hasAuthority("ROLE_CUSTOMER");
+                // 직원 고객 상세의 권한은 Method Security Proxy에서 확인
+                auth.requestMatchers(HttpMethod.GET, "/api/staff/customers/*").authenticated();
+                auth.requestMatchers(
+                    HttpMethod.GET,
+                    "/api/admin/savings/products",
+                    "/api/admin/savings/subscriptions",
+                    "/api/admin/loans/summary",
+                    "/api/admin/assignments"
+                ).hasAuthority("ROLE_BANK_ADMIN");
+                auth.requestMatchers(HttpMethod.POST, "/api/admin/savings/products")
+                    .hasAuthority("ROLE_BANK_ADMIN");
+                auth.requestMatchers(HttpMethod.PATCH, "/api/admin/savings/products/*")
+                    .hasAuthority("ROLE_BANK_ADMIN");
+                auth.requestMatchers("/api/my/**").hasAuthority("ROLE_CUSTOMER");
+                auth.requestMatchers("/api/**").authenticated();
+                auth.anyRequest().authenticated();
+            })
+            .oauth2ResourceServer(oauth2 -> oauth2.jwt(jwt -> jwt
+                .decoder(jwtDecoder)
+                .jwtAuthenticationConverter(jwtAuthenticationConverter())
+            ));
+
+        return http.build();
+    }
+
+    /**
+     * JWT 서명 및 유효성 검증용 JwtDecoder 빈 등록
+     */
+    @Bean
+    public JwtDecoder jwtDecoder() throws Exception {
+        if (publicKeyPath == null || publicKeyPath.isBlank()) {
+            throw new IllegalStateException("JWT 공개키 경로 미설정");
+        }
+        String pem = Files.readString(Path.of(publicKeyPath));
+        String publicKeyPEM = pem
+                .replace("-----BEGIN PUBLIC KEY-----", "")
+                .replace("-----END PUBLIC KEY-----", "")
+                .replaceAll("\\s", "");
+        byte[] encoded = Base64.getDecoder().decode(publicKeyPEM);
+        KeyFactory keyFactory = KeyFactory.getInstance("RSA");
+        RSAPublicKey publicKey = (RSAPublicKey) keyFactory.generatePublic(new X509EncodedKeySpec(encoded));
+
+        NimbusJwtDecoder decoder = NimbusJwtDecoder.withPublicKey(publicKey).build();
+
+        OAuth2TokenValidator<Jwt> withIssuer = JwtValidators.createDefaultWithIssuer(issuer);
+        OAuth2TokenValidator<Jwt> withAudience = new OAuth2TokenValidator<>() {
+            @Override
+            public OAuth2TokenValidatorResult validate(Jwt token) {
+                List<String> aud = token.getAudience();
+                if (aud != null && aud.contains(audience)) {
+                    return OAuth2TokenValidatorResult.success();
+                }
+                return OAuth2TokenValidatorResult.failure(new OAuth2Error("invalid_token", "Audience 불일치", null));
+            }
+        };
+
+        decoder.setJwtValidator(new DelegatingOAuth2TokenValidator<>(withIssuer, withAudience));
+        return decoder;
+    }
+
+    /**
+     * JWT의 roles 클레임을 Spring Security GrantedAuthority로 매핑하는 변환기
+     */
+    @Bean
+    public Converter<Jwt, ? extends AbstractAuthenticationToken> jwtAuthenticationConverter() {
+        return jwt -> {
+            Collection<GrantedAuthority> authorities = new ArrayList<>();
+            List<String> roles = jwt.getClaimAsStringList("roles");
+            if (roles != null) {
+                for (String role : roles) {
+                    authorities.add(new SimpleGrantedAuthority(role));
+                }
+            }
+            return new JwtAuthenticationToken(jwt, authorities, jwt.getSubject());
+        };
+    }
+
+    /**
+     * CORS 설정 구성
+     */
+    @Bean
+    public CorsConfigurationSource corsConfigurationSource() {
+        CorsConfiguration configuration = new CorsConfiguration();
+        configuration.setAllowedOrigins(resolveCorsAllowedOrigins());
+        configuration.setAllowedMethods(List.of("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"));
+        configuration.setAllowedHeaders(List.of(
+            "Authorization", "Content-Type", "X-Requested-With", "X-Staff-Id"
+        ));
+        configuration.setAllowCredentials(true);
+
+        UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();
+        source.registerCorsConfiguration("/**", configuration);
+        return source;
+    }
+
+    private List<String> resolveCorsAllowedOrigins() {
+        if (corsAllowedOrigins == null || corsAllowedOrigins.isBlank()) {
+            return List.of("http://localhost:8080", "http://127.0.0.1:8080");
+        }
+
+        List<String> origins = new ArrayList<>();
+        for (String origin : corsAllowedOrigins.split(",")) {
+            String trimmedOrigin = origin.trim();
+            if (trimmedOrigin.isEmpty()) {
+                continue;
+            }
+            if (trimmedOrigin.contains("*")) {
+                throw new IllegalArgumentException("CORS 와일드카드 Origin 미지원");
+            }
+            origins.add(trimmedOrigin);
+        }
+        return origins.isEmpty()
+                ? List.of("http://localhost:8080", "http://127.0.0.1:8080")
+                : origins;
+    }
+}

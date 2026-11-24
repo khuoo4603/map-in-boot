@@ -1,0 +1,17 @@
+server:
+  port: ${ACCOUNT_PORT:8082}
+
+spring:
+  application:
+    name: account-service
+
+demo:
+  jwt:
+    public-key-path: ${JWT_PUBLIC_KEY_PATH:}
+    issuer: ${JWT_ISSUER:demo-identity}
+    audience: ${JWT_AUDIENCE:demo-services}
+  internal:
+    service-username: ${DEMO_INTERNAL_SERVICE_USERNAME:main-service}
+    service-secret: ${DEMO_INTERNAL_SERVICE_SECRET:mapinboot-normal-demo-internal-service-secret}
+
+
