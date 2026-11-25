@@ -8,6 +8,8 @@
   --accent-strong: #86efac;
   --text: #eaf3ee;
   --muted: #98aa9d;
+  --graph-line-opacity: .78;
+  --graph-line-width: 1.8;
   --header-height: clamp(60px, 3.3vw, 70px);
   --main-padding: 0px;
   font-family: "Segoe UI", "Malgun Gothic", sans-serif;
@@ -252,36 +254,83 @@ button:focus-visible { outline: 2px solid var(--accent-strong); outline-offset: 
 .canvas-empty p { margin: 0; }
 .graph-svg { position: relative; z-index: 0; display: block; flex: 1; width: 100%; height: 100%; min-height: 0; background: transparent; cursor: default; }
 .graph-areas, .graph-flow-projection, .graph-guides { pointer-events: none; }
-.graph-area-box { fill: #17251b; fill-opacity: .2; stroke: #386844; stroke-width: 1; stroke-dasharray: 5 4; }
-.graph-area-label { fill: #8fb99a; font-size: 12px; font-weight: 650; }
+.graph-area-box { fill: #17251b; fill-opacity: .14; stroke: #386844; stroke-width: 1; stroke-dasharray: 5 4; }
+.graph-area-label { fill: #8fb99a; font-size: 11px; font-weight: 600; }
+.graph-area[data-area-id="request-entry"] .graph-area-box { fill: #155e63; stroke: #3faaa4; }
+.graph-area[data-area-id="request-entry"] .graph-area-label { fill: #8fe5dc; }
+.graph-area[data-area-id="servlet-filter"] .graph-area-box { fill: #185b31; stroke: #3b9a5b; }
+.graph-area[data-area-id="servlet-filter"] .graph-area-label { fill: #9ce2ad; }
+.graph-area[data-area-id="spring-security"] .graph-area-box { fill: #765719; stroke: #c69b3e; }
+.graph-area[data-area-id="spring-security"] .graph-area-label { fill: #f0d27f; }
+.graph-area[data-area-id="mvc"] .graph-area-box { fill: #214e78; stroke: #65a6dc; }
+.graph-area[data-area-id="mvc"] .graph-area-label { fill: #a7d5ff; }
+.graph-area[data-area-id="api-mapping"] .graph-area-box { fill: #214e78; stroke: #65a6dc; }
+.graph-area[data-area-id="api-mapping"] .graph-area-label { fill: #a7d5ff; }
+.graph-area[data-area-id="controller-handler"] .graph-area-box { fill: #49376a; stroke: #a18acb; }
+.graph-area[data-area-id="controller-handler"] .graph-area-label { fill: #c4b5fd; }
+.graph-area[data-area-id="security-checks"] .graph-area-box { fill: #0b3e36; fill-opacity: .08; stroke: #4caa8a; stroke-dasharray: 5 4; }
+.graph-area[data-area-id="security-checks"] .graph-area-label { fill: #9cd9c0; }
+.graph-chain-area { opacity: 0; }
+.graph-chain-area[data-related="true"] { opacity: .72; }
 .graph-chain-area-box { fill: #203526; fill-opacity: .08; stroke: #62896d; stroke-width: 1; stroke-dasharray: 3 5; }
-.graph-chain-area-label { fill: #a9d6b2; font-size: 11px; font-weight: 650; }
-.graph-guide-handler { fill: none; stroke: #86efac; stroke-width: 1.4; stroke-dasharray: 4 4; opacity: .62; }
+.graph-chain-area-label { fill: #a9d6b2; font-size: 10px; font-weight: 600; }
+.graph-guide-handler { fill: none; stroke: #86efac; stroke-width: var(--graph-line-width); stroke-dasharray: 4 4; opacity: var(--graph-line-opacity); }
 .graph-guide[data-related="false"] { opacity: .12; }
-.graph-projection-edge { fill: none; stroke: #8fb99a; stroke-width: 1.5; stroke-dasharray: 5 5; opacity: .72; pointer-events: none; }
+.graph-projection-edge { fill: none; stroke: #8fb99a; stroke-width: var(--graph-line-width); stroke-dasharray: 5 5; opacity: var(--graph-line-opacity); pointer-events: none; }
+.graph-overview-segment[data-reference-only="true"][data-reference-visible="false"] { visibility: hidden; pointer-events: none; }
 .graph-projection-edge[data-related="false"] { opacity: .12; }
 .graph-projection-node { opacity: .96; }
 .graph-projection-card { fill: #203426; stroke: #72ad83; stroke-width: 1.2; stroke-dasharray: 5 4; }
 .graph-projection-type { fill: #9bc9a6; font-size: 11px; font-weight: 700; pointer-events: none; }
 .graph-projection-label { fill: var(--text); font-size: 14px; font-weight: 650; pointer-events: none; }
 .graph-projection-detail { fill: var(--muted); font-size: 11.5px; pointer-events: none; }
-.graph-edge { fill: none; stroke-width: 1.6; opacity: .86; cursor: pointer; pointer-events: stroke; }
-.graph-edge[data-related="false"], .graph-edge-label[data-related="false"] { opacity: .18; }
+.graph-edge { fill: none; stroke-width: var(--graph-line-width); opacity: var(--graph-line-opacity); cursor: pointer; pointer-events: stroke; }
+.graph-svg[data-view="all-flow"][data-selection-active="false"] .graph-edge[data-edge-layer="analysis"]:not([data-has-finding="true"]):not([data-selected="true"]):not([data-request-flow-active="true"]):not([data-membership-visible="false"]) { stroke-width: var(--graph-line-width); opacity: var(--graph-line-opacity); }
+.graph-svg[data-view="all-flow"][data-selection-active="true"] .graph-edge[data-edge-layer="analysis"][data-related="false"]:not([data-has-finding="true"]):not([data-selected="true"]):not([data-request-flow-active="true"]) { stroke-width: 1.15; opacity: .32; }
+.graph-svg[data-view="all-flow"][data-selection-active="true"] .graph-edge[data-edge-layer="analysis"][data-related="true"]:not([data-has-finding="true"]):not([data-selected="true"]):not([data-request-flow-active="true"]) { stroke-width: 1.8; opacity: .92; }
+.graph-edge[data-emphasis="primary"] { stroke-width: 2.15; opacity: .94; }
+.graph-edge[data-emphasis="secondary"] { stroke-width: var(--graph-line-width); opacity: .72; }
+.graph-edge[data-emphasis="unrelated"] { stroke-width: 1.15; opacity: .38; }
+.graph-edge[data-has-finding="true"] { stroke-width: 2; opacity: .84; }
+.graph-edge[data-request-flow-active="true"] { stroke-width: 2.6; opacity: 1; }
 .graph-edge[data-selected="true"] { stroke: var(--accent-strong); stroke-width: 3; opacity: 1; }
-.graph-edge-label { font-size: 12px; font-weight: 650; pointer-events: none; paint-order: stroke; stroke: var(--page); stroke-width: 4px; stroke-linejoin: round; }
+.graph-edge-security-filter-membership[data-membership-visible="false"] { opacity: .04; }
+.graph-edge-security-filter-membership[data-membership-visible="true"] { stroke-width: var(--graph-line-width); opacity: var(--graph-line-opacity); }
+.graph-edge-security-filter-membership[data-membership-visible="true"][data-emphasis="primary"] { stroke-width: 2.15; opacity: .94; }
+.graph-edge-security-filter-membership[data-has-finding="true"] { stroke-width: 1.8; opacity: .84; }
+.graph-edge-security-filter-membership[data-request-flow-active="true"] { stroke-width: 2.6; opacity: 1; }
+.graph-edge-label[data-membership-kind="security-chain"][data-membership-visible="false"] { display: none; }
+.graph-edge-trunk { cursor: default; pointer-events: none; }
+.graph-edge-label { opacity: .52; font-size: 12px; font-weight: 650; pointer-events: none; paint-order: stroke; stroke: var(--page); stroke-width: 4px; stroke-linejoin: round; }
+.graph-svg[data-view="all-flow"][data-selection-active="false"] .graph-edge-label[data-edge-layer="analysis"] { opacity: .04; }
+.graph-svg[data-view="all-flow"][data-selection-active="true"] .graph-edge-label[data-edge-layer="analysis"][data-related="false"]:not([data-selected="true"]) { opacity: .04; }
+.graph-svg[data-view="all-flow"][data-selection-active="true"] .graph-edge-label[data-edge-layer="analysis"][data-related="true"] { opacity: .9; }
+.graph-edge-label[data-emphasis="primary"] { opacity: 1; }
+.graph-edge-label[data-emphasis="secondary"] { opacity: .58; }
+.graph-edge-label[data-emphasis="unrelated"] { opacity: .08; }
 .graph-edge-label[data-visible="false"] { display: none; }
 .graph-canvas[data-show-edge-labels="false"] .graph-edge-label { display: none; }
+.graph-svg[data-view="all-flow"][data-selection-active="false"] .graph-projection-edge { stroke-width: var(--graph-line-width); opacity: var(--graph-line-opacity); }
+.graph-svg[data-view="all-flow"][data-selection-active="true"] .graph-projection-edge[data-related="false"] { opacity: .28; }
+.graph-svg[data-view="all-flow"][data-selection-active="true"] .graph-projection-edge[data-related="true"] { stroke-width: 2; opacity: .82; }
+.graph-svg[data-view="all-flow"][data-selection-active="false"] .graph-guide { stroke-width: var(--graph-line-width); opacity: var(--graph-line-opacity); }
+.graph-svg[data-view="all-flow"][data-selection-active="true"] .graph-guide[data-related="false"] { opacity: .28; }
+.graph-svg[data-view="all-flow"][data-selection-active="true"] .graph-guide[data-related="true"] { stroke-width: 2; opacity: .82; }
 .graph-node { cursor: pointer; outline: none; }
 .graph-node-card { fill: var(--surface); stroke-width: 1.4; }
 .graph-node[data-related="false"] { opacity: .22; }
+.graph-node[data-emphasis="secondary"] { opacity: .52; }
+.graph-node[data-emphasis="unrelated"] { opacity: .16; }
+.graph-node[data-emphasis="primary"], .graph-node[data-selected="true"],
+.graph-node[data-has-finding="true"], .graph-node[data-request-flow-active="true"] { opacity: 1; }
 .graph-node[data-selected="true"] .graph-node-card { stroke: var(--accent-strong); stroke-width: 2.6; }
-.graph-node:hover .graph-node-card, .graph-node:focus .graph-node-card { stroke: var(--accent-strong); stroke-width: 2; }
+.graph-node:focus-visible .graph-node-card { stroke: var(--accent-strong); stroke-width: 2; }
 .graph-node[data-has-finding="true"] .graph-node-card { stroke: #f87171; stroke-width: 2.4; }
 .graph-node[data-has-finding="true"][data-selected="true"] .graph-node-card,
-.graph-node[data-has-finding="true"]:hover .graph-node-card,
-.graph-node[data-has-finding="true"]:focus .graph-node-card { stroke: #f87171; stroke-width: 3; }
+.graph-node[data-has-finding="true"]:focus-visible .graph-node-card { stroke: #f87171; stroke-width: 3; }
 .graph-node[data-request-flow-active="true"] .graph-node-card,
 .graph-projection-node[data-request-flow-active="true"] .graph-projection-card { filter: brightness(1.24) drop-shadow(0 0 5px rgba(134, 239, 172, .52)); }
+.graph-projection-edge[data-request-flow-active="true"] { stroke-width: 2.5; opacity: 1; }
 .graph-node[data-has-finding="true"][data-request-flow-active="true"] .graph-node-card { filter: brightness(1.18) drop-shadow(0 0 5px rgba(248, 113, 113, .52)); }
 .graph-node-background-tint { fill-opacity: .12; pointer-events: none; }
 .graph-node-type-dot, .graph-node-type { pointer-events: none; }

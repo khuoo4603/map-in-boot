@@ -187,8 +187,8 @@
       RUNTIME: "실행 환경", BYTECODE: "바이트코드 분석"
     },
     operation: {
-      READ: "읽기", DECLARE: "선언", CREATE: "생성", VERIFY_CONFIGURATION: "구성 검증",
-      WRITE: "기록", AUTH_STATUS: "인증 상태 확인"
+      READ: "조회", DECLARE: "선언", CREATE: "생성", VERIFY_CONFIGURATION: "검증 구성",
+      WRITE: "작성", SIGN: "서명", AUTH_STATUS: "인증 상태 확인"
     },
     pathOutcome: {
       ENFORCED: "보호 적용", BYPASS_PATH: "보호 우회 경로", UNRESOLVED: "판단 미완료",
@@ -196,7 +196,7 @@
     },
     pathPatternSettings: { DEFAULT: "기본 설정", NON_DEFAULT: "사용자 설정", UNKNOWN: "확인 불가" },
     policyKind: {
-      PERMIT_ALL: "모두 허용", AUTHENTICATED: "인증 필요", AUTHORITY_REQUIRED: "권한 필요",
+      PERMIT_ALL: "공개 접근 허용", AUTHENTICATED: "인증 필요", AUTHORITY_REQUIRED: "권한 필요",
       COMPOSITE_AUTHORITY: "복합 권한 필요"
     },
     policyMatcherCondition: { ANY: "모든 요청" },
@@ -239,6 +239,8 @@
     if (key === "matcherCondition" && /^OR\([\s\S]*\)$/.test(text)) return `여러 조건 중 하나 · ${text.slice(3, -1)}`;
     const values = attributeValueNames[key];
     if (values && Object.prototype.hasOwnProperty.call(values, text)) return values[text];
+    if (key === "policyKind") return "인가 조건 확인 필요";
+    if (key === "policySource") return "인가 범위 확인 필요";
     return enumAttributeKeys.has(key) ? `확인되지 않은 분류 (${text})` : text;
   }
 
@@ -432,7 +434,11 @@
 
     function selectedLabel(selection, item) {
       if (!item) return "확인할 수 없음";
-      if (selection.kind === "controller-group") return controllerGroupDisplay(item, current.displayIds).primary;
+      if (selection.kind === "controller-group") {
+        return item.type && graphDisplay.securityGroupDisplay
+          ? graphDisplay.securityGroupDisplay(item, current.graph, current.displayIds).primary
+          : controllerGroupDisplay(item, current.displayIds).primary;
+      }
       if (selection.kind === "node") {
         const attributes = item.attributes || {};
         const display = nodeDisplay(item);
@@ -489,7 +495,7 @@
       return [];
     }
 
-    function appendEvidence(parent, snapshot, ids) {
+    function appendEvidence(parent, snapshot, ids, showRawIds = false) {
       appendHeading(parent, "근거");
       const evidenceIds = copyIds(ids);
       if (evidenceIds.length === 0) {
@@ -501,6 +507,7 @@
       evidenceIds.forEach((id) => {
         const evidence = byId.get(id);
         const block = appendElement(parent, "div", "inspector-evidence");
+        if (showRawIds) appendRow(block, "Evidence ID", id);
         const hasDisplayCode = Object.prototype.hasOwnProperty.call(displayCodes, id)
           && valueOf(displayCodes[id], "") !== "";
         if (hasDisplayCode) {
@@ -579,16 +586,33 @@
       if (selection.kind === "controller-group") {
         if (item.type === "AUTHORIZATION" || item.type === "SECURITY_DATA") {
           appendRow(parent, "유형", item.type === "AUTHORIZATION" ? "인가 근거" : "보안정보 사용");
-          appendRow(parent, "소속", item.controllerName);
+          const summary = graphDisplay.securityGroupDisplay
+            ? graphDisplay.securityGroupDisplay(item, graph, current.displayIds)
+            : { context: item.controllerName };
+          appendRow(parent, "관련 맥락", summary.context);
           appendRow(parent, "원본 Fact", (item.nodeIds || []).length);
           appendHeading(parent, "포함된 원본 Fact");
-          (item.nodeIds || []).forEach((id) => {
-            const node = graph.nodes.find((candidate) => candidate.id === id);
-            if (!node) return;
+          const nodes = (item.nodeIds || []).map((id) => graph.nodes.find((candidate) => candidate.id === id)).filter(Boolean);
+          if (item.type === "AUTHORIZATION") {
+            nodes.sort((left, right) => {
+              const leftValue = valueOf(left.attributes && left.attributes.policyOrder, "");
+              const rightValue = valueOf(right.attributes && right.attributes.policyOrder, "");
+              const leftOrder = Number(leftValue);
+              const rightOrder = Number(rightValue);
+              const leftKnown = leftValue !== "" && Number.isFinite(leftOrder);
+              const rightKnown = rightValue !== "" && Number.isFinite(rightOrder);
+              if (leftKnown && rightKnown && leftOrder !== rightOrder) return leftOrder - rightOrder;
+              if (leftKnown !== rightKnown) return leftKnown ? -1 : 1;
+              return String(left.id).localeCompare(String(right.id));
+            });
+          }
+          nodes.forEach((node) => {
             const block = appendElement(parent, "div", "inspector-relation");
+            appendRow(block, "원본 Node ID", node.id);
+            appendRow(block, "노드 유형", node.type);
             appendNodeButton(block, node, "원본");
             appendAttributes(block, node.attributes);
-            appendEvidence(block, snapshot, node.evidenceIds);
+            appendEvidence(block, snapshot, node.evidenceIds, true);
           });
           appendFindings(parent, snapshot, selection, current.controllerGroups);
           return;
@@ -641,7 +665,9 @@
       appendEvidence(parent, snapshot, item.evidenceIds);
       const model = current.displayModel;
       const bundleId = model && model.edgeToDisplay[item.id];
-      const edgeIds = bundleId && model.displayToEdges[bundleId] || [];
+      const edgeIds = Array.from(new Set([...(bundleId && model.displayToEdges[bundleId] || []),
+        ...(Array.isArray(selection.segmentEdgeIds) ? selection.segmentEdgeIds : [])]))
+        .filter((id) => graph.edges.some((edge) => edge.id === id));
       if (edgeIds.length > 1) {
         appendHeading(parent, "함께 표시한 원본 관계");
         edgeIds.forEach((id) => {
@@ -1038,9 +1064,11 @@
       if (!item) return null;
       const lines = [];
       if (kind === "controller-group") {
-        const display = controllerGroupDisplay(item, current.displayIds);
+        const display = item.type && graphDisplay.securityGroupDisplay
+          ? graphDisplay.securityGroupDisplay(item, graph, current.displayIds)
+          : controllerGroupDisplay(item, current.displayIds);
         lines.push(display.primary);
-        lines.push(`${display.displayId} · API ${(item.endpointIds || []).length}개 · 메서드 ${(item.handlerMethods || []).length}개`);
+        lines.push(item.type ? display.detail : `${display.displayId} · API ${(item.endpointIds || []).length}개 · 메서드 ${(item.handlerMethods || []).length}개`);
       } else if (kind === "node") {
         const display = nodeDisplay(item);
         lines.push(display.primary || selectedLabel(selection, item));

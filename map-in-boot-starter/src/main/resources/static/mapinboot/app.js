@@ -149,6 +149,7 @@
     selection: null,
     inspectorDismissed: false,
     hoverEdgeId: null,
+    graphHover: null,
     selectedEndpointId: null,
     viewVersion: 0,
     snapshotGeneration: 0,
@@ -165,6 +166,7 @@
   };
   let requestFlowActiveNodeId = null;
   let requestFlowActiveNode = null;
+  let requestFlowActiveEdges = [];
   let requestFlowActiveRender = null;
   let handlingRequestFlowFailure = false;
 
@@ -236,6 +238,7 @@
     }
     if (!nextVisible) {
       setRequestFlowNode(null);
+      setRequestFlowEdge(null);
       if (requestFlowDot) setHidden(requestFlowDot, true);
     }
   }
@@ -271,11 +274,30 @@
     if (requestFlowActiveNode) requestFlowActiveNode.setAttribute("data-request-flow-active", "true");
   }
 
+  function setRequestFlowEdge(path) {
+    requestFlowActiveEdges.forEach((element) => element.removeAttribute("data-request-flow-active"));
+    requestFlowActiveEdges = [];
+    if (!path) return;
+    requestFlowActiveEdges.push(path);
+    const classNames = (element) => (element.getAttribute("class") || "").split(/\s+/);
+    if (classNames(path).includes("graph-edge-flow-route")) {
+      const edgeIds = new Set((path.getAttribute("data-edge-ids") || path.getAttribute("data-edge-id") || "")
+        .split(",").filter(Boolean));
+      Array.from(graphEdges && graphEdges.children || []).forEach((element) => {
+        if (!classNames(element).some((name) => name === "graph-edge-branch" || name === "graph-edge-trunk")) return;
+        const ids = (element.getAttribute("data-edge-ids") || element.getAttribute("data-edge-id") || "")
+          .split(",").filter(Boolean);
+        if (ids.some((id) => edgeIds.has(id))) requestFlowActiveEdges.push(element);
+      });
+    }
+    requestFlowActiveEdges.forEach((element) => element.setAttribute("data-request-flow-active", "true"));
+  }
+
   function requestFlowPath(transition) {
     if (!transition) return null;
     const layer = transition.kind === "projection" ? graphFlowProjection : graphEdges;
     const paths = Array.from(layer?.children ?? []);
-    return paths.find((path) => {
+    const matches = (path) => {
       if (path.tagName !== "path" || typeof path.getTotalLength !== "function"
         || typeof path.getPointAtLength !== "function") return false;
       if (transition.kind === "projection") {
@@ -283,7 +305,10 @@
       }
       const ids = (path.getAttribute("data-edge-ids") || path.getAttribute("data-edge-id") || "").split(",");
       return ids.includes(transition.edgeId);
-    }) || null;
+    };
+    if (transition.kind === "projection") return paths.find(matches) || null;
+    return paths.find((path) => (path.getAttribute("class") || "").split(/\s+/).includes("graph-edge-flow-route")
+      && matches(path)) || paths.find(matches) || null;
   }
 
   // 실제 내용이 바뀐 단계 텍스트만 DOM과 접근성 트리에 반영
@@ -303,6 +328,7 @@
     const detailed = inDetail && Boolean(state.display.detailedFlow);
     const filterEducation = step && step.filterEducation;
     const path = currentState.phase === "EDGE_TRAVEL" ? requestFlowPath(currentState.transition) : null;
+    setRequestFlowEdge(path);
     const point = path && requestFlowClient && requestFlowClient.pathPointAt
       ? requestFlowClient.pathPointAt(path, currentState.progress, currentState.transition.length)
       : null;
@@ -996,6 +1022,7 @@
   function selectView(view, preserveFeatureSelection = false) {
     if (!viewNames[view]) return;
     const viewChanged = state.view !== view;
+    if (viewChanged) state.graphHover = null;
     if (viewChanged && spotlight && spotlight.isActive()) spotlight.close({ restoreFocus: false });
     if (viewChanged && navigation) navigation.setLocked(false);
     if (viewChanged) state.inspectorDismissed = false;
@@ -1222,6 +1249,7 @@
     state.graphRender = null;
     state.visibleGraph = null;
     state.selection = null;
+    state.graphHover = null;
     state.selectedEndpointId = null;
     state.viewVersion += 1;
     state.layoutRequestId += 1;
@@ -1447,8 +1475,23 @@
     return (plan.controllerGroups || []).concat(plan.displayModel ? plan.displayModel.groups : []);
   }
 
+  function graphRelated(graph, focus) {
+    return inspectorClient && focus
+      ? inspectorClient.related(graph, focus, displayGroups())
+      : { nodeIds: new Set(), edgeIds: new Set() };
+  }
+
+  function updateGraphEmphasis() {
+    const graph = state.visibleGraph || state.viewGraph || state.graph;
+    const focus = state.selection;
+    if (!graphRenderer || !state.graphRender || !graph || !graphRenderer.updateEmphasis) return;
+    const related = graphRelated(graph, focus);
+    graphRenderer.updateEmphasis(state.graphRender, graph, focus, related);
+  }
+
   function clearSelection() {
     state.selection = null;
+    state.graphHover = null;
     state.inspectorDismissed = true;
     if (inspectorClient) inspectorClient.hideHover();
     if (inspectorClient && inspectorClient.close) inspectorClient.close();
@@ -1464,7 +1507,7 @@
     }
   }
 
-  function selectGraphElement(kind, id) {
+  function selectGraphElement(kind, id, segmentEdgeIds = null) {
     let selectedKind = kind;
     let selectedId = id;
     if (isFindingDetailView() && kind === "node") {
@@ -1477,9 +1520,14 @@
     }
     const item = graphElement(selectedKind, selectedId);
     if (!item) return null;
+    state.graphHover = null;
     if (selectedKind === "node" && item.type === "ENDPOINT" && isDetailView()
       && state.selectedEndpointId !== item.id) return openEndpointDetail(item.id);
     state.selection = { kind: selectedKind, id: selectedId };
+    if (selectedKind === "edge" && Array.isArray(segmentEdgeIds) && segmentEdgeIds.length > 1) {
+      state.selection.segmentEdgeIds = segmentEdgeIds.slice();
+    }
+    state.graphHover = null;
     state.inspectorDismissed = false;
     if (inspectorClient) inspectorClient.hideHover();
     renderGraphView(state.layout ? "elk" : "initial", true);
@@ -1488,10 +1536,12 @@
 
   function showGraphHover(kind, id, anchor) {
     if (!inspectorClient || !(state.viewGraph || state.graph)) return;
+    state.graphHover = { kind, id };
     inspectorClient.showHover({ graph: state.viewGraph || state.graph, snapshot: state.snapshot, kind, id, anchor, displayIds: state.displayIds });
   }
 
   function hideGraphHover() {
+    state.graphHover = null;
     if (inspectorClient) inspectorClient.hideHover();
   }
 
@@ -1646,6 +1696,7 @@
       detailMode: isDetailView() || isFindingDetailView(),
       findingDetailMode: isFindingDetailView(),
       flowIndex: state.flowIndex,
+      view: state.view,
       layoutMode,
       edgeLabelMode: isDetailView() || isFindingDetailView() ? "detail" : "overview",
       displayEdgeLabels: state.display.edgeLabels,
@@ -1667,7 +1718,7 @@
       onControllerGroupBlur: hideGraphHover,
       onControllerGroupHover: (id, anchor) => showGraphHover("controller-group", id, anchor),
       onControllerGroupLeave: hideGraphHover,
-      onEdgeClick: (id) => selectGraphElement("edge", id),
+      onEdgeClick: (id, _anchor, edgeIds) => selectGraphElement("edge", id, edgeIds),
       onEdgeFocus: (id, anchor) => showGraphHover("edge", id, anchor),
       onEdgeBlur: hideGraphHover,
       onEdgeHover: (id, anchor) => showGraphHover("edge", id, anchor),
@@ -1823,6 +1874,7 @@
     }
     state.selectedEndpointId = null;
     state.selection = null;
+    state.graphHover = null;
     state.viewVersion += 1;
     state.layoutRequestId += 1;
     state.viewGraph = null;
@@ -1910,6 +1962,9 @@
       showNotice(`Graph 표시 실패: ${displayCause} · 학습 흐름 준비 실패: ${flowCause}`, "error");
     } else if (displayError) {
       showNotice(`Graph 표시 실패: ${displayCause}`, "error");
+    } else if (!flowError && layout.plan && layout.plan.overviewRouting
+      && layout.plan.overviewRouting.unresolved.length > 0) {
+      showNotice(`표시할 수 없는 관계 ${layout.plan.overviewRouting.unresolved.length}건 · Inspector에서 원본 근거 확인`, "error");
     } else if (!flowError && showLayoutNotice) {
       showNotice("Graph 자동 배치 완료", "success");
     }

@@ -974,7 +974,9 @@ test("PERMIT_ALL만으로 Finding을 합성하지 않고 보안 MAP 화면 전�
 
   assert.equal(findAllByClass(elements.get("graph-nodes"), "finding-marker").length, 0);
   assert.match(textOf(elements.get("finding-list")), /보존된 Finding 없음/);
-  assert.equal(elements.get("shell-notice").textContent, "");
+  const unresolved = ui.state.layout.plan.overviewRouting.unresolved.length;
+  assert.equal(elements.get("shell-notice").textContent,
+    unresolved ? `표시할 수 없는 관계 ${unresolved}건 · Inspector에서 원본 근거 확인` : "");
   assert.equal(snapshot.findings.length, 0);
 });
 
@@ -2617,7 +2619,8 @@ test("표준 Filter 판정이 실제 Graph·ELK·MiniMap 배열에 편입되지 
   assert.equal(ui.state.graph.nodes.some((node) => node.id.startsWith("standard-filter-")), false);
   assert.equal(layoutCalls[0].children.length, snapshot.nodes.length);
   assert.equal(elements.get("graph-minimap-nodes").children.length,
-    snapshot.nodes.length + ui.state.layout.plan.projection.nodes.length);
+    ui.state.graphRender.displayNodes.length + ui.state.layout.plan.projection.nodes.length);
+  assert.equal(ui.state.graphRender.displayNodes.some((node) => node.originalNodeIds?.includes("servlet-1")), false);
 });
 
 test("Endpoint 상세 파생 Graph가 실제 Chain·Filter·보안 관계만 보존하고 합성 Edge를 만들지 않음", () => {
@@ -2896,8 +2899,8 @@ test("Edge가 적은 Graph와 다른 Chain의 대량 Filter에서도 상세 ELK 
   assert.equal(layoutCalls.at(-1).children.length, 7);
 });
 
-test("Request 교육 단계가 확정 Chain·Filter 순서·Handler만 실제 Anchor로 사용함", () => {
-  const { window } = loadUi();
+test("Request 교육 단계는 SECURITY CHECKS를 실행 단계로 추가하지 않고 Filter 다음 계속 단계로 연결함", () => {
+  const { window, layoutApi } = loadUi();
   const animationFixture = detailGraphFixture();
   animationFixture.nodes.push(
     {
@@ -2938,7 +2941,11 @@ test("Request 교육 단계가 확정 Chain·Filter 순서·Handler만 실제 An
     }
   );
   const normalized = window.MapInBootGraph.normalize(animationFixture);
+  normalized.presentationContext = "detail";
   const index = window.MapInBootFlow.createIndex(normalized);
+  const layout = layoutApi.semanticLayout(normalized, { positions: {} });
+  assert.ok(layout.plan.projection.nodes.some((node) => node.id === "education-servlet-chain-continue"));
+  assert.ok(layout.plan.projection.nodes.some((node) => node.id === "education-handler-adapter"));
   const before = JSON.stringify(normalized);
   const steps = window.MapInBootRequestFlow.buildSteps({
     graph: normalized,
@@ -2949,7 +2956,8 @@ test("Request 교육 단계가 확정 Chain·Filter 순서·Handler만 실제 An
       "security-filter-1": { x: 200, y: 100 },
       "security-filter-2": { x: 300, y: 100 },
       "handler-a": { x: 400, y: 100 }
-    }
+    },
+    projection: layout.plan.projection
   });
   const actualAnchors = Array.from(steps
     .filter((step) => step.kind === "actual"), (step) => step.anchorId);
@@ -2966,6 +2974,12 @@ test("Request 교육 단계가 확정 Chain·Filter 순서·Handler만 실제 An
   assert.equal(steps.some((step) => step.label.includes("응답 복귀")), true);
   assert.equal(steps.some((step) => step.anchorId === "chain-b"), false);
   assert.equal(steps.some((step) => step.anchorId === "other-chain-filter"), false);
+  const lastFilterIndex = steps.findIndex((step) => step.anchorId === "security-filter-3");
+  assert.equal(steps.some((step) => step.id.startsWith("security-checks:")), false);
+  const lastFilter = steps[lastFilterIndex];
+  assert.equal(lastFilter.transition.edgeId, "filter-to-continue-chain-a");
+  const continueStep = steps.find((step) => step.id === "education-servlet-chain-continue");
+  assert.equal(continueStep.transition.edgeId, "continue-to-dispatcher");
   assert.equal(steps.some((step) => step.label.includes("Thread ID")), false);
   assert.equal(JSON.stringify(normalized), before);
 
@@ -2992,18 +3006,22 @@ test("Request 교육 단계가 확정 Chain·Filter 순서·Handler만 실제 An
     graph: uncertainGraph,
     index: window.MapInBootFlow.createIndex(uncertainGraph),
     endpointId: "endpoint-a",
-    positions: {}
+    positions: {},
+    projection: layoutApi.semanticLayout(uncertainGraph, { positions: {} }).plan.projection
   });
   assert.equal(Array.from(uncertainSteps, (step) => step.anchorId).includes("security-filter-1"), false);
   assert.equal(uncertainSteps.some((step) => step.label.includes("순서 확인 불가")), true);
+  assert.equal(uncertainSteps.some((step) => step.id.startsWith("security-checks:")), false);
 
   const unselectedSteps = window.MapInBootRequestFlow.buildSteps({
     graph: uncertainGraph,
     index: window.MapInBootFlow.createIndex(uncertainGraph),
     endpointId: "missing-endpoint",
-    positions: {}
+    positions: {},
+    projection: layout.plan.projection
   });
   assert.equal(unselectedSteps.some((step) => step.id === "endpoint-mapping"), false);
+  assert.equal(unselectedSteps.some((step) => step.id.startsWith("security-checks:")), false);
 });
 
 test("Request 교육 표준 Filter 단계는 기존 교육 메타데이터와 Snapshot 분류 상태를 사용함", () => {
@@ -3583,6 +3601,7 @@ test("Request 교육은 SVG Edge 경로를 따라 점을 이동하고 실제·�
   assert.equal(ui.requestFlow.state().phase, "EDGE_TRAVEL");
   assert.equal(elements.get("request-flow-status").textContent, "이동 중");
   assert.equal(elements.get("request-flow-status").getAttribute("data-state"), "moving");
+  assert.equal(path.getAttribute("data-request-flow-active"), "true");
   assert.equal(source.getAttribute("data-request-flow-active"), null);
   assert.equal(elements.get("request-flow-dot").hasAttribute("hidden"), false);
   assert.equal(elements.get("request-flow-dot").getAttribute("cx"), "0");
@@ -3609,6 +3628,7 @@ test("Request 교육은 SVG Edge 경로를 따라 점을 이동하고 실제·�
 
   ui.requestFlow.reset();
   assert.equal(destination.getAttribute("data-request-flow-active"), null);
+  assert.equal(path.getAttribute("data-request-flow-active"), null);
   assert.equal(elements.get("request-flow-dot").hasAttribute("hidden"), true);
   ui.requestFlow.setSteps([{ id: "actual-endpoint", label: "Endpoint", kind: "actual", anchorId: "endpoint-a" }]);
   ui.requestFlow.play();
@@ -3679,8 +3699,11 @@ test("Request Flow는 HTMLCollection형 Graph Edge의 묶인 원본 ID를 찾고
   assert.doesNotThrow(() => animationClock.tick(1500));
   assert.equal(elements.get("request-flow-dot").getAttribute("cx"), "70");
   assert.equal(elements.get("request-flow-dot").getAttribute("cy"), "0");
+  assert.equal(edgePath.getAttribute("data-request-flow-active"), "true");
   assert.equal(elements.get("request-flow-status").textContent, "이동 중");
   assert.equal(elements.get("request-flow-status").getAttribute("data-state"), "moving");
+  ui.requestFlow.reset();
+  assert.equal(edgePath.getAttribute("data-request-flow-active"), null);
 
   ui.requestFlow.setSteps([
     { id: "endpoint", label: "API", kind: "actual", anchorId: "endpoint-a", transition: {
@@ -4330,22 +4353,31 @@ test("ELK 결과를 의미 기반 Lane으로 재배치하고 실제 관계와 �
   assert.match(renderedEdge.attributes.d, /^M /);
   assert.equal(ui.navigation.state.graphBounds.width, layout.width);
   assert.equal(ui.navigation.state.graphBounds.height, layout.height);
-  assert.equal(elements.get("graph-areas").children.length, layout.plan.lanes.length + layout.plan.chainGroups.length);
+  assert.equal(ui.state.graphRender.areas.filter((area) => area.id !== "education").length, 7);
+  assert.equal(elements.get("graph-areas").children.filter((group) => group.getAttribute("class") === "graph-chain-area").length,
+    layout.plan.chainGroups.length);
   assert.equal(layout.positions["node-2"].x, layout.plan.lanes.find((lane) => lane.id === "endpoint").x);
   assert.equal(layout.plan.mode, "request-flow-lanes");
   assert.ok(layout.plan.lanes.find((lane) => lane.id === "security-filter").columns >= 1);
   assert.ok(layout.plan.chainGroups.length >= 1);
   const areaNodes = new Map(ui.state.graphRender.areas.map((area) => [area.id, area.nodeIds]));
-  assert.equal(areaNodes.get("endpoint").length, 0);
+  assert.ok(areaNodes.get("mvc").length > 0);
+  assert.ok(areaNodes.get("api-mapping").length > 0);
+  assert.ok(areaNodes.get("controller-handler").length > 0);
+  assert.ok(areaNodes.get("spring-security").length > 0);
+  assert.ok(elements.get("graph-areas").children.filter((group) => group.getAttribute("class") === "graph-chain-area")
+    .every((group) => group.getAttribute("data-related") === "false"));
   assert.equal(elements.get("graph-guides").children.filter((child) => child.attributes["data-guide-kind"] === "education").length, 0);
   assert.equal(elements.get("graph-guides").children.some((child) =>
     child.textContent.includes("화면 안내") || child.textContent.includes("점선: Endpoint")), false);
-  assert.equal(layout.edgeRoutes["edge-0"].sections.length, 1);
+  const entryRelation = layout.plan.overviewRouting.relations.find((relation) => relation.originalEdgeIds?.includes("edge-0"));
+  assert.ok(entryRelation);
+  assert.ok(layout.plan.overviewRouting.routesByRelationId[entryRelation.id]);
   assert.equal(layoutCalls[0].layoutOptions["org.eclipse.elk.direction"], "RIGHT");
   assert.equal(layoutCalls[0].edges.some((edge) => edge.id === "edge-0"), true);
 });
 
-test("17개 API를 두 Endpoint 열에 보존하고 확인된 Chain·Handler만 대응시킴", async () => {
+test("17개 API를 Chain별 Hidden Group에 배치하고 확인된 Chain·Handler만 대응시킴", async () => {
   const { ui, layoutApi, elements } = loadUi();
   const snapshot = laneGraphFixture();
   const originalEdgeCount = snapshot.edges.length;
@@ -4361,7 +4393,19 @@ test("17개 API를 두 Endpoint 열에 보존하고 확인된 Chain·Handler만 
     .map((x) => endpoints.map((node) => ui.state.layout.positions[node.id])
       .filter((position) => position.x === x).sort((left, right) => left.y - right.y));
   assert.deepEqual(endpointColumns.map((column) => column.length), [9, 8]);
-  assert.equal(endpointColumns[1][0].y - endpointColumns[0][0].y, 90);
+  assert.equal(endpointColumns[1][0].y - endpointColumns[0][0].y, 270);
+  const hiddenGroups = ui.state.layout.plan.hiddenGroups;
+  assert.deepEqual(Array.from(hiddenGroups, (group) => group.members.endpoints.length), [5, 4, 4, 4]);
+  endpoints.forEach((endpoint) => {
+    const group = hiddenGroups.find((candidate) => candidate.members.endpoints.includes(endpoint.id));
+    const position = ui.state.layout.positions[endpoint.id];
+    assert.ok(position.y >= group.rowTop && position.y + 120 <= group.rowBottom);
+    const match = ui.state.flowIndex.firstMatchedChain(endpoint.id);
+    if (match.status === "CONFIRMED") {
+      assert.equal(hiddenGroups.find((candidate) => candidate.members.handlers
+        .includes(ui.state.flowIndex.handlerFor(endpoint.id).node.id)).id, group.id);
+    }
+  });
   assert.equal(ui.state.flowIndex.summary().matchedEndpointCount, 13);
   assert.equal(ui.state.flowIndex.summary().uncertainCount, 4);
   const endpointX = ui.state.layout.positions[endpoints[0].id].x;
@@ -4372,7 +4416,9 @@ test("17개 API를 두 Endpoint 열에 보존하고 확인된 Chain·Handler만 
   });
   assert.equal(ui.state.graph.edges.length, originalEdgeCount);
   assert.equal(layoutApi.buildGraph(ui.state.graph).edges.length, originalEdgeCount);
-  assert.equal(elements.get("graph-guides").children.filter((child) => child.attributes["data-guide-kind"] === "endpoint-handler").length, 17);
+  const mappingRelations = ui.state.layout.plan.overviewRouting.relations.filter((relation) => relation.role === "API_MAPPING");
+  assert.equal(mappingRelations.length, 17);
+  assert.equal(elements.get("graph-guides").children.length, 0);
 });
 
 test("Chain별 Security Filter 순서와 4열 줄바꿈이 안정적이며 실제 Graph를 늘리지 않음", async () => {
@@ -4410,7 +4456,7 @@ test("Chain별 Security Filter 순서와 4열 줄바꿈이 안정적이며 실�
   assert.equal(ui.state.layout.plan.mode, "request-flow-lanes");
 });
 
-test("요청 흐름 투영은 HTTP·Servlet·Chain 선택·MVC 단계를 실제 Graph와 분리함", async () => {
+test("Overview는 내부 처리 카드를 제외하고 Detail은 학습 단계를 유지함", async () => {
   const { ui, elements } = loadUi();
   const snapshot = laneGraphFixture();
   const originalGraph = JSON.stringify(snapshot);
@@ -4419,42 +4465,24 @@ test("요청 흐름 투영은 HTTP·Servlet·Chain 선택·MVC 단계를 실제 
 
   const projection = ui.state.layout.plan.projection;
   assert.ok(projection);
-  assert.equal(
-    projection.nodes.filter((node) => node.kind === "education").map((node) => node.id).join("|"),
-    [
-      "education-http-request",
-      "education-request-prepare",
-      "education-thread-context",
-      "education-servlet-filter-chain",
-      "education-delegating-filter-proxy",
-      "education-filter-chain-proxy",
-      "education-request-matcher",
-      "education-servlet-chain-continue",
-      "education-handler-mapping",
-      "education-handler-adapter"
-    ].join("|")
-  );
+  assert.equal(projection.nodes.length, 0);
+  assert.equal(projection.edges.some((edge) => /(?:continue|adapter)/.test(edge.id)), false);
+  assert.equal(projection.nodes.some((node) => /(?:chain-continue|handler-adapter)/.test(node.id)), false);
+  assert.equal(projection.edges.some((edge) => /(?:chain-continue|handler-adapter)/.test(`${edge.sourceId} ${edge.targetId}`)), false);
   assert.equal(projection.nodes.some((node) => node.id === "education-response-return"), false);
   assert.equal(projection.edges.some((edge) => edge.id.startsWith("handler-to-response-")), false);
-  const graphNodeIds = new Set([
-    ...ui.state.graph.nodes.map((node) => node.id),
-    ...projection.nodes.map((node) => node.id)
-  ]);
-  assert.equal(projection.edges.every((edge) => graphNodeIds.has(edge.sourceId) && graphNodeIds.has(edge.targetId)), true);
-  const projectionBounds = projection.nodes.map((node) => node.bounds);
-  assert.equal(ui.state.layout.plan.educationArea.left, Math.min(...projectionBounds.map((bounds) => bounds.left)) - 24);
-  assert.equal(ui.state.layout.plan.educationArea.top, Math.min(...projectionBounds.map((bounds) => bounds.top)) - 48);
-  assert.equal(ui.state.layout.plan.educationArea.right, Math.max(...projectionBounds.map((bounds) => bounds.right)) + 24);
-  assert.equal(ui.state.layout.plan.educationArea.bottom, Math.max(...projectionBounds.map((bounds) => bounds.bottom)) + 32);
-  assert.match(projection.nodes.find((node) => node.id === "education-request-matcher").detail, /체인 1.*체인 2.*체인 3/);
+  assert.equal(ui.state.layout.plan.educationArea, null);
   assert.ok(projection.edges.length > 0);
   assert.equal(projection.edges.some((edge) => edge.dataEdgeId), false);
-  assert.equal(elements.get("graph-flow-projection").children.length > 0, true);
+  assert.equal(elements.get("graph-flow-projection").children.length, 0);
   assert.equal(findAllByClass(elements.get("graph-minimap-nodes"), "graph-minimap-node")
     .some((node) => node.getAttribute("data-node-id") === "education-response-return"), false);
   assert.equal(JSON.stringify(snapshot), originalGraph);
   assert.equal(ui.state.graph.nodes.length, 17 + 17 + 3 + 46, "실제 Snapshot Node 수 보존");
   assert.equal(ui.state.graph.edges.some((edge) => edge.type === "FLOWS_TO"), false);
+  ui.selectView("feature-flow");
+  await ui.layoutGraph();
+  assert.ok(ui.state.layout.plan.projection.nodes.some((node) => node.id === "education-handler-mapping"));
 });
 
 test("Security Filter는 동일 Chain의 동일 수평 대역에서 filterOrder 증가 방향으로 배치됨", async () => {
@@ -4569,23 +4597,57 @@ test("Filter 줄바꿈 표시용 Edge는 다음 행의 첫 Filter로 우회하�
   assert.equal(wrap.sourceId, "security-filter-3");
   assert.equal(wrap.targetId, "security-filter-4");
   assert.equal(wrap.dataEdgeId, null);
-  assert.match(layout.plan.projectionRoutes[wrap.id].d, /V/);
-  assert.equal(layout.plan.routeDiagnostics.edgeNodeIntersections, 0);
+  const route = layout.plan.overviewRouting.routesByRelationId[wrap.id];
+  assert.ok(route);
+  assert.ok(route.orderedSegmentIds.length >= 3);
+  assert.equal(route.sourcePort.x, layout.positions[wrap.sourceId].x + 260);
+  assert.equal(route.targetPort.x, layout.positions[wrap.targetId].x);
 });
 
-test("주요 섹션은 실제 사용 폭과 공통 중심선 및 안전 여백을 사용함", () => {
+test("주요 섹션은 실제 사용 폭을 사용하고 Hidden Row별 Y 구간을 유지함", () => {
   const { layoutApi, ui } = loadUi();
   const layout = layoutApi.semanticLayout(ui.normalizeGraph(laneGraphFixture()), { positions: {} });
-  const requestLane = layout.plan.lanes.find((lane) => lane.id === "request");
   const servletLane = layout.plan.lanes.find((lane) => lane.id === "servlet-filter");
-  const requestProjectionRight = Math.max(...layout.plan.projection.nodes
-    .filter((node) => node.position.x >= requestLane.x && node.position.x < servletLane.x)
-    .map((node) => node.position.x + 260));
-  assert.equal(requestLane.x + requestLane.width, requestProjectionRight);
-  assert.equal(servletLane.x, requestLane.x + requestLane.width + layout.plan.sectionGap);
+  assert.equal(layout.plan.lanes.some((lane) => lane.id === "request"), false);
+  assert.equal(servletLane.x, 72);
 
-  const centers = Object.values(layout.plan.sectionAlignment).map((section) => section.centerY);
-  assert.ok(centers.every((centerY) => Math.abs(centerY - centers[0]) <= 1), JSON.stringify(layout.plan.sectionAlignment));
+  const measuredSections = Object.entries(layout.plan.sectionAlignment)
+    .filter(([, section]) => section && section.nodeIds && section.nodeIds.length)
+    .map(([id, section]) => {
+      const instanceIds = Array.from(new Set(section.nodeIds.flatMap((nodeId) =>
+        layout.plan.displayModel.originalNodeToInstanceIds[nodeId] || [])));
+      const members = instanceIds.map((instanceId) => layout.plan.displayModel.instances
+        .find((instance) => instance.id === instanceId)?.position).filter(Boolean);
+      let top = Math.min(...members.map((position) => position.y));
+      let bottom = Math.max(...members.map((position) => position.y + 120));
+      assert.equal(section.top, top, `${id} actual top`);
+      assert.equal(section.height, bottom - top, `${id} actual height`);
+      return id;
+    });
+  assert.ok(measuredSections.length >= 3);
+  const displayModel = layout.plan.displayModel;
+  layout.plan.hiddenGroups.filter((row) => row.type === "CHAIN").forEach((row) => {
+    const categoryPositions = Object.fromEntries(Object.entries(row.members).map(([category, nodeIds]) => [category,
+      nodeIds.flatMap((nodeId) => (displayModel.originalNodeToInstanceIds[nodeId] || [])
+        .map((instanceId) => displayModel.instances.find((instance) => instance.id === instanceId))
+        .filter((instance) => instance && instance.rowId === row.id)
+        .map((instance) => instance.position))]));
+    Object.values(categoryPositions).flat().forEach((position) => {
+      assert.ok(position.y >= row.rowTop && position.y + 120 <= row.rowBottom,
+        `${row.id} member outside its hidden row`);
+    });
+    const chainFilter = [...categoryPositions.chains, ...categoryPositions.filters];
+    const sections = [chainFilter, categoryPositions.securityChecks, categoryPositions.endpoints, categoryPositions.handlers]
+      .filter((positions) => positions.length);
+    assert.ok(sections.length >= 3, `${row.id} must span chain, API, and handler areas`);
+    const rowCenter = (row.rowTop + row.rowBottom) / 2;
+    sections.forEach((positions) => {
+      const top = Math.min(...positions.map((position) => position.y));
+      const bottom = Math.max(...positions.map((position) => position.y + 120));
+      assert.ok(Math.abs((top + bottom) / 2 - rowCenter) <= 1,
+        `${row.id} section must be vertically centered in its row`);
+    });
+  });
   assert.ok(layout.plan.routing.nodeSafeMargin >= 24);
 });
 
@@ -4618,13 +4680,13 @@ test("Security Data 원본 구조 키를 의미 이름으로 축약하고 원문
   });
   ui.renderGraph(snapshot);
   const node = elements.get("graph-nodes").children.find((item) => item.attributes["data-node-id"] === "security-data-jwt");
-  assert.match(textOf(node), /JWT 정보 읽기/);
+  assert.match(textOf(node), /JWT Claim 조회/);
   assert.match(textOf(node), /Claim sub/);
   assert.doesNotMatch(textOf(node), /jwt\|READ\|/);
   ui.selectGraphElement("node", "security-data-jwt");
   assert.match(textOf(elements.get("inspector")), /수행 동작/);
-  assert.match(textOf(elements.get("inspector")), /읽기/);
-  assert.match(textOf(elements.get("inspector")), /JWT 정보 읽기/);
+  assert.match(textOf(elements.get("inspector")), /조회/);
+  assert.match(textOf(elements.get("inspector")), /JWT Claim 조회/);
   assert.doesNotMatch(textOf(elements.get("inspector")), /READ|SPRING_SECURITY_JWT/);
   assert.match(textOf(elements.get("inspector")), /코드 위치/);
   assert.equal(window.MapInBootGraph.friendlyClassName("org.springframework.security.web.SecurityContextHolderAwareRequestFilter"), "Security Context Holder Aware Request Filter");
@@ -4701,6 +4763,23 @@ test("후처리 Worker의 결과는 동기 배치와 같고 오류 시 복구됨
   const recovered = await fallback.layout(graph);
   assert.equal(JSON.stringify({ ...recovered, requestId: undefined, stale: undefined }), JSON.stringify(expected));
   fallback.terminate();
+});
+
+test("ELK 직교 Route 추출은 중복 좌표와 공선 Bend를 정리함", () => {
+  const { layoutApi } = loadUi();
+  const layout = layoutApi.extractLayout({
+    width: 400,
+    height: 200,
+    children: [{ id: "source", x: 0, y: 0 }, { id: "target", x: 300, y: 0 }],
+    edges: [{ id: "edge", sections: [{
+      startPoint: { x: 0, y: 20 },
+      bendPoints: [{ x: 0, y: 40 }, { x: 0, y: 60 }, { x: 180, y: 60 }, { x: 180, y: 60 }],
+      endPoint: { x: 180, y: 120 }
+    }] }]
+  });
+  assert.equal(JSON.stringify(routePoints(layout.edgeRoutes.edge)), JSON.stringify([
+    { x: 0, y: 20 }, { x: 0, y: 60 }, { x: 180, y: 60 }, { x: 180, y: 120 }
+  ]));
 });
 
 test("Graph 전처리 Worker는 Snapshot별 Graph를 한 번 보내고 작업 식별자를 유지함", async () => {
@@ -5049,12 +5128,12 @@ test("화면 고정은 모든 사용자 Pan·Zoom 우회 경로를 막고 선택
   assert.equal(viewport.locked, true);
 
   const edge = findAllByClass(elements.get("graph-edges"), "graph-edge")
-    .find((item) => item.getAttribute("data-edge-id") === "edge-3");
+    .find((item) => (item.getAttribute("data-edge-ids") || "").split(",").includes("edge-7"));
   edge.dispatchEvent({ type: "mouseenter" });
   assert.equal(elements.get("graph-popover").hidden, false);
   edge.dispatchEvent({ type: "click" });
   assert.equal(ui.state.selection.kind, "edge");
-  assert.equal(ui.state.selection.id, "edge-3");
+  assert.equal(ui.state.selection.id, "edge-7");
   assert.equal(elements.get("inspector").hidden, false);
   ui.clearSelection();
   assert.equal(viewport.locked, true);
@@ -5107,18 +5186,29 @@ test("동일 Graph의 Inspector 선택은 Mini Map Node를 다시 만들지 않�
 });
 
 test("Hover 요약과 Node·Edge Inspector가 실제 ID·연결·Evidence를 사용함", async () => {
-  const { ui, elements, document } = loadUi();
+  const { ui, elements, document, layoutCalls } = loadUi();
   ui.renderGraph(graphFixture());
   await ui.layoutGraph();
 
   const node = elements.get("graph-nodes").children[2];
-  let edge = findAllByClass(elements.get("graph-edges"), "graph-edge")[3];
+  let edge = findAllByClass(elements.get("graph-edges"), "graph-edge")
+    .find((item) => (item.getAttribute("data-edge-ids") || "").split(",").includes("edge-7"));
+  const initialNodeElements = [...elements.get("graph-nodes").children];
+  const initialEdgeEmphasis = findAllByClass(elements.get("graph-edges"), "graph-edge")
+    .map((item) => item.getAttribute("data-emphasis"));
+  const initialLayoutCalls = layoutCalls.length;
   node.dispatchEvent({ type: "mouseenter" });
   assert.equal(elements.get("graph-popover").hidden, false);
   assert.match(textOf(elements.get("graph-popover")), /GET \/orders/);
   assert.match(textOf(elements.get("graph-popover")), /관련 Finding 있음/);
+  const hoveredNodeEdges = findAllByClass(elements.get("graph-edges"), "graph-edge");
+  assert.deepEqual(hoveredNodeEdges.map((item) => item.getAttribute("data-emphasis")), initialEdgeEmphasis);
+  assert.equal(node.getAttribute("data-emphasis"), "base");
+  assert.deepEqual([...elements.get("graph-nodes").children], initialNodeElements);
+  assert.equal(layoutCalls.length, initialLayoutCalls);
   node.dispatchEvent({ type: "mouseleave" });
   assert.equal(elements.get("graph-popover").hidden, true);
+  assert.deepEqual(hoveredNodeEdges.map((item) => item.getAttribute("data-emphasis")), initialEdgeEmphasis);
 
   node.dispatchEvent({ type: "click" });
   const inspector = elements.get("inspector");
@@ -5134,6 +5224,24 @@ test("Hover 요약과 Node·Edge Inspector가 실제 ID·연결·Evidence를 사
   assert.match(textOf(inspector), /orders:\/\/node\/2/);
   assert.match(textOf(inspector), /관련 Finding 있음/);
 
+  const selectedEmphasis = findAllByClass(elements.get("graph-edges"), "graph-edge")
+    .map((item) => item.getAttribute("data-emphasis"));
+  const selectedElements = [...elements.get("graph-nodes").children];
+  const otherNode = selectedElements.find((item) => item.getAttribute("data-node-id") !== "node-2");
+  otherNode.dispatchEvent({ type: "mouseenter" });
+  assert.equal(elements.get("graph-popover").hidden, false);
+  assert.equal(elements.get("graph-nodes").children.find((item) => item.getAttribute("data-node-id") === "node-2")
+    .getAttribute("data-selected"), "true");
+  assert.deepEqual(findAllByClass(elements.get("graph-edges"), "graph-edge")
+    .map((item) => item.getAttribute("data-emphasis")), selectedEmphasis);
+  assert.deepEqual([...elements.get("graph-nodes").children], selectedElements);
+  otherNode.dispatchEvent({ type: "mouseleave" });
+
+  edge.dispatchEvent({ type: "mouseenter" });
+  assert.deepEqual(findAllByClass(elements.get("graph-edges"), "graph-edge")
+    .map((item) => item.getAttribute("data-emphasis")), selectedEmphasis);
+  edge.dispatchEvent({ type: "mouseleave" });
+
   elements.get("endpoint-search").value = "get /orders";
   ui.applyGraphFilter();
   assert.equal(ui.state.selection.id, "node-2");
@@ -5141,7 +5249,8 @@ test("Hover 요약과 Node·Edge Inspector가 실제 ID·연결·Evidence를 사
   assert.equal(elements.get("graph-nodes").children[0].attributes["data-selected"], "true");
   elements.get("endpoint-search").value = "";
   ui.applyGraphFilter();
-  edge = findAllByClass(elements.get("graph-edges"), "graph-edge")[3];
+  edge = findAllByClass(elements.get("graph-edges"), "graph-edge")
+    .find((item) => (item.getAttribute("data-edge-ids") || "").split(",").includes("edge-7"));
 
   ui.setInspectorTab("connections");
   assert.ok(["edge-1", "edge-2", "edge-3"].some((id) => textOf(inspector).includes(ui.state.displayIds.edge(id))));
@@ -5157,25 +5266,671 @@ test("Hover 요약과 Node·Edge Inspector가 실제 ID·연결·Evidence를 사
 
   edge.dispatchEvent({ type: "click" });
   assert.equal(inspector.attributes["data-selection-kind"], "edge");
-  assert.equal(inspector.attributes["data-selection-id"], "edge-3");
+  assert.equal(inspector.attributes["data-selection-id"], "edge-7");
   ui.setInspectorTab("properties");
-  assert.match(textOf(inspector), new RegExp(ui.state.displayIds.edge("edge-3")));
-  assert.match(textOf(inspector), new RegExp(ui.state.displayIds.node("node-3")));
-  assert.match(textOf(inspector), new RegExp(ui.state.displayIds.node("node-4")));
-  assert.doesNotMatch(textOf(inspector), /edge-3|node-3|node-4/);
+  assert.match(textOf(inspector), new RegExp(ui.state.displayIds.edge("edge-7")));
+  assert.match(textOf(inspector), new RegExp(ui.state.displayIds.node("node-7")));
+  assert.match(textOf(inspector), new RegExp(ui.state.displayIds.node("node-8")));
+  assert.doesNotMatch(textOf(inspector), /edge-7|node-7|node-8/);
 
   const close = findAllByClass(inspector, "inspector-close")[0];
   close.dispatchEvent({ type: "click" });
   assert.equal(inspector.hidden, true);
   assert.equal(ui.state.selection, null);
 
-  edge = findAllByClass(elements.get("graph-edges"), "graph-edge")[3];
+  edge = findAllByClass(elements.get("graph-edges"), "graph-edge")
+    .find((item) => (item.getAttribute("data-edge-ids") || "").split(",").includes("edge-7"));
   edge.dispatchEvent({ type: "click" });
   assert.equal(ui.state.selection.kind, "edge");
-  assert.equal(ui.state.selection.id, "edge-3");
+  assert.equal(ui.state.selection.id, "edge-7");
   document.dispatchEvent({ type: "keydown", key: "Escape" });
   assert.equal(inspector.hidden, true);
   assert.equal(ui.state.selection, null);
+});
+
+test("기술 영역과 실제 Edge는 기본 상태에서 읽히고 선택 강조는 과도하게 흐리지 않음", () => {
+  assert.match(appCss, /\.graph-area-box\s*\{[^}]*fill-opacity:\s*\.1[4-8]/s);
+  for (const areaId of ["request-entry", "servlet-filter", "spring-security", "mvc", "api-mapping",
+    "controller-handler", "security-checks"]) {
+    assert.match(appCss, new RegExp(`\\.graph-area\\[data-area-id="${areaId}"\\] \\.graph-area-box \\{[^}]*fill: #[0-9a-f]{6}[^}]*stroke: #[0-9a-f]{6}`, "s"));
+  }
+  assert.ok(/:root\s*\{[^}]*--graph-line-opacity:\s*\.78;[^}]*--graph-line-width:\s*1\.8;/s.test(appCss));
+  assert.ok(/\.graph-edge\s*\{[^}]*stroke-width:\s*var\(--graph-line-width\)[^}]*opacity:\s*var\(--graph-line-opacity\)/s.test(appCss));
+  assert.ok(/\.graph-projection-edge\s*\{[^}]*stroke-width:\s*var\(--graph-line-width\)[^}]*opacity:\s*var\(--graph-line-opacity\)/s.test(appCss));
+  assert.ok(/\.graph-guide-handler\s*\{[^}]*stroke-width:\s*var\(--graph-line-width\)[^}]*opacity:\s*var\(--graph-line-opacity\)/s.test(appCss));
+  assert.match(appCss, /\.graph-edge\[data-emphasis="unrelated"\]\s*\{[^}]*opacity:\s*\.(?:3[0-9]|4[0-9]|5[0])/s);
+  assert.doesNotMatch(appCss, /\.graph-node:hover\s+\.graph-node-card/);
+  assert.match(appCss, /\.graph-node:focus-visible\s+\.graph-node-card/);
+  assert.match(appCss, /graph-edge-security-filter-membership/);
+  assert.match(appCss, /graph-area-box[^}]*fill-opacity:\s*\.1[4-8]/s);
+});
+
+test("Servlet Filter 노드는 Servlet 영역의 녹색, Security Filter는 주황색 계열을 사용함", async () => {
+  const { ui, elements } = loadUi();
+  const graph = wrappedFilterGraph(1, 1);
+  graph.nodes.push({
+    id: "unknown-filter", type: "FILTER", serviceId: "orders", label: "UnknownFilter",
+    attributes: { filterClass: "com.example.UnknownFilter" }, evidenceIds: []
+  });
+  ui.state.includeUnconnectedNodes = true;
+  ui.renderGraph(graph);
+  await ui.layoutGraph();
+
+  const byId = new Map(findAllByClass(elements.get("graph-nodes"), "graph-node")
+    .map((element) => [element.getAttribute("data-node-id"), element]));
+  const colors = (id) => {
+    const node = byId.get(id);
+    const child = (className) => findAllByClass(node, className)[0];
+    return {
+      border: child("graph-node-card").getAttribute("stroke"),
+      tint: child("graph-node-background-tint").getAttribute("fill"),
+      dot: child("graph-node-type-dot").getAttribute("fill"),
+      label: child("graph-node-type").getAttribute("fill"),
+      idColor: child("graph-node-display-id").getAttribute("fill")
+    };
+  };
+  const servlet = colors("servlet-filter-0");
+  const security = colors("security-filter-0");
+  const unknown = colors("unknown-filter");
+  assert.equal(new Set([servlet.border, servlet.tint, servlet.dot, servlet.label]).size, 1);
+  assert.equal(new Set([security.border, security.tint, security.dot, security.label]).size, 1);
+  assert.notEqual(servlet.border, security.border);
+  assert.notEqual(unknown.border, servlet.border);
+  assert.notEqual(unknown.border, security.border);
+  assert.match(appCss, /\.graph-node-display-id\s*\{[^}]*fill:\s*#b5c3ba/);
+});
+
+test("내부 처리 과정 배경만 제거하고 Projection 배치 좌표와 상위 기술 영역을 보존함", async () => {
+  const { ui, elements } = loadUi();
+  ui.state.includeUnconnectedNodes = true;
+  ui.renderGraph(laneGraphFixture());
+  const layout = await ui.layoutGraph();
+
+  const technicalAreaIds = ui.state.graphRender.areas.map((area) => area.id).sort();
+  assert.equal(technicalAreaIds.includes("education"), false);
+  assert.equal(elements.get("graph-areas").children.filter((group) => group.getAttribute("class") === "graph-area"
+    && group.getAttribute("data-area-kind") === "technical")
+    .map((group) => group.getAttribute("data-area-id")).sort().join(","),
+  technicalAreaIds.join(","));
+  assert.equal(findAllByClass(elements.get("graph-areas"), "graph-education-area-box").length, 0);
+  assert.equal(findAllByClass(elements.get("graph-areas"), "graph-area-label")
+    .some((label) => label.textContent === "내부 처리 과정"), false);
+  assert.equal(layout.plan.educationArea, null);
+  assert.equal(layout.plan.projection.nodes.length, 0);
+  const areas = new Map(ui.state.graphRender.areas.map((area) => [area.id, area]));
+  assert.equal(areas.has("mvc"), ui.state.viewGraph.nodes.some((node) => node.type === "SERVLET"));
+  assert.ok(areas.has("api-mapping"));
+  assert.ok(areas.has("controller-handler"));
+  const apiBounds = areas.get("api-mapping").bounds[0];
+  const handlerBounds = areas.get("controller-handler").bounds[0];
+  assert.ok(handlerBounds.left - apiBounds.right >= 400);
+  assert.match(appCss, /data-area-id="controller-handler"[^}]*fill:\s*#49376a/);
+  assert.equal(findAllByClass(elements.get("graph-flow-projection"), "graph-projection-node").length, 0);
+  assert.equal(elements.get("setting-show-areas").checked, true);
+  elements.get("setting-show-areas").checked = false;
+  elements.get("setting-show-areas").dispatchEvent({ type: "change" });
+  assert.equal(elements.get("graph-areas").hasAttribute("hidden"), true);
+  elements.get("setting-show-areas").checked = true;
+  elements.get("setting-show-areas").dispatchEvent({ type: "change" });
+  assert.equal(elements.get("graph-areas").hasAttribute("hidden"), false);
+});
+
+test("SECURITY CHECKS에서 두 Handler 열로 향하는 관계가 표시 경로에서 공통 배선됨", async () => {
+  const { ui, layoutApi, elements } = loadUi();
+  const node = (id, type, attributes = {}) => ({ id, type, serviceId: "orders", label: id, attributes,
+    evidenceIds: [`evidence-${id}`] });
+  const edge = (id, sourceId, targetId, type, attributes = {}) => ({ id, sourceId, targetId, type,
+    attributes, confidence: "CONFIRMED", evidenceIds: [`evidence-${id}`] });
+  const handlers = Array.from({ length: 16 }, (_, index) => `handler-${index}`);
+  const snapshot = {
+    nodes: [node("chain", "SECURITY_CHAIN", { chainKey: "chain", chainOrder: "1" }),
+      ...handlers.flatMap((id, index) => [
+        node(`endpoint-${index}`, "ENDPOINT", { httpMethod: "GET", path: `/items/${index}`, handler: `${id}#read` }),
+        node(id, "HANDLER", { handler: `${id}#read` })
+      ]),
+      node("authorization", "AUTHORIZATION", { authorizationKind: "ROLE" })],
+    edges: [
+      ...handlers.flatMap((id, index) => [
+        edge(`match-${index}`, `endpoint-${index}`, "chain", "MATCHED_BY", { chainKey: "chain", chainOrder: "1" }),
+        edge(`secured-${index}`, id, "authorization", "SECURED_BY", { authorizationKind: "ROLE" })
+      ])
+    ]
+  };
+  const graph = ui.normalizeGraph(snapshot);
+  const layout = layoutApi.semanticLayout(graph, { positions: {} });
+  assert.equal(layout.plan.lanes.find((lane) => lane.id === "endpoint").columns, 2);
+  const plan = layout.plan.overviewRouting;
+  const relations = plan.relations.filter((relation) => relation.type === "SECURED_BY");
+  assert.equal(relations.length, handlers.length);
+  assert.ok(relations.every((relation) => plan.routesByRelationId[relation.id]));
+  const trunk = plan.segments.find((segment) => segment.routeRole === "TRUNK"
+    && relations.every((relation) => segment.relationIds.includes(relation.id)));
+  assert.ok(trunk, "두 Handler 열로 향하는 공통 배선 누락");
+
+  ui.renderGraph(snapshot);
+  await ui.layoutGraph();
+  const trunkPaths = () => findAllByClass(elements.get("graph-edges"), "graph-overview-segment")
+    .filter((path) => path.getAttribute("data-segment-id") === trunk.id);
+  assert.equal(trunkPaths().length, 1, "공통 Trunk는 한 번만 렌더링");
+  const pathData = trunkPaths()[0].getAttribute("d");
+  ui.selectGraphElement("node", "authorization");
+  assert.equal(trunkPaths().length, 1);
+  assert.equal(trunkPaths()[0].getAttribute("d"), pathData);
+  assert.equal(graph.edges.filter((edge) => edge.type === "SECURED_BY" && edge.evidenceIds.length).length, handlers.length);
+});
+
+test("확정된 16개 Security Filter는 실제 순서로 이어지고 DispatcherServlet에 연결하지 않음", () => {
+  const { layoutApi, ui, window } = loadUi();
+  const source = wrappedFilterGraph(0, 16);
+  const graph = ui.normalizeGraph(source);
+  const originalEdgeIds = graph.edges.map((edge) => edge.id).sort();
+  const layout = layoutApi.semanticLayout(graph, { positions: {} });
+  const projected = layout.plan.projection.edges.filter((edge) => edge.projectionKind === "security-filter-order");
+
+  assert.equal(window.MapInBootFlow.createIndex(graph).securityFiltersForChain("chain").orderStatus, "CONFIRMED");
+  assert.equal(projected.length, 16);
+  assert.equal(projected[0].sourceId, "chain");
+  assert.equal(projected[0].targetId, "security-filter-0");
+  assert.equal(projected.at(-1).targetId, "security-filter-15");
+  assert.ok(projected.every((edge) => edge.flowGroup === "chain" && edge.dataEdgeId === null));
+  assert.equal(projected.some((edge) => edge.id.startsWith("filter-to-dispatcher-")), false);
+  assert.equal(layout.plan.projection.nodes.some((node) => node.kind === "security-checks"), false);
+  assert.deepEqual(graph.edges.map((edge) => edge.id).sort(), originalEdgeIds);
+  assert.equal(graph.edges.filter((edge) => edge.type === "FILTERED_BY").length, 16);
+  assert.ok(projected.some((edge) => edge.routeKind === "filter-wrap"));
+  assert.equal(layout.plan.commonEdgeRouteGroups.some((group) => group.type === "FILTERED_BY"), false);
+
+  const mixed = layoutApi.semanticLayout(ui.normalizeGraph(wrappedFilterGraph(5, 16)), { positions: {} });
+  const servletProjection = mixed.plan.projection.edges.filter((edge) => edge.projectionKind === "servlet-filter-order");
+  const securityProjection = mixed.plan.projection.edges.filter((edge) => edge.projectionKind === "security-filter-order");
+  assert.equal(servletProjection.length, 0);
+  assert.equal(securityProjection.length, 16);
+  assert.ok(servletProjection.every((edge) => edge.flowGroup === "servlet-filter"));
+  assert.ok(securityProjection.every((edge) => edge.flowGroup === "chain"));
+});
+
+test("보안 근거를 실행 Projection으로 추가하지 않고 원본 관계를 보존함", () => {
+  const { layoutApi, ui } = loadUi();
+  const source = detailGraphFixture();
+  source.nodes.push({ id: "uncertain-data", type: "SECURITY_DATA", serviceId: "orders", label: "Uncertain",
+    attributes: {}, evidenceIds: [] });
+  source.edges.push({ id: "uncertain-secured", sourceId: "handler-b", targetId: "uncertain-data",
+    type: "SECURED_BY", attributes: {}, confidence: "LIKELY", evidenceIds: ["evidence-uncertain"] });
+  const graph = ui.normalizeGraph(source);
+  const originalGraph = JSON.stringify(graph);
+  const originalSecurityEdge = graph.edges.find((edge) => edge.id === "secured-a");
+  const layout = layoutApi.semanticLayout(graph, { positions: {} });
+  const checksFlow = layout.plan.projection.edges.filter((edge) => edge.projectionKind === "security-checks");
+  const authorizationDisplayId = layout.plan.displayModel.nodeToDisplay["authorization-a"];
+  assert.equal(checksFlow.length, 0);
+  const authorizationPosition = layout.plan.displayModel.groups
+    .find((group) => group.id === authorizationDisplayId).position;
+  assert.ok(layout.positions["chain-a"].x < authorizationPosition.x);
+  assert.ok(authorizationPosition.x < layout.positions["endpoint-a"].x);
+  assert.deepEqual({ sourceId: originalSecurityEdge.sourceId, targetId: originalSecurityEdge.targetId },
+    { sourceId: "handler-a", targetId: "authorization-a" });
+  assert.equal(JSON.stringify(graph), originalGraph);
+
+  const withoutSecondCheck = detailGraphFixture();
+  withoutSecondCheck.nodes = withoutSecondCheck.nodes.filter((node) => node.id !== "authorization-b");
+  withoutSecondCheck.edges = withoutSecondCheck.edges.filter((edge) => edge.id !== "secured-b");
+  const noCheckLayout = layoutApi.semanticLayout(ui.normalizeGraph(withoutSecondCheck), { positions: {} });
+  assert.equal(noCheckLayout.plan.projection.edges.some((edge) => edge.sourceId === "education-handler-mapping"), false);
+});
+
+test("연결된 Security Checks와 실제 Controller Group까지 최종 Bounds 중심선을 공유함", () => {
+  const { layoutApi, ui } = loadUi();
+  const layout = layoutApi.semanticLayout(ui.normalizeGraph(detailGraphFixture()), { positions: {} });
+  assert.ok(layout.plan.sectionAlignment.securityChecks.nodeIds.includes("authorization-a"));
+  assert.ok(layout.plan.sectionAlignment.handler.nodeIds.includes("handler-a"));
+  const confirmedRows = layout.plan.hiddenGroups.filter((row) => row.membershipStatus === "CONFIRMED");
+  const rowCenter = (Math.min(...confirmedRows.map((row) => row.rowTop))
+    + Math.max(...confirmedRows.map((row) => row.rowBottom))) / 2;
+  assert.ok(Math.abs(rowCenter - layout.plan.sectionAlignment.securityChecks.centerY) <= 1,
+    JSON.stringify({ rowCenter, sections: layout.plan.sectionAlignment }));
+});
+
+test("누락·중복·충돌 순서는 Security Filter 직렬 Projection 없이 확인 불가로 표시함", () => {
+  const { layoutApi, ui, window } = loadUi();
+  const variants = [
+    ["누락", (graph) => {
+      delete graph.edges.find((edge) => edge.id === "security-edge-1").attributes.filterOrder;
+      delete graph.nodes.find((node) => node.id === "security-filter-1").attributes.filterOrder;
+    }],
+    ["중복", (graph) => {
+      graph.edges.find((edge) => edge.id === "security-edge-1").attributes.filterOrder = "1";
+      graph.nodes.find((node) => node.id === "security-filter-1").attributes.filterOrder = "1";
+    }],
+    ["충돌", (graph) => {
+      graph.edges.find((edge) => edge.id === "security-edge-1").attributes.filterOrder = "3";
+    }],
+    ["미확정 소속", (graph) => {
+      graph.edges.find((edge) => edge.id === "security-edge-1").confidence = "UNKNOWN";
+    }]
+  ];
+  variants.forEach(([label, mutate]) => {
+    const source = wrappedFilterGraph(0, 2);
+    mutate(source);
+    const graph = ui.normalizeGraph(source);
+    const orderStatus = window.MapInBootFlow.createIndex(graph).securityFiltersForChain("chain").orderStatus;
+    const layout = layoutApi.semanticLayout(graph, { positions: {} });
+    assert.notEqual(orderStatus, "CONFIRMED", label);
+    assert.equal(layout.plan.projection.edges.some((edge) => edge.projectionKind === "security-filter-order"), false, label);
+    assert.equal(layout.plan.chainGroups.find((group) => group.id === "chain").filterOrderStatus, orderStatus, label);
+  });
+});
+
+test("비어 있거나 단일 Filter인 Chain도 근거가 없으면 순서 경로를 과장하지 않음", () => {
+  const { layoutApi, ui, window } = loadUi();
+  const empty = layoutApi.semanticLayout(ui.normalizeGraph(wrappedFilterGraph(0, 0)), { positions: {} });
+  assert.equal(empty.plan.projection.edges.some((edge) => edge.projectionKind === "security-filter-order"), false);
+  assert.equal(window.MapInBootFlow.createIndex(ui.normalizeGraph(wrappedFilterGraph(0, 0)))
+    .securityFiltersForChain("chain").orderStatus, "UNKNOWN");
+  assert.match(empty.plan.chainGroups.find((group) => group.id === "chain").label, /필터 순서 확인 불가/);
+
+  const oneConfirmed = layoutApi.semanticLayout(ui.normalizeGraph(wrappedFilterGraph(0, 1)), { positions: {} });
+  assert.equal(oneConfirmed.plan.projection.edges.filter((edge) => edge.projectionKind === "security-filter-order").length, 1);
+
+  const oneUnknown = wrappedFilterGraph(0, 1);
+  delete oneUnknown.edges[0].attributes.filterOrder;
+  delete oneUnknown.nodes.find((node) => node.id === "security-filter-0").attributes.filterOrder;
+  const uncertain = layoutApi.semanticLayout(ui.normalizeGraph(oneUnknown), { positions: {} });
+  assert.equal(uncertain.plan.projection.edges.some((edge) => edge.projectionKind === "security-filter-order"), false);
+});
+
+test("여러 Chain과 공유 Filter의 순서 Projection은 Chain별 소속을 유지함", () => {
+  const { layoutApi, ui } = loadUi();
+  const graph = {
+    nodes: [
+      { id: "chain-a", type: "SECURITY_CHAIN", serviceId: "orders", label: "A", attributes: { chainOrder: "1" }, evidenceIds: [] },
+      { id: "chain-b", type: "SECURITY_CHAIN", serviceId: "orders", label: "B", attributes: { chainOrder: "2" }, evidenceIds: [] },
+      ...["a-first", "shared-filter", "a-last", "b-first"].map((id) => ({
+        id, type: "FILTER", serviceId: "orders", label: id,
+        attributes: { registrationKind: "SECURITY", filterClass: `com.example.${id}` }, evidenceIds: []
+      }))
+    ],
+    edges: [
+      { id: "a-filter-1", sourceId: "chain-a", targetId: "a-first", type: "FILTERED_BY", attributes: { registrationKind: "SECURITY", filterOrder: "1" }, confidence: "CONFIRMED", evidenceIds: ["ea1"] },
+      { id: "a-filter-2", sourceId: "chain-a", targetId: "shared-filter", type: "FILTERED_BY", attributes: { registrationKind: "SECURITY", filterOrder: "2" }, confidence: "CONFIRMED", evidenceIds: ["ea2"] },
+      { id: "b-filter-1", sourceId: "chain-b", targetId: "shared-filter", type: "FILTERED_BY", attributes: { registrationKind: "SECURITY", filterOrder: "1" }, confidence: "CONFIRMED", evidenceIds: ["eb1"] },
+      { id: "b-filter-2", sourceId: "chain-b", targetId: "b-first", type: "FILTERED_BY", attributes: { registrationKind: "SECURITY", filterOrder: "2" }, confidence: "CONFIRMED", evidenceIds: ["eb2"] }
+    ]
+  };
+  const normalized = ui.normalizeGraph(graph);
+  const layout = layoutApi.semanticLayout(normalized, { positions: {} });
+  const projected = layout.plan.projection.edges.filter((edge) => edge.projectionKind === "security-filter-order");
+  const byChain = (chainId) => projected.filter((edge) => edge.flowGroup === chainId);
+
+  assert.equal(JSON.stringify(byChain("chain-a").map((edge) => [edge.sourceId, edge.targetId])), JSON.stringify([
+    ["chain-a", "a-first"], ["a-first", "display:chain:chain-a:shared-filter"]
+  ]));
+  assert.equal(JSON.stringify(byChain("chain-b").map((edge) => [edge.sourceId, edge.targetId])), JSON.stringify([
+    ["chain-b", "display:chain:chain-b:shared-filter"],
+    ["display:chain:chain-b:shared-filter", "b-first"]
+  ]));
+  assert.deepEqual(Array.from(layout.plan.displayModel.originalNodeToInstanceIds["shared-filter"], (id) =>
+    layout.plan.displayModel.instances.find((instance) => instance.id === id)?.rowId).sort(), ["chain:chain-a", "chain:chain-b"]);
+  assert.equal(layout.plan.projection.edges.some((edge) => edge.kind === "security-checks"), false);
+  assert.notEqual(layout.plan.securityFilterOrder["shared-filter"].status, "CONFIRMED");
+  assert.equal(normalized.edges.filter((edge) => edge.type === "FILTERED_BY").length, 4);
+  assert.equal(layout.plan.projection.edges.some((edge) => edge.sourceId === "a-last" || edge.targetId === "a-last"), false);
+});
+
+test("전체 MAP에서 Endpoint 선택은 MATCHED_BY로 적용된 Chain의 순서만 강조함", async () => {
+  const { ui, elements } = loadUi();
+  ui.renderGraph(laneGraphFixture());
+  await ui.layoutGraph();
+  assert.equal(ui.state.flowIndex.firstMatchedChain("endpoint-0").chain.id, "chain-1");
+  const match = ui.state.graph.edges.find((edge) => edge.type === "MATCHED_BY" && edge.sourceId === "endpoint-0");
+  assert.ok(match);
+  assert.equal(ui.state.layout.plan.overviewRouting.relations.some((relation) => relation.originalEdgeIds?.includes(match.id)), false);
+  assert.equal(elements.get("graph-svg").getAttribute("data-view"), "all-flow");
+  assert.equal(elements.get("graph-svg").getAttribute("data-selection-active"), "false");
+  assert.match(appCss, /\.graph-svg\[data-view="all-flow"\]\[data-selection-active="false"\] \.graph-edge\[data-edge-layer="analysis"\]/);
+  ui.selectGraphElement("node", "endpoint-0");
+  assert.equal(elements.get("graph-svg").getAttribute("data-selection-active"), "true");
+  const orderedEdges = findAllByClass(elements.get("graph-edges"), "graph-overview-segment")
+    .filter((path) => path.getAttribute("data-flow-groups"));
+  assert.ok(orderedEdges.some((path) => path.getAttribute("data-flow-groups").split(",").includes("chain-1")
+    && path.getAttribute("data-emphasis") === "primary"));
+  assert.equal(orderedEdges.some((path) => ["chain-2", "chain-3"].some((id) => path.getAttribute("data-flow-groups").split(",").includes(id))
+    && path.getAttribute("data-emphasis") === "primary"), false);
+});
+
+test("SECURITY CHECKS는 기존 보안 NodeType과 Display Group을 실제 관계·ID 그대로 재배치함", async () => {
+  const { ui, elements, layoutApi } = loadUi();
+  const node = (id, type, label, attributes = {}) => ({
+    id, type, serviceId: "orders", label, attributes, evidenceIds: [`node-${id}`]
+  });
+  const edge = (id, sourceId, targetId, type, evidenceIds, confidence = "CONFIRMED", attributes = {}) => ({
+    id, sourceId, targetId, type, attributes, confidence, evidenceIds
+  });
+  const graph = {
+    nodes: [
+      node("chain-a", "SECURITY_CHAIN", "내부 API", { chainOrder: "1", matcherCondition: "PATH /internal/**" }),
+      node("chain-b", "SECURITY_CHAIN", "기본 API", { chainOrder: "2", matcherCondition: "ANY" }),
+      node("filter-a", "FILTER", "Filter A", { registrationKind: "SECURITY", filterOrder: "1" }),
+      node("filter-b", "FILTER", "Filter B", { registrationKind: "SECURITY", filterOrder: "1" }),
+      node("filter-shared", "FILTER", "공유 Filter", { registrationKind: "SECURITY", filterOrder: "2" }),
+      node("auth-shared", "AUTHENTICATION", "JWT", { authenticationKind: "JWT" }),
+      node("auth-partial", "AUTHENTICATION", "Custom 인증", { authenticationKind: "Custom" }),
+      node("authz-a", "AUTHORIZATION", "인가 정책", { policyKind: "AUTHORITY", requiredAuthority: "ROLE_BANK_ADMIN" }),
+      node("data-a", "SECURITY_DATA", "JWT Claim", { dataKind: "JWT_CLAIM", claimName: "sub", operation: "READ" }),
+      node("state-a", "BUSINESS_SECURITY_STATE", "소유 상태", { stateName: "owner" }),
+      node("handler-a", "HANDLER", "OrderController#read", { handler: "OrderController#read" }),
+      node("method-authz", "AUTHORIZATION", "메서드 인가", { policyKind: "METHOD" }),
+      node("security-checks:chain-a", "SECURITY_DATA", "실제 ID 충돌")
+    ],
+    edges: [
+      edge("membership-a1", "chain-a", "filter-a", "FILTERED_BY", ["e-membership-a1"], "CONFIRMED", { registrationKind: "SECURITY", filterOrder: "1" }),
+      edge("membership-a2", "chain-a", "filter-shared", "FILTERED_BY", ["e-membership-a2"], "CONFIRMED", { registrationKind: "SECURITY", filterOrder: "2" }),
+      edge("membership-b1", "chain-b", "filter-b", "FILTERED_BY", ["e-membership-b1"], "CONFIRMED", { registrationKind: "SECURITY", filterOrder: "1" }),
+      edge("membership-b2", "chain-b", "filter-shared", "FILTERED_BY", ["e-membership-b2"], "CONFIRMED", { registrationKind: "SECURITY", filterOrder: "2" }),
+      edge("auth-shared-evidence", "filter-shared", "auth-shared", "SECURED_BY", ["e-shared-auth"]),
+      edge("auth-partial-evidence", "filter-b", "auth-partial", "SECURED_BY", ["e-partial-auth"], "LIKELY"),
+      edge("authorization-evidence", "filter-a", "authz-a", "USES_FOR_AUTHORIZATION", ["e-authorization"]),
+      edge("security-data-evidence", "filter-a", "data-a", "READS_SECURITY_DATA", ["e-security-data"]),
+      edge("security-state-evidence", "filter-a", "state-a", "SECURITY_STATE", ["e-security-state"]),
+      edge("method-only-evidence", "handler-a", "method-authz", "SECURED_BY", ["e-method-only"])
+    ],
+    evidence: [
+      { id: "node-auth-partial", source: "RUNTIME", location: "orders://auth-partial", summary: "인증 구성 원본 근거" },
+      { id: "e-partial-auth", source: "RUNTIME", location: "orders://auth-partial-edge", summary: "부분 분석 관계 근거" }
+    ]
+  };
+  const before = JSON.stringify(graph);
+  const originalNodeIds = graph.nodes.map((item) => item.id).sort();
+  const originalEdges = graph.edges.map((item) => ({ id: item.id, sourceId: item.sourceId, targetId: item.targetId,
+    type: item.type, evidenceIds: item.evidenceIds.slice() })).sort((left, right) => left.id.localeCompare(right.id));
+  const directLayout = layoutApi.semanticLayout(graph, { positions: {} });
+  ui.state.includeUnconnectedNodes = true;
+  ui.renderGraph(graph);
+  const layout = await ui.layoutGraph();
+  const securityTypes = new Set(["AUTHENTICATION", "AUTHORIZATION", "SECURITY_DATA", "BUSINESS_SECURITY_STATE"]);
+  const securityNodes = graph.nodes.filter((item) => securityTypes.has(item.type));
+  const lane = layout.plan.lanes.find((item) => item.id === "security-checks");
+  const controllerLane = layout.plan.lanes.find((item) => item.id === "handler");
+  const securityIds = securityNodes.map((item) => item.id).sort();
+
+  assert.ok(lane);
+  assert.equal(lane.nodeIds.slice().sort().join(","), securityIds.join(","));
+  securityNodes.forEach((item) => {
+    const position = layout.positions[item.id];
+    assert.ok(position.x >= lane.x && position.x + 260 <= lane.x + lane.width, item.id + "가 SECURITY CHECKS Lane 밖에 있음");
+  });
+  assert.equal(layout.positions["handler-a"].x, controllerLane.x);
+  assert.ok(layout.plan.projection.nodes.every((item) => item.kind !== "security-checks"));
+  assert.ok(layout.plan.projection.edges.every((item) => !item.id.includes("security-checks")));
+  assert.equal(layout.plan.securityChecksArea, undefined);
+  assert.equal(directLayout.plan.projection.nodes.filter((item) => item.kind === "security-checks").length, 0);
+  assert.deepEqual(graph.nodes.map((item) => item.id).sort(), originalNodeIds);
+  assert.deepEqual(graph.edges.map((item) => ({ id: item.id, sourceId: item.sourceId, targetId: item.targetId,
+    type: item.type, evidenceIds: item.evidenceIds.slice() })).sort((left, right) => left.id.localeCompare(right.id)), originalEdges);
+  assert.equal(JSON.stringify(graph), before);
+
+  const area = findAllByClass(elements.get("graph-areas"), "graph-area")
+    .find((item) => item.getAttribute("data-area-id") === "security-checks");
+  assert.ok(area);
+  assert.equal(area.getAttribute("data-area-kind"), "technical");
+  assert.equal(findAllByClass(area, "graph-area-label")[0].textContent, "SECURITY CHECKS");
+  assert.equal(findAllByClass(elements.get("graph-flow-projection"), "graph-projection-node")
+    .some((item) => item.getAttribute("data-projection-kind") === "security-checks"), false);
+  const dataGroupId = layout.plan.displayModel.nodeToDisplay["data-a"];
+  const dataGroup = layout.plan.displayModel.groups.find((item) => item.id === dataGroupId);
+  assert.ok(layout.plan.displayModel.displayToNodes[dataGroupId].includes("data-a"));
+  assert.ok(dataGroup);
+  assert.equal(dataGroup.position.x, layout.positions[dataGroup.nodeIds[0]].x);
+  assert.ok(dataGroup.position.x >= lane.x && dataGroup.position.x + 260 <= lane.x + lane.width);
+  ui.selectGraphElement("node", "auth-partial");
+  assert.equal(ui.state.selection.id, "auth-partial");
+  assert.ok(textOf(elements.get("inspector")).includes(ui.state.displayIds.node("auth-partial")));
+  assert.match(textOf(elements.get("inspector")), /인증 구성 원본 근거|부분 분석 관계 근거/);
+});
+
+test("Security Chain 등록 관계는 가시 배선에 추가하지 않고 Inspector에서 보존함", async () => {
+  const { ui, elements } = loadUi();
+  const graph = wrappedFilterGraph(0, 2);
+  const original = graph.edges.map((edge) => ({ id: edge.id, evidenceIds: edge.evidenceIds.slice() }));
+  ui.renderGraph(graph);
+  await ui.layoutGraph();
+
+  const membershipPaths = () => findAllByClass(elements.get("graph-edges"), "graph-edge")
+    .filter((path) => path.getAttribute("data-edge-type") === "FILTERED_BY");
+  assert.equal(membershipPaths().length, 0);
+  assert.equal(JSON.stringify(ui.state.graph.edges.filter((edge) => edge.type === "FILTERED_BY")
+    .map((edge) => ({ id: edge.id, evidenceIds: edge.evidenceIds }))), JSON.stringify(original));
+
+  ui.selectGraphElement("node", "chain");
+  assert.equal(membershipPaths().length, 0);
+  ui.selectGraphElement("node", "security-filter-0");
+  assert.equal(membershipPaths().length, 0);
+  ui.selectGraphElement("edge", "security-edge-1");
+  assert.equal(membershipPaths().length, 0);
+  assert.equal(ui.state.selection.id, "security-edge-1");
+  assert.match(textOf(elements.get("inspector")), /적용 필터/);
+});
+
+test("Graph 기술 영역은 내부 배치 Lane을 보존하면서 실제 Node를 분리된 상위 영역으로 묶음", async () => {
+  const { ui, elements } = loadUi();
+  ui.renderGraph(graphFixture());
+  await ui.layoutGraph();
+
+  const areas = ui.state.graphRender.areas.filter((area) => area.id !== "education");
+  assert.equal(areas.map((area) => area.id).sort().join(","), [
+    "api-mapping", "controller-handler", "mvc", "request-entry", "security-checks", "servlet-filter", "spring-security"
+  ].join(","));
+  const assignedNodeIds = areas.flatMap((area) => area.nodeIds).sort();
+  assert.equal(assignedNodeIds.join(","), ui.state.viewGraph.nodes.map((node) => node.id).sort().join(","));
+  const segments = areas.flatMap((area) => area.bounds.map((bounds) => ({ areaId: area.id, bounds })));
+  segments.forEach((left, index) => segments.slice(index + 1).forEach((right) => {
+    if (left.areaId === right.areaId) return;
+    const intersects = left.bounds.left < right.bounds.right && left.bounds.right > right.bounds.left
+      && left.bounds.top < right.bounds.bottom && left.bounds.bottom > right.bounds.top;
+    assert.equal(intersects, false, `${left.areaId}와 ${right.areaId} 영역이 겹침: ${JSON.stringify({ left, right })}`);
+  }));
+  assert.deepEqual(Array.from(ui.state.layout.plan.lanes, (lane) => lane.id),
+    ["request", "servlet-filter", "security-chain", "security-filter", "security-checks", "endpoint", "handler"]);
+  const renderedTechnicalAreas = elements.get("graph-areas").children.filter((group) =>
+    group.getAttribute("class") === "graph-area" && group.getAttribute("data-area-kind") === "technical");
+  assert.equal(renderedTechnicalAreas.length, areas.length);
+  assert.ok(elements.get("graph-areas").children.some((group) => group.getAttribute("class") === "graph-area"
+    && group.getAttribute("data-area-kind") === "technical"
+    && group.getAttribute("data-area-id") === "security-checks"));
+});
+
+test("세 개 이상 Chain의 기술 영역은 행마다 나뉘지 않고 전체 표시 인스턴스를 감쌈", async () => {
+  const { ui, elements } = loadUi();
+  ui.renderGraph(laneGraphFixture());
+  await ui.layoutGraph();
+
+  const rows = ui.state.layout.plan.hiddenGroups.filter((group) => group.type === "CHAIN");
+  assert.ok(rows.length >= 3);
+  const technicalAreas = ui.state.graphRender.areas.filter((area) => area.id !== "education");
+  const renderedAreas = elements.get("graph-areas").children.filter((group) =>
+    group.getAttribute("class") === "graph-area" && group.getAttribute("data-area-kind") === "technical");
+  assert.equal(renderedAreas.length, technicalAreas.length);
+  renderedAreas.forEach((group) => {
+    assert.equal(findAllByClass(group, "graph-area-box").length, 1,
+      `${group.getAttribute("data-area-id")} 기술 영역은 연속된 Bounds 하나만 사용`);
+    assert.equal(findAllByClass(group, "graph-area-label").length, 1,
+      `${group.getAttribute("data-area-id")} 기술 영역 제목 하나만 표시`);
+  });
+  technicalAreas.forEach((area) => assert.equal(area.bounds.length, 1, `${area.id} Bounds 하나`));
+});
+
+test("Finding에 연결된 Edge는 강조 상태가 없을 때도 Finding 식별을 유지함", () => {
+  const { window, elements } = loadUi();
+  const graph = window.MapInBootGraph.normalize(graphFixture());
+  const layers = {
+    svg: elements.get("graph-svg"),
+    viewport: elements.get("graph-viewport"),
+    areaLayer: elements.get("graph-areas"),
+    projectionLayer: elements.get("graph-flow-projection"),
+    guideLayer: elements.get("graph-guides"),
+    edgeLayer: elements.get("graph-edges"),
+    nodeLayer: elements.get("graph-nodes"),
+    findingLayer: elements.get("graph-finding-sections"),
+    findingTitleLayer: elements.get("graph-finding-section-titles")
+  };
+  const positions = Object.fromEntries(graph.nodes.map((node, index) => [node.id, { x: index * 320, y: 0 }]));
+  window.MapInBootGraph.render(graph, layers, {
+    positions,
+    findings: [{ finding: { id: "finding-1", ruleId: "RULE-1", confidence: "UNKNOWN" },
+      nodeIds: ["node-2"], edgeIds: ["edge-3"] }]
+  });
+  const edge = findAllByClass(elements.get("graph-edges"), "graph-edge")
+    .find((item) => item.getAttribute("data-edge-id") === "edge-3");
+  assert.equal(edge.getAttribute("data-has-finding"), "true");
+});
+
+test("Edge 직교 경로는 결정적이고 연속 중복·공선 굴절을 제거함", () => {
+  const { ui, layoutApi } = loadUi();
+  const graph = ui.normalizeGraph(supportApiGraph(50));
+  const first = layoutApi.semanticLayout(graph, { positions: {} });
+  const second = layoutApi.semanticLayout(graph, { positions: {} });
+
+  assert.deepEqual(first.edgeRoutes, second.edgeRoutes);
+  Object.entries(first.plan.displayEdgeRoutes).forEach(([edgeId, route]) => {
+    const points = routePoints(route);
+    assert.ok(points.length >= 2, `${edgeId} 경로 누락`);
+    for (let index = 1; index < points.length; index += 1) {
+      const before = points[index - 1];
+      const point = points[index];
+      assert.ok(before.x === point.x || before.y === point.y, `${edgeId} 비직교 경로`);
+      assert.notDeepEqual(before, point, `${edgeId} 중복 굴절점`);
+      if (index > 1) {
+        const previous = points[index - 2];
+        assert.equal(previous.x === before.x && before.x === point.x
+          || previous.y === before.y && before.y === point.y, false, `${edgeId} 공선 굴절점`);
+      }
+    }
+  });
+  assert.equal(first.plan.routeDiagnostics.edgeNodeIntersections, 0);
+});
+
+test("SECURITY_DATA 관계가 공유 경로를 점유하면 가까운 Endpoint 관계선은 개별 Route를 유지함", async () => {
+  const { ui, layoutApi, elements } = loadUi();
+  const snapshot = {
+    nodes: [
+      { id: "handler-a", type: "HANDLER", label: "OrderController#handle",
+        attributes: { handler: "example.OrderController#handle" }, evidenceIds: ["source-evidence"] },
+      { id: "handler-b", type: "HANDLER", label: "OtherController#handle",
+        attributes: { handler: "example.OtherController#handle" }, evidenceIds: [] },
+      ...["endpoint-a", "endpoint-b", "endpoint-c"].map((id) => ({ id, type: "ENDPOINT", label: id,
+        attributes: { httpMethod: "GET", path: `/${id}` }, evidenceIds: [`e-${id}`] })),
+      { id: "data-a", type: "SECURITY_DATA", label: "data-a", attributes: { operation: "READ" }, evidenceIds: [] }
+    ],
+    edges: [
+      ...["endpoint-b", "endpoint-c"].map((targetId) => ({ id: `flows-${targetId}`, sourceId: "handler-a",
+        targetId, type: "FLOWS_TO", confidence: "CONFIRMED", attributes: {}, evidenceIds: [`e-${targetId}`] })),
+      { id: "different-type", sourceId: "handler-a", targetId: "data-a", type: "READS_SECURITY_DATA",
+        confidence: "CONFIRMED", attributes: {}, evidenceIds: ["e-different-type"] },
+      { id: "different-source", sourceId: "handler-b", targetId: "endpoint-a", type: "FLOWS_TO",
+        confidence: "CONFIRMED", attributes: {}, evidenceIds: ["e-different-source"] }
+    ]
+  };
+  const graph = ui.normalizeGraph(snapshot);
+  const layout = layoutApi.semanticLayout(graph, { positions: {} });
+  const group = layout.plan.commonEdgeRouteGroups.find((candidate) => candidate.edgeIds.includes("flows-endpoint-b"));
+  assert.equal(group, undefined, "SECURITY_DATA 관계와 겹치는 공통 Trunk 생성");
+  for (const edgeId of ["flows-endpoint-b", "flows-endpoint-c"]) {
+    const route = layout.edgeRoutes[edgeId];
+    const points = routePoints(route);
+    const edge = graph.edges.find((candidate) => candidate.id === edgeId);
+    assert.deepEqual([points[0].x, points[0].y], [layout.positions[edge.sourceId].x,
+      layout.positions[edge.sourceId].y + 60]);
+    assert.deepEqual([points.at(-1).x, points.at(-1).y], [layout.positions[edge.targetId].x + 260,
+      layout.positions[edge.targetId].y + 60]);
+    graph.nodes.filter((node) => node.id !== edge.sourceId && node.id !== edge.targetId).forEach((node) => {
+      assert.equal(routeIntersectsPosition(route, layout.positions[node.id]), false, `${edgeId}가 ${node.id}와 충돌`);
+    });
+  }
+  assert.equal(layout.plan.routeDiagnostics.edgeNodeIntersections, 0);
+  assert.equal(layout.plan.commonEdgeRouteGroups.some((candidate) =>
+    candidate.edgeIds.includes("different-type") && candidate.edgeIds.includes("flows-endpoint-b")), false);
+  assert.equal(layout.plan.commonEdgeRouteGroups.some((candidate) =>
+    candidate.edgeIds.includes("different-source") && candidate.edgeIds.includes("flows-endpoint-b")), false);
+
+  ui.renderGraph(snapshot);
+  await ui.layoutGraph();
+  const flowPath = findAllByClass(elements.get("graph-edges"), "graph-edge")
+    .find((path) => path.getAttribute("data-edge-id") === "flows-endpoint-b");
+  assert.ok(flowPath);
+  assert.equal(flowPath.getAttribute("data-source-id"), "handler-a");
+  assert.equal(flowPath.getAttribute("data-target-id"), "endpoint-b");
+  assert.equal(flowPath.getAttribute("data-confidence"), "CONFIRMED");
+  assert.equal(flowPath.getAttribute("data-evidence-ids"), "e-endpoint-b");
+});
+
+test("서로 다른 SecurityFilterChain에 속한 도착지는 공통 경로로 합치지 않음", () => {
+  const { ui, layoutApi } = loadUi();
+  const graph = ui.normalizeGraph({
+    nodes: [
+      { id: "endpoint", type: "ENDPOINT", label: "GET /items", attributes: { httpMethod: "GET", path: "/items" }, evidenceIds: [] },
+      ...["chain-a", "chain-b"].map((id, index) => ({ id, type: "SECURITY_CHAIN", label: id,
+        attributes: { chainOrder: String(index + 1), matcherCondition: `/${index}` }, evidenceIds: [] }))
+    ],
+    edges: ["chain-a", "chain-b"].map((targetId) => ({ id: `match-${targetId}`, sourceId: "endpoint",
+      targetId, type: "MATCHED_BY", confidence: "CONFIRMED", attributes: {}, evidenceIds: [] }))
+  });
+  const layout = layoutApi.semanticLayout(graph, { positions: {} });
+  assert.equal(layout.plan.commonEdgeRouteGroups.some((group) =>
+    group.edgeIds.includes("match-chain-a") && group.edgeIds.includes("match-chain-b")), false);
+});
+
+test("같은 Chain으로 향하는 MATCHED_BY는 N→1 공통 Trunk로 합류함", async () => {
+  const { ui, layoutApi, elements } = loadUi();
+  const graph = ui.normalizeGraph({
+    nodes: [
+      { id: "endpoint-a", type: "ENDPOINT", label: "GET /a", attributes: { httpMethod: "GET", path: "/a" }, evidenceIds: [] },
+      { id: "endpoint-b", type: "ENDPOINT", label: "GET /b", attributes: { httpMethod: "GET", path: "/b" }, evidenceIds: [] },
+      { id: "chain", type: "SECURITY_CHAIN", label: "Chain", attributes: { chainOrder: "1" }, evidenceIds: [] }
+    ],
+    edges: [
+      { id: "match-a", sourceId: "endpoint-a", targetId: "chain", type: "MATCHED_BY", attributes: {}, evidenceIds: [] },
+      { id: "match-b", sourceId: "endpoint-b", targetId: "chain", type: "MATCHED_BY", attributes: {}, evidenceIds: [] }
+    ]
+  });
+  const layout = layoutApi.semanticLayout(graph, { positions: {} });
+  const group = layout.plan.commonEdgeRouteGroups.find((candidate) => candidate.type === "MATCHED_BY");
+  assert.ok(group, "같은 Chain으로 향하는 공통 배선 누락");
+  assert.deepEqual(Array.from(group.edgeIds).sort(), ["match-a", "match-b"]);
+  assert.deepEqual(Array.from(group.sourceIds).sort(), ["endpoint-a", "endpoint-b"]);
+  assert.deepEqual(Array.from(group.targetIds), ["chain"]);
+  group.edgeIds.forEach((edgeId) => {
+    const edge = graph.edges.find((candidate) => candidate.id === edgeId);
+    const points = routePoints(layout.edgeRoutes[edgeId]);
+    assert.deepEqual([points[0].x, points[0].y], [layout.positions[edge.sourceId].x,
+      layout.positions[edge.sourceId].y + 60]);
+    assert.deepEqual([points.at(-1).x, points.at(-1).y], [layout.positions[edge.targetId].x + 260,
+      layout.positions[edge.targetId].y + 60]);
+  });
+
+  ui.renderGraph({
+    nodes: graph.nodes,
+    edges: graph.edges,
+    findings: [],
+    evidence: []
+  });
+  await ui.layoutGraph();
+  const trunks = findAllByClass(elements.get("graph-edges"), "graph-edge-trunk")
+    .filter((path) => (path.getAttribute("data-edge-ids") || "").split(",").length === 2);
+  assert.equal(trunks.length, 1, "공통 Trunk는 한 번만 렌더링");
+  assert.equal(trunks[0].getAttribute("data-edge-ids"), "match-a,match-b");
+  assert.deepEqual(trunks[0].getAttribute("data-source-ids").split(",").sort(), ["endpoint-a", "endpoint-b"]);
+  assert.equal(trunks[0].getAttribute("data-target-ids"), "chain");
+  const visibleBranches = findAllByClass(elements.get("graph-edges"), "graph-edge-branch")
+    .filter((path) => ["match-a", "match-b"].includes(path.getAttribute("data-edge-id")));
+  assert.equal(visibleBranches.length, 2, "N→1 Source 지선은 Edge별로 남음");
+  visibleBranches.forEach((path) => {
+    const edge = graph.edges.find((candidate) => candidate.id === path.getAttribute("data-edge-id"));
+    assert.equal(path.getAttribute("data-source-id"), edge.sourceId);
+    assert.equal(path.getAttribute("data-target-id"), edge.targetId);
+    assert.equal(path.getAttribute("data-evidence-ids") || "", edge.evidenceIds.join(","));
+  });
+  assert.equal(findAllByClass(elements.get("graph-edges"), "graph-edge-flow-route").length, 0,
+    "공통 배선의 숨은 중복 경로를 만들지 않음");
+  assert.equal(layout.plan.routeDiagnostics.edgeNodeIntersections, 0);
 });
 
 test("Inspector 속성 순서·확실성 문구와 고정 헤더·본문 스크롤을 구분함", () => {
@@ -5491,7 +6246,7 @@ test("내부 처리 단계는 중앙 대역에서 실제 Node와 겹치지 않�
   assert.equal(layout.plan.educationArea.top, projectionTop - layout.plan.educationArea.topPadding);
 });
 
-test("Endpoint 16개 이상은 정렬 목록을 두 열로 분할하고 둘째 열을 엇갈리게 배치함", () => {
+test("Endpoint 16개 이상은 각 Hidden Group 안에서 두 열로 교차 배치하고 행 높이에 반영함", () => {
   const { layoutApi, ui } = loadUi();
   [0, 1, 15, 16, 17, 31, 32].forEach((count) => {
     const graph = endpointCountGraph(count);
@@ -5507,7 +6262,11 @@ test("Endpoint 16개 이상은 정렬 목록을 두 열로 분할하고 둘째 �
     const secondColumn = positions.filter((position) => position.x === xs[1]).sort((left, right) => left.y - right.y);
     assert.equal(firstColumn.length, firstColumnCount);
     assert.equal(secondColumn.length, count - firstColumnCount);
-    assert.equal(secondColumn[0].y - firstColumn[0].y, 90);
+    assert.equal(secondColumn[0].y - firstColumn[0].y, 270);
+    const group = layout.plan.hiddenGroups.find((item) => item.members.endpoints.includes(endpoints[0].id));
+    positions.forEach((position) => {
+      assert.ok(position.y >= group.rowTop && position.y + 120 <= group.rowBottom);
+    });
     assert.ok(layout.plan.lanes.find((lane) => lane.id === "handler").x > xs[1] + 260);
   });
 });
@@ -5625,11 +6384,12 @@ test("Controller Group 선택은 해당 Controller의 안내선과 전용 Projec
     .find((item) => item.attributes["data-projection-edge-id"] === id);
   assert.equal(guideFor("first-endpoint-0").attributes["data-related"], "true");
   assert.equal(guideFor("second-endpoint-0").attributes["data-related"], "false");
-  assert.equal(projectionFor("adapter-to-first-handler-0").attributes["data-related"], "true");
-  assert.equal(projectionFor("adapter-to-second-handler-0").attributes["data-related"], "false");
+  assert.equal(projectionFor("adapter-to-first-handler-0"), undefined);
+  assert.equal(projectionFor("adapter-to-second-handler-0"), undefined);
   assert.equal(findAllByClass(elements.get("graph-flow-projection"), "graph-projection-edge")
     .some((edge) => (edge.attributes["data-projection-edge-id"] || "").startsWith("handler-to-response-")), false);
-  assert.equal(projectionFor("mapping-to-adapter-shared").attributes["data-related"], "false");
+  assert.equal(projectionFor("overview-api-first-endpoint-0").attributes["data-related"], "true");
+  assert.equal(projectionFor("overview-api-second-endpoint-0").attributes["data-related"], "false");
   assert.equal(projectionFor("education-education-http-request-education-request-prepare").attributes["data-related"], "false");
 });
 
@@ -5652,14 +6412,15 @@ test("보안 관계선은 Graph 하단을 우회하지 않고 목표 입력 Port
   const actualRoute = layout.edgeRoutes["secured-0"];
   const source = displayedPosition("first-handler-0");
   const target = displayedPosition("authorization-0");
-  const start = { x: source.x + 260, y: source.y + 60 };
-  const end = { x: target.x, y: target.y + 60 };
+  const start = { x: source.x, y: source.y + 60 };
+  const end = { x: target.x + 260, y: target.y + 60 };
   assert.equal(points[0].x, start.x);
   assert.equal(points[0].y, start.y);
   assert.equal(points[points.length - 1].x, end.x);
   assert.equal(points[points.length - 1].y, end.y);
   assert.ok(points.length - 2 <= 2, `굽힘 수 ${points.length - 2}`);
-  assert.ok(routeLength(route) <= Math.abs(end.x - start.x) + Math.abs(end.y - start.y) + 32,
+  assert.ok(routeLength(route) <= Math.abs(end.x - start.x) + Math.abs(end.y - start.y)
+    + 120 + layout.plan.routing.nodeSafeMargin * 2,
     `경로 길이 ${routeLength(route)}`);
 
   const positions = Object.fromEntries(layout.plan.projection.nodes.map((node) => [node.id, node.position]));
@@ -5669,9 +6430,9 @@ test("보안 관계선은 Graph 하단을 우회하지 않고 목표 입력 Port
     assert.equal(routeIntersectsPosition(route, position), false, `${nodeId} 관통`);
   });
   const actualBottom = Math.max(...Object.values(layout.positions).map((position) => position.y + 120));
-  assert.ok(Math.max(...points.map((point) => point.y)) < actualBottom,
+  assert.ok(Math.max(...points.map((point) => point.y)) <= actualBottom + layout.plan.routing.nodeSafeMargin,
     `경로가 실제 Node 하단 ${actualBottom} 아래로 내려감`);
-  assert.ok(Math.max(...routePoints(actualRoute).map((point) => point.y)) < actualBottom);
+  assert.ok(Math.max(...routePoints(actualRoute).map((point) => point.y)) <= actualBottom + layout.plan.routing.nodeSafeMargin);
   assert.equal(layout.plan.routeDiagnostics.edgeNodeIntersections, 0);
 });
 
@@ -5680,6 +6441,10 @@ test("Controller 50·60 API 규모에서도 보안 관계 Route를 유지하고 
   [50, 60].forEach((count) => {
     const graph = ui.normalizeGraph(supportApiGraph(count));
     const layout = layoutApi.semanticLayout(graph, { positions: {} });
+    const intersections = graph.edges.flatMap((edge) => graph.nodes
+      .filter((node) => node.id !== edge.sourceId && node.id !== edge.targetId
+        && routeIntersectsPosition(layout.edgeRoutes[edge.id], layout.positions[node.id]))
+      .map((node) => ({ edgeId: edge.id, nodeId: node.id })));
     const model = layout.plan.displayModel;
     const firstRoute = layout.plan.displayEdgeRoutes["secured-0"];
     const displayPositions = Object.fromEntries(layout.plan.projection.nodes.map((node) => [node.id, node.position]));
@@ -5698,7 +6463,8 @@ test("Controller 50·60 API 규모에서도 보안 관계 Route를 유지하고 
     const points = routePoints(firstRoute);
     assert.equal(Object.keys(layout.plan.displayEdgeRoutes).filter((id) => id.startsWith("secured-")).length, count);
     assert.ok(points.length > 0, `${count}개 API의 첫 관계선 Route 없음`);
-    assert.ok(Math.max(...points.map((point) => point.y)) <= Math.max(source.y + 60, target.y + 60) + 60,
+    assert.ok(Math.max(...points.map((point) => point.y)) <= Math.max(source.y + 60, target.y + 60)
+      + layout.plan.routing.nodeSafeMargin * 4,
       `${count}개 API의 첫 관계선이 목표 주변을 벗어남`);
     assert.equal(layout.plan.routeDiagnostics.nodeOverlaps, 0, `${count}개 API Node 겹침`);
     assert.equal(layout.plan.routeDiagnostics.edgeNodeIntersections, 0, `${count}개 API 실제 Edge 충돌`);
@@ -5740,8 +6506,12 @@ test("표시 그룹은 실제 관계로 소속을 확인하고 원본 Fact와 Ed
   const dataGroup = display.groups.find((group) => group.nodeIds.includes("security-data-a"));
   assert.ok(authGroup);
   assert.ok(dataGroup);
-  assert.equal(display.nodeToDisplay["data-unknown"], "data-unknown");
-  assert.equal(display.nodeToDisplay["data-uncertain"], "data-uncertain");
+  const isolatedUnknown = display.groups.find((group) => group.nodeIds.includes("data-unknown"));
+  const unresolved = display.groups.find((group) => group.nodeIds.includes("data-uncertain"));
+  assert.equal(isolatedUnknown.rowId, "isolated");
+  assert.equal(unresolved.rowId, "unresolved");
+  assert.equal(display.nodeToDisplay["data-unknown"], isolatedUnknown.id);
+  assert.equal(display.nodeToDisplay["data-uncertain"], unresolved.id);
   assert.ok(display.groups.some((group) => group.nodeIds.includes("auth-other")));
   assert.ok(display.groups.some((group) => group.nodeIds.includes("data-other")));
   normalized.nodes.forEach((item) => assert.ok(display.displayToNodes[display.nodeToDisplay[item.id]].includes(item.id)));
@@ -5795,7 +6565,9 @@ test("묶인 표시 관계에서 개별 Edge와 Evidence를 선택할 수 있음
   const bundle = paths.find((path) => (path.attributes["data-edge-ids"] || "").includes("secured-a2"));
   assert.ok(bundle);
   assert.match(bundle.attributes["data-edge-ids"], /secured-a/);
-  assert.equal(paths.filter((path) => (path.attributes["data-edge-ids"] || "").includes("secured-a2")).length, 1);
+  const bundledSegments = paths.filter((path) => (path.attributes["data-edge-ids"] || "").includes("secured-a2"));
+  assert.ok(bundledSegments.length > 0);
+  assert.equal(new Set(bundledSegments.map((path) => path.getAttribute("data-segment-id"))).size, bundledSegments.length);
   bundle.dispatchEvent({ type: "click", stopPropagation() {} });
   assert.match(textOf(elements.get("inspector")), /함께 표시한 원본 관계/);
   const link = findAllByClass(elements.get("inspector"), "inspector-link")
@@ -5879,18 +6651,153 @@ test("표시 그룹 관계 경로는 최종 카드 포트에서 시작하고 끝
 
 test("동일한 Snapshot의 표시 경로와 중앙 배치는 안정적으로 유지됨", () => {
   const { ui, layoutApi } = loadUi();
-  const layout = layoutApi.semanticLayout(ui.normalizeGraph(detailGraphFixture()), { positions: {} });
-  assert.equal(layout.plan.guideRoutes["endpoint-a"], "M 5704 420 L 5752 420 L 5752 794 L 5800 794");
+  const graph = ui.normalizeGraph(detailGraphFixture());
+  const first = layoutApi.semanticLayout(graph, { positions: {} });
+  const second = layoutApi.semanticLayout(graph, { positions: {} });
+  assert.deepEqual(first.positions, second.positions);
+  assert.deepEqual(first.plan.guideRoutes, second.plan.guideRoutes);
 });
 
-test("소속을 확인할 수 없는 보안정보도 메인 영역 가까이 개별 표시함", () => {
+test("미확정·고립 보안 정보는 의미별로 묶이고 주 흐름 정렬과 분리됨", async () => {
   const { ui, layoutApi } = loadUi();
+  const baseline = layoutApi.semanticLayout(ui.normalizeGraph(detailGraphFixture()), { positions: {} });
   const graph = detailGraphFixture();
-  graph.nodes.push({ id: "unowned", type: "SECURITY_DATA", serviceId: "orders", label: "unknown",
-    attributes: { codeLocation: "unknown", operation: "READ" }, evidenceIds: [] });
+  const addNode = (id, attributes) => graph.nodes.push({ id, type: "SECURITY_DATA", serviceId: "orders",
+    label: id, attributes, evidenceIds: [`evidence-${id}`] });
+  addNode("unowned", { apiType: "PRINCIPAL", operation: "READ", principalType: "USER" });
+  addNode("unresolved-principal-a", { apiType: "PRINCIPAL", operation: "READ", principalType: "USER" });
+  addNode("unresolved-principal-b", { apiType: "PRINCIPAL", operation: "READ", principalType: "USER" });
+  Array.from({ length: 8 }, (_, index) => addNode(`isolated-data-${index}`, {
+    apiType: "NIMBUS_CLAIMS_BUILDER", operation: "WRITE", sourceKind: "JWT"
+  }));
+  graph.edges.push({ id: "unresolved-principal-edge", sourceId: "unresolved-principal-a",
+    targetId: "unresolved-principal-b", type: "READS_SECURITY_DATA", attributes: {}, confidence: "CONFIRMED",
+    evidenceIds: ["unresolved-principal-evidence"] },
+  { id: "unresolved-handler-edge", sourceId: "unresolved-principal-a", targetId: "handler-a",
+    type: "READS_SECURITY_DATA", attributes: {}, confidence: "PARTIAL", evidenceIds: ["uncertain-evidence"] },
+  ...Array.from({ length: 7 }, (_, index) => ({
+    id: `isolated-data-edge-${index}`, sourceId: `isolated-data-${index}`,
+    targetId: `isolated-data-${index + 1}`, type: "READS_SECURITY_DATA", attributes: {},
+    confidence: "CONFIRMED", evidenceIds: [`isolated-evidence-${index}`]
+  })));
   const layout = layoutApi.semanticLayout(ui.normalizeGraph(graph), { positions: {} });
-  assert.equal(layout.plan.displayModel.nodeToDisplay.unowned, "unowned");
-  assert.ok(Math.abs(layout.positions.unowned.y + 60 - layout.plan.sectionAlignment.handler.centerY) < 300);
+  const displayGroups = layout.plan.displayModel.groups;
+  const findGroup = (nodeId) => displayGroups.find((group) => group.nodeIds.includes(nodeId));
+  const unownedGroup = findGroup("unowned");
+  assert.equal(unownedGroup.rowId, "isolated");
+  assert.equal(unownedGroup.nodeIds.length, 1);
+  assert.equal(unownedGroup.nodeIds[0], "unowned");
+  const unresolvedGroup = findGroup("unresolved-principal-a");
+  assert.equal(unresolvedGroup.rowId, "unresolved");
+  assert.deepEqual(new Set(unresolvedGroup.nodeIds), new Set(["unresolved-principal-a", "unresolved-principal-b"]));
+  const isolatedGroup = findGroup("isolated-data-0");
+  assert.equal(isolatedGroup.rowId, "isolated");
+  assert.deepEqual(new Set(isolatedGroup.nodeIds), new Set(Array.from({ length: 8 }, (_, index) => `isolated-data-${index}`)));
+  assert.ok(isolatedGroup.edgeIds.includes("isolated-data-edge-0"));
+  assert.ok(layout.plan.displayModel.edgeToDisplay["isolated-data-edge-0"]);
+  const internalEdgeInstance = layout.plan.displayModel.displayEdgeInstances
+    .find((edge) => edge.originalEdgeIds.includes("isolated-data-edge-0"));
+  assert.equal(internalEdgeInstance.selfConnection, true);
+  assert.ok(layout.plan.displayModel.originalEdgeToInstanceIds["isolated-data-edge-0"]
+    .includes(internalEdgeInstance.id));
+  assert.equal(layout.plan.displayModel.edges.some((edge) => edge.sourceId === edge.targetId), false);
+  const lane = layout.plan.lanes.find((item) => item.id === "security-checks");
+  assert.equal(lane.nodeIds.includes("unowned"), true);
+  assert.equal(layout.plan.supportAnchors.unowned.status, "UNKNOWN");
+  assert.ok(unownedGroup.position.x >= lane.bounds.left
+    && unownedGroup.position.x + 260 <= lane.bounds.right);
+  const mainBottom = Math.max(...Object.values(layout.plan.sectionAlignment)
+    .filter((section) => section && section.nodeIds && section.nodeIds.length)
+    .map((section) => section.top + section.height));
+  assert.ok([unownedGroup, isolatedGroup].every((group) => group.position.y > mainBottom));
+  assert.equal(layout.plan.sectionAlignment.securityChecks.nodeIds.includes("unowned"), false);
+  const baselineGroup = baseline.plan.displayModel.groups.find((group) => group.nodeIds.includes("security-data-a"));
+  const currentGroup = findGroup("security-data-a");
+  assert.equal(currentGroup.position.x, baselineGroup.position.x);
+  assert.equal(currentGroup.position.y, baselineGroup.position.y,
+    "고립·미확정 노드가 기존 Chain 표시 좌표를 바꾸지 않아야 함");
+  const rows = layout.plan.hiddenGroups.filter((row) => row.rowId !== "detail");
+  const rowById = new Map(rows.map((row) => [row.id, row]));
+  rows.slice(1).forEach((row, index) => {
+    assert.ok(rows[index].rowBottom + layout.plan.chainGap <= row.rowTop,
+      `${rows[index].id}와 ${row.id}가 겹침`);
+  });
+  layout.plan.displayModel.instances.filter((instance) => rowById.has(instance.rowId)).forEach((instance) => {
+    const row = rowById.get(instance.rowId);
+    const padding = layout.plan.routing.nodeSafeMargin;
+    assert.ok(instance.position.y >= row.rowTop + padding);
+    assert.ok(instance.position.y + 120 <= row.rowBottom - padding);
+  });
+  Object.keys(baseline.plan.sectionAlignment).forEach((id) => {
+    const before = baseline.plan.sectionAlignment[id];
+    const after = layout.plan.sectionAlignment[id];
+    if (before && after) assert.equal(after.centerY, before.centerY, `${id} center changed with isolated nodes`);
+  });
+
+  ui.state.includeUnconnectedNodes = true;
+  ui.renderGraph(graph);
+  await ui.layoutGraph();
+  const checkArea = ui.state.graphRender.areas.find((area) => area.id === "security-checks");
+  assert.equal(checkArea.bounds.length, 1);
+  [unownedGroup, isolatedGroup, unresolvedGroup].forEach((group) => {
+    const position = group.position;
+    const bounds = checkArea.bounds[0];
+    assert.ok(position.x >= bounds.left && position.x + 260 <= bounds.right);
+    assert.ok(position.y >= bounds.top && position.y + 120 <= bounds.bottom,
+      `${group.rowId} ${JSON.stringify({ position, bounds, instances: ui.state.layout.plan.displayModel.instances
+        .filter((instance) => group.nodeIds.some((id) => instance.originalNodeIds.includes(id))) })}`);
+  });
+});
+
+test("보안 정보 의미 분류가 실제 수집기 동작을 구분함", () => {
+  const { ui, layoutApi } = loadUi();
+  const graph = flowGraphFixture();
+  const examples = [
+    ["auth-status", { apiType: "SESSION", operation: "AUTH_STATUS" }, "AUTH_STATUS:AUTH_STATUS"],
+    ["principal-jwt", { apiType: "PRINCIPAL", sourceKind: "JWT", observationKind: "SUBJECT_LOOKUP",
+      operation: "READ", principalType: "JWT" }, "PRINCIPAL:READ"],
+    ["jwt-claim-write", { apiType: "NIMBUS_CLAIMS_BUILDER", operation: "WRITE" }, "JWT_CLAIM:WRITE"],
+    ["jwt-claim-read", { apiType: "NIMBUS_CLAIMS_SET", operation: "READ", claimName: "sub" }, "JWT_CLAIM:READ"],
+    ["jwt-claims-map-read", { apiType: "NIMBUS_CLAIMS_SET", operation: "READ" }, "JWT:READ"],
+    ["jwt-read", { apiType: "SPRING_SECURITY_JWT", operation: "READ" }, "JWT:READ"],
+    ["jwt-sign", { apiType: "NIMBUS_SIGNED_JWT", operation: "SIGN" }, "JWT:SIGN"],
+    ["jwt-verify", { apiType: "NIMBUS_SIGNED_JWT", operation: "VERIFY", verificationKind: "INVOCATION" }, "JWT:VERIFY"],
+    ["jwt-verify-config", { apiType: "SPRING_SECURITY_NIMBUS_DECODER", operation: "VERIFY_CONFIGURATION",
+      verificationKind: "CONFIGURATION" }, "JWT:VERIFY_CONFIGURATION"],
+    ["session-acquire", { apiType: "SESSION", operation: "ACQUIRE" }, "SESSION:ACQUIRE"],
+    ["session-read", { apiType: "SESSION", operation: "READ" }, "SESSION:READ"],
+    ["session-write", { apiType: "SESSION", operation: "WRITE" }, "SESSION:WRITE"],
+    ["session-remove", { apiType: "SESSION", operation: "REMOVE" }, "SESSION:REMOVE"],
+    ["session-invalidate", { apiType: "SESSION", operation: "INVALIDATE" }, "SESSION:INVALIDATE"],
+    ["authority-create", { apiType: "AUTHORITY", operation: "CREATE" }, "AUTHORITY:CREATE"],
+    ["authority-read", { apiType: "AUTHORITY", operation: "READ" }, "AUTHORITY:READ"],
+    ["authority-convert", { apiType: "AUTHORITY", operation: "CONVERT" }, "AUTHORITY:CONVERT"],
+    ["header-read", { apiType: "HEADER", operation: "READ", headerName: "Authorization" }, "HEADER:READ"]
+  ];
+  examples.forEach(([id, attributes]) => {
+    graph.nodes.push({ id, type: "SECURITY_DATA", serviceId: "orders", label: id, attributes,
+      evidenceIds: [`evidence-${id}`] });
+    graph.edges.push({ id: `edge-${id}`, sourceId: "handler-a", targetId: id, type: "SECURED_BY",
+      attributes: {}, confidence: "CONFIRMED", evidenceIds: [`evidence-edge-${id}`] });
+  });
+  const layout = layoutApi.semanticLayout(ui.normalizeGraph(graph), { positions: {} });
+  const actualKeys = new Set(layout.plan.displayModel.groups.filter((group) => group.type === "SECURITY_DATA")
+    .map((group) => group.semanticKey));
+  examples.forEach(([, , expected]) => assert.ok(actualKeys.has(expected), `누락된 의미 분류: ${expected}`));
+});
+
+test("인가 의미 분류는 URL·Method·객체 근거를 각각 구분함", () => {
+  const { layoutApi } = loadUi();
+  const classify = (attributes) => layoutApi.supportDisplaySemantic({ type: "AUTHORIZATION", attributes });
+  assert.equal(classify({ policySource: "URL", policyKind: "PERMIT_ALL" }).key, "URL:PERMIT_ALL");
+  assert.equal(classify({ policySource: "URL", requiredAuthority: "ROLE_ADMIN" }).key,
+    "URL:AUTHORITY_REQUIRED");
+  assert.equal(classify({ policySource: "METHOD", annotationType: "PreAuthorize",
+    declarationKind: "ANNOTATION", requiredAuthority: "ROLE_ADMIN" }).key, "METHOD:DECLARATION");
+  assert.equal(classify({ factType: "OBJECT_AUTHORIZATION_REQUIREMENT", resourceType: "Order" }).key,
+    "OBJECT:REQUIREMENT");
+  assert.equal(classify({ factType: "OBJECT_ACCESS_PATH", resourceType: "Order", coverage: "COMPLETE_SUPPORTED_PATH" }).key,
+    "OBJECT:ACCESS_PATH");
 });
 
 test("API 선택은 실제 상세 Graph의 Handler와 보안 근거를 함께 강조함", async () => {
@@ -5901,6 +6808,12 @@ test("API 선택은 실제 상세 Graph의 Handler와 보안 근거를 함께 �
   const support = findAllByClass(elements.get("graph-nodes"), "graph-support-group");
   assert.ok(support.some((node) => (node.attributes["data-handler-ids"] || "").includes("security-data-a")
     && node.attributes["data-related"] === "true"));
+  const securedEdge = () => findAllByClass(elements.get("graph-edges"), "graph-edge")
+    .find((edge) => (edge.attributes["data-edge-ids"] || "").split(",").includes("secured-a"));
+  assert.ok(securedEdge());
+  assert.equal(securedEdge().attributes["data-related"], "true");
+  ui.selectGraphElement("node", "authorization-a");
+  assert.equal(securedEdge().attributes["data-related"], "true");
 });
 
 test("같은 Controller의 두 번째 API 선택도 공유 처리 경로를 강조함", async () => {
@@ -5910,14 +6823,18 @@ test("같은 Controller의 두 번째 API 선택도 공유 처리 경로를 강�
     { id: "handler-a2", type: "HANDLER", serviceId: "orders", label: "OrderController#other", attributes: { handler: "OrderController#other" }, evidenceIds: [] },
     { id: "endpoint-a2", type: "ENDPOINT", serviceId: "orders", label: "GET /other", attributes: { httpMethod: "GET", path: "/other", handler: "OrderController#other" }, evidenceIds: [] }
   );
+  ui.state.includeUnconnectedNodes = true;
   ui.renderGraph(graph);
   await ui.layoutGraph();
   ui.selectGraphElement("node", "endpoint-a2");
   const paths = findAllByClass(elements.get("graph-flow-projection"), "graph-projection-edge");
-  const adapter = paths.find((path) => (path.attributes["data-projection-edge-id"] || "") === "adapter-to-handler-a");
-  const shared = paths.find((path) => path.attributes["data-projection-edge-id"] === "mapping-to-adapter-shared");
-  assert.equal(adapter.attributes["data-related"], "true");
-  assert.equal(shared.attributes["data-related"], "true");
+  const apiRoute = paths.find((path) => path.attributes["data-projection-edge-id"] === "overview-api-endpoint-a2");
+  const controllerRoute = findAllByClass(elements.get("graph-guides"), "graph-guide-handler")
+    .find((path) => path.attributes["data-endpoint-id"] === "endpoint-a2");
+  assert.ok(apiRoute, paths.map((path) => path.attributes["data-projection-edge-id"]).join(","));
+  assert.ok(controllerRoute);
+  assert.equal(apiRoute.attributes["data-related"], "true");
+  assert.equal(controllerRoute.attributes["data-related"], "true");
   assert.equal(paths.some((path) => (path.attributes["data-projection-edge-id"] || "").startsWith("handler-to-response-")), false);
 });
 
@@ -5956,9 +6873,10 @@ test("Mini Map은 실제 표시 Node와 교육용 Projection Node를 함께 갱�
   ui.renderGraph(laneGraphFixture());
   await ui.layoutGraph();
   const minimap = elements.get("graph-minimap-nodes").children;
-  assert.equal(minimap.filter((node) => node.attributes["data-node-kind"] === "education").length,
+  const projectionKinds = new Set(["education"]);
+  assert.equal(minimap.filter((node) => projectionKinds.has(node.attributes["data-node-kind"])).length,
     ui.state.layout.plan.projection.nodes.length);
-  assert.equal(minimap.filter((node) => node.attributes["data-node-kind"] !== "education").length,
+  assert.equal(minimap.filter((node) => !projectionKinds.has(node.attributes["data-node-kind"])).length,
     ui.state.graphRender.displayNodes.length);
   ui.selectView("feature-flow");
   await ui.layoutGraph();
@@ -6343,7 +7261,8 @@ test("교육 흐름 경로는 관련 없는 실제 카드 내부를 지나지 �
         : command === "V" ? { x: previous.x, y: Number(first) }
           : { x: Number(first), y: Number(second) };
       if (previous) for (const [id, position] of Object.entries(layout.positions)) {
-        if (id !== edge.sourceId && id !== edge.targetId) assert.equal(intersects(previous, point, position), false, `${edge.id}: ${id}`);
+        if (id !== edge.sourceId && id !== edge.targetId) assert.equal(intersects(previous, point, position), false,
+          `${edge.id}: ${id} ${route.d} ${JSON.stringify(position)}`);
       }
       previous = point;
     }
@@ -7141,7 +8060,7 @@ test("Inspector·Hover·Finding은 공통 한국어 표시와 원본 이벤트 I
   originalIdentifiers.forEach((id) => assert.equal(modalText.includes(id), false, "Finding 상세에 원본 ID 미노출"));
 });
 
-test("Node 카드는 초록 유형 점·회색 ID와 겹치지 않는 SVG 텍스트 경계를 표시함", () => {
+test("Node 유형 점·텍스트는 외곽선 색을 따르고 SVG 텍스트 경계를 유지함", () => {
   const { ui, elements, document, window } = loadUi();
   const snapshot = graphFixture();
   snapshot.nodes[2].attributes = {
@@ -7194,6 +8113,8 @@ test("Node 카드는 초록 유형 점·회색 ID와 겹치지 않는 SVG 텍스
     assert.ok(typeDot);
     assert.equal(typeDot.tagName, "circle");
     assert.equal(findAllByClass(node, "graph-node-type-badge").length, 0);
+    assert.equal(badge.getAttribute("fill"), card.getAttribute("stroke"));
+    assert.equal(typeDot.getAttribute("fill"), card.getAttribute("stroke"));
     assert.equal(displayId.textContent, expectedCodes[index]);
     assert.equal(displayId.attributes["text-anchor"], "end");
     const typeWidth = badge.getComputedTextLength();
@@ -7212,7 +8133,7 @@ test("Node 카드는 초록 유형 점·회색 ID와 겹치지 않는 SVG 텍스
   assert.ok(findAllByClass(elements.get("graph-svg"), "graph-node-header-clip").length > 0);
   assert.ok(findAllByClass(elements.get("graph-svg"), "graph-node-header-type-clip").length > 0);
   assert.match(appCss, /\.graph-node-display-id\s*\{[^}]*fill:\s*#b5c3ba/);
-  assert.match(appCss, /\.graph-node-type-dot\s*\{[^}]*fill:\s*var\(--accent-strong\)/);
+  assert.match(appCss, /\.graph-node-type-dot,\s*\.graph-node-type\s*\{[^}]*pointer-events:\s*none/);
 });
 
 test("Inspector 헤더는 유형 배지와 대표 이름만 표시하고 표시 ID는 속성에 보존함", () => {
@@ -7310,4 +8231,1062 @@ test("노드 유형 라벨은 외곽선 색을 따르고 노드 배경만 옅게
     assert.equal(dot.getAttribute("fill"), outlineColor);
   });
   assert.match(appCss, /\.graph-node-background-tint\s*\{[^}]*fill-opacity:\s*\.12/);
+});
+
+test("상위 기술 영역만 배선 간격을 넓히고 내부 Lane 간격은 유지함", () => {
+  const { ui, layoutApi } = loadUi();
+  const layout = layoutApi.semanticLayout(ui.normalizeGraph(detailGraphFixture()), { positions: {} });
+  const lanes = layout.plan.lanes;
+  const gapBetween = (leftId, rightId) => {
+    const left = lanes.find((lane) => lane.id === leftId);
+    const right = lanes.find((lane) => lane.id === rightId);
+    return right.x - (left.x + left.width);
+  };
+
+  assert.ok(gapBetween("security-filter", "security-checks") > layout.plan.sectionGap);
+  assert.ok(gapBetween("security-checks", "mvc") > layout.plan.sectionGap);
+  assert.ok(gapBetween("endpoint", "handler") > layout.plan.sectionGap);
+  assert.equal(gapBetween("security-chain", "security-filter"), layout.plan.sectionGap);
+});
+
+test("장거리 Edge는 여러 행에 걸쳐 공통 Trunk를 유지하고 목적지 직전에서 분기함", async () => {
+  const { ui, layoutApi, elements } = loadUi();
+  const snapshot = {
+    nodes: [
+      { id: "application", type: "APPLICATION", label: "Application", attributes: {}, evidenceIds: [] },
+      ...Array.from({ length: 8 }, (_, index) => ({ id: `endpoint-${index}`, type: "ENDPOINT",
+        label: `GET /items/${index}`, attributes: { httpMethod: "GET", path: `/items/${index}` },
+        evidenceIds: [`endpoint-evidence-${index}`] }))
+    ],
+    edges: Array.from({ length: 8 }, (_, index) => ({ id: `flow-${index}`, sourceId: "application",
+      targetId: `endpoint-${index}`, type: "FLOWS_TO", confidence: "CONFIRMED", attributes: {},
+      evidenceIds: [`flow-evidence-${index}`] }))
+  };
+  const graph = ui.normalizeGraph(snapshot);
+  const layout = layoutApi.semanticLayout(graph, { positions: {} });
+  const targetYs = graph.nodes.filter((node) => node.type === "ENDPOINT").map((node) => layout.positions[node.id].y);
+  assert.ok(Math.max(...targetYs) - Math.min(...targetYs) > 360);
+
+  const group = layout.plan.commonEdgeRouteGroups.find((candidate) => candidate.edgeIds.length === 8);
+  assert.ok(group, "장거리 공통 배선 그룹 누락");
+  assert.equal(group.edgeIds.length, 8);
+  group.edgeIds.forEach((edgeId) => {
+    const edge = graph.edges.find((candidate) => candidate.id === edgeId);
+    const points = routePoints(layout.edgeRoutes[edgeId]);
+    const target = layout.positions[edge.targetId];
+    assert.equal(points.at(-1).y, target.y + 60, `${edgeId} 목적지 높이`);
+    assert.ok(points.at(-1).x === target.x || points.at(-1).x === target.x + 260, `${edgeId} 목적지 포트`);
+    const travel = Math.abs(points.at(-1).x - points[0].x);
+    const branchTravel = Math.abs(points.at(-1).x - group.junction.x);
+    assert.ok(branchTravel > 0 && branchTravel <= travel * 0.05, `${edgeId} 목적지 직전 분기`);
+    assert.equal(branchTravel, 25, `${edgeId} 목적지 바깥 공통 Trunk 위치`);
+    for (let index = 1; index < points.length; index += 1) {
+      assert.ok(points[index - 1].x === points[index].x || points[index - 1].y === points[index].y,
+        `${edgeId} 직교 경로`);
+    }
+  });
+
+  ui.renderGraph(snapshot);
+  await ui.layoutGraph();
+  const trunks = findAllByClass(elements.get("graph-edges"), "graph-edge-trunk")
+    .filter((path) => (path.getAttribute("data-edge-ids") || "").split(",").length === 8);
+  assert.equal(trunks.length, 1, "공유 Trunk는 한 번만 렌더링");
+  const groupedBranches = findAllByClass(elements.get("graph-edges"), "graph-edge-branch");
+  assert.equal(groupedBranches.length, 8);
+  groupedBranches.forEach((path) => {
+    const edge = graph.edges.find((candidate) => candidate.id === path.getAttribute("data-edge-id"));
+    assert.equal(path.getAttribute("data-source-id"), edge.sourceId);
+    assert.equal(path.getAttribute("data-target-id"), edge.targetId);
+    assert.equal(path.getAttribute("data-evidence-ids"), edge.evidenceIds.join(","));
+  });
+  assert.equal(findAllByClass(elements.get("graph-edges"), "graph-edge-flow-route").length, 0,
+    "완전한 배선은 Layout 결과에 보존하고 SVG 중복 경로는 만들지 않음");
+  assert.equal(new Set(findAllByClass(elements.get("graph-edges"), "graph-edge")
+    .filter((path) => path.getAttribute("data-edge-id"))
+    .map((path) => path.getAttribute("data-edge-id"))).size, graph.edges.length,
+  "각 원본 Edge ID의 SVG 경로는 한 개만 유지");
+});
+
+test("완전한 N→M 공통 배선은 원본 관계 쌍과 Evidence를 개별 보존함", () => {
+  const { ui, layoutApi } = loadUi();
+  const graph = ui.normalizeGraph({
+    nodes: [
+      ...["handler-a", "handler-b"].map((id) => ({ id, type: "HANDLER", label: id,
+        attributes: { handler: `${id}#handle` }, evidenceIds: [] })),
+      ...["endpoint-a", "endpoint-b"].map((id) => ({ id, type: "ENDPOINT", label: id,
+        attributes: { httpMethod: "GET", path: `/${id}` }, evidenceIds: [] }))
+    ],
+    edges: [
+      ...["handler-a", "handler-b"].flatMap((sourceId) => ["endpoint-a", "endpoint-b"].map((targetId) => ({
+        id: `flow-${sourceId}-${targetId}`, sourceId, targetId, type: "FLOWS_TO",
+        confidence: "CONFIRMED", attributes: {}, evidenceIds: [`evidence-${sourceId}-${targetId}`]
+      })))
+    ]
+  });
+  const layout = layoutApi.semanticLayout(graph, { positions: {} });
+  const group = layout.plan.commonEdgeRouteGroups.find((candidate) => candidate.edgeIds.length === 4);
+  assert.ok(group, "같은 방향·기술 영역의 배선 통로 누락");
+  assert.deepEqual(Array.from(group.edgeIds).sort(), [
+    "flow-handler-a-endpoint-a", "flow-handler-a-endpoint-b",
+    "flow-handler-b-endpoint-a", "flow-handler-b-endpoint-b"
+  ]);
+  assert.equal(Array.from(group.sourceIds).join(","), "handler-a,handler-b");
+  assert.equal(Array.from(group.targetIds).join(","), "endpoint-a,endpoint-b");
+  assert.equal(new Set(graph.edges.map((edge) => `${edge.sourceId}\u0000${edge.targetId}`)).size, 4,
+    "공통 배선의 Source–Target 쌍이 모두 실제 관계여야 함");
+  group.edgeIds.forEach((edgeId) => {
+    const edge = graph.edges.find((candidate) => candidate.id === edgeId);
+    const route = routePoints(layout.edgeRoutes[edgeId]);
+    assert.equal(route.at(-1).y, layout.positions[edge.targetId].y + 60);
+    assert.ok(route.at(-1).x === layout.positions[edge.targetId].x
+      || route.at(-1).x === layout.positions[edge.targetId].x + 260);
+    assert.equal(edge.evidenceIds.length, 1);
+  });
+  const diagonalGraph = ui.normalizeGraph({
+    nodes: graph.nodes,
+    edges: graph.edges.filter((edge) => (edge.sourceId === "handler-a") === (edge.targetId === "endpoint-a"))
+  });
+  const diagonalLayout = layoutApi.semanticLayout(diagonalGraph, { positions: {} });
+  assert.equal(diagonalLayout.plan.commonEdgeRouteGroups.some((candidate) =>
+    candidate.sourceIds.length > 1 && candidate.targetIds.length > 1), false,
+  "실제 대각선 관계만으로 N→M 연결을 암시하지 않아야 함");
+});
+
+test("Hidden Conceptual Group은 공유 원본을 Chain별 표시 인스턴스로 분리하고 원본 계약을 보존함", () => {
+  const { ui, layoutApi } = loadUi();
+  const graph = ui.normalizeGraph(detailGraphFixture());
+  const handlerA = graph.nodes.find((node) => node.id === "handler-a");
+  const endpointA = graph.nodes.find((node) => node.id === "endpoint-a");
+  const handlerB = graph.nodes.find((node) => node.id === "handler-b");
+  const endpointB = graph.nodes.find((node) => node.id === "endpoint-b");
+  handlerA.attributes.handler = "com.example.OrderController#list";
+  endpointA.attributes.handler = handlerA.attributes.handler;
+  handlerB.attributes.handler = "com.example.OrderController#detail";
+  endpointB.attributes.handler = handlerB.attributes.handler;
+  graph.nodes.push(
+    { id: "handler-shared", type: "HANDLER", label: "SharedController#handle",
+      attributes: { handler: "SharedController#handle" }, evidenceIds: ["e-handler-shared"] },
+    { id: "endpoint-shared-a", type: "ENDPOINT", label: "GET /shared/a",
+      attributes: { httpMethod: "GET", path: "/shared/a", handler: "SharedController#handle" },
+      evidenceIds: ["e-endpoint-shared-a"] },
+    { id: "endpoint-shared-b", type: "ENDPOINT", label: "GET /shared/b",
+      attributes: { httpMethod: "GET", path: "/shared/b", handler: "SharedController#handle" },
+      evidenceIds: ["e-endpoint-shared-b"] },
+    { id: "handler-unresolved", type: "HANDLER", label: "UnresolvedController#handle",
+      attributes: { handler: "UnresolvedController#handle" }, evidenceIds: ["e-handler-unresolved"] },
+    { id: "endpoint-unresolved", type: "ENDPOINT", label: "GET /unresolved",
+      attributes: { httpMethod: "GET", path: "/unresolved", handler: "UnresolvedController#handle" },
+      evidenceIds: ["e-endpoint-unresolved"] },
+    { id: "security-shared", type: "AUTHORIZATION", label: "Shared authorization",
+      attributes: { authorizationKind: "ROLE" }, evidenceIds: ["e-security-shared"] },
+    ...Array.from({ length: 18 }, (_, index) => ({
+      id: `endpoint-bulk-${index}`, type: "ENDPOINT", label: `GET /bulk/${index}`,
+      attributes: { httpMethod: "GET", path: `/bulk/${index}`, handler: handlerB.attributes.handler },
+      evidenceIds: [`e-endpoint-bulk-${index}`]
+    }))
+  );
+  graph.edges.push(
+    { id: "match-shared-a", sourceId: "endpoint-shared-a", targetId: "chain-a", type: "MATCHED_BY",
+      confidence: "CONFIRMED", attributes: {}, evidenceIds: ["e-match-shared-a"] },
+    { id: "match-shared-b", sourceId: "endpoint-shared-b", targetId: "chain-b", type: "MATCHED_BY",
+      confidence: "CONFIRMED", attributes: {}, evidenceIds: ["e-match-shared-b"] },
+    { id: "match-unresolved", sourceId: "endpoint-unresolved", targetId: "chain-a", type: "MATCHED_BY",
+      confidence: "LIKELY", attributes: {}, evidenceIds: ["e-match-unresolved"] },
+    { id: "shared-security-a", sourceId: "chain-a", targetId: "security-shared", type: "SECURED_BY",
+      confidence: "CONFIRMED", attributes: {}, evidenceIds: ["e-shared-security-a"] },
+    { id: "shared-security-b", sourceId: "chain-b", targetId: "security-shared", type: "SECURED_BY",
+      confidence: "CONFIRMED", attributes: {}, evidenceIds: ["e-shared-security-b"] },
+    ...Array.from({ length: 18 }, (_, index) => ({
+      id: `match-bulk-${index}`, sourceId: `endpoint-bulk-${index}`, targetId: "chain-b", type: "MATCHED_BY",
+      confidence: "CONFIRMED", attributes: {}, evidenceIds: [`e-match-bulk-${index}`]
+    }))
+  );
+  const originalGraph = JSON.stringify(graph);
+  const first = layoutApi.semanticLayout(graph, { positions: {} });
+  const second = layoutApi.semanticLayout(graph, { positions: {} });
+  const hiddenGroups = first.plan.hiddenGroups;
+  assert.ok(Array.isArray(hiddenGroups), "내부 Hidden Group 계획 누락");
+  const chainGroups = hiddenGroups.filter((group) => group.type === "CHAIN");
+  assert.deepEqual(Array.from(chainGroups, (group) => group.id), ["chain:chain-a", "chain:chain-b"]);
+  assert.deepEqual(Array.from(chainGroups, (group) => group.chainOrder), [1, 2]);
+  const groupsFor = (nodeId) => hiddenGroups.filter((group) => Object.values(group.members)
+    .some((memberIds) => memberIds.includes(nodeId)));
+  assert.deepEqual(Array.from(groupsFor("authorization-a"), (group) => group.id), ["chain:chain-a"]);
+  assert.deepEqual(Array.from(groupsFor("security-data-a"), (group) => group.id), ["chain:chain-a"]);
+  assert.deepEqual(Array.from(groupsFor("authorization-b"), (group) => group.id), ["chain:chain-b"]);
+  assert.deepEqual(Array.from(groupsFor("handler-shared"), (group) => group.id), ["chain:chain-a", "chain:chain-b"]);
+  assert.deepEqual(Array.from(groupsFor("security-shared"), (group) => group.id), ["chain:chain-a", "chain:chain-b"]);
+  assert.deepEqual(Array.from(groupsFor("endpoint-unresolved"), (group) => group.id), ["unresolved"]);
+  assert.deepEqual(Array.from(groupsFor("handler-unresolved"), (group) => group.id), ["unresolved"]);
+  assert.deepEqual(Array.from(groupsFor("endpoint-bulk-17"), (group) => group.id), ["chain:chain-b"]);
+
+  const chainA = chainGroups[0];
+  const chainB = chainGroups[1];
+  assert.ok(chainB.rowHeight > chainA.rowHeight, "Endpoint가 많은 Chain만 행 높이 확장");
+  assert.ok(first.positions[chainA.chainId].y < first.positions[chainB.chainId].y);
+  const display = first.plan.displayModel;
+  const displayFor = (nodeId, rowId) => display.instances.find((instance) =>
+    instance.rowId === rowId && instance.originalNodeIds.includes(nodeId));
+  const sharedHandlerA = displayFor("handler-shared", "chain:chain-a");
+  const sharedHandlerB = displayFor("handler-shared", "chain:chain-b");
+  const sharedSecurityA = displayFor("security-shared", "chain:chain-a");
+  const sharedSecurityB = displayFor("security-shared", "chain:chain-b");
+  assert.ok(sharedHandlerA && sharedHandlerB, "공유 Handler가 두 Chain 행에 표시됨");
+  assert.ok(sharedSecurityA && sharedSecurityB, "공유 보안 근거가 두 Chain 행에 표시됨");
+  assert.notEqual(sharedHandlerA.id, sharedHandlerB.id);
+  assert.notEqual(sharedSecurityA.id, sharedSecurityB.id);
+  assert.deepEqual(Array.from(display.originalNodeToInstanceIds["handler-shared"]), [sharedHandlerA.id, sharedHandlerB.id]);
+  assert.deepEqual(Array.from(display.instanceToOriginalNodeIds[sharedHandlerB.id]), ["handler-shared"]);
+  assert.equal(display.nodeToDisplay["handler-shared"], sharedHandlerA.id);
+  assert.ok(sharedHandlerA.position.y >= chainA.rowTop && sharedHandlerA.position.y + 120 <= chainA.rowBottom);
+  assert.ok(sharedHandlerB.position.y >= chainB.rowTop && sharedHandlerB.position.y + 120 <= chainB.rowBottom);
+  assert.ok(sharedSecurityA.position.y >= chainA.rowTop && sharedSecurityA.position.y + 120 <= chainA.rowBottom);
+  assert.ok(sharedSecurityB.position.y >= chainB.rowTop && sharedSecurityB.position.y + 120 <= chainB.rowBottom);
+  assert.equal(first.plan.lanes.find((lane) => lane.id === "endpoint").columns, 2);
+  assert.ok(first.plan.lanes.find((lane) => lane.id === "handler").columns >= 1);
+  hiddenGroups.forEach((group) => {
+    assert.equal(group.rowBottom, group.rowTop + group.rowHeight);
+    Object.values(group.members).flat().forEach((nodeId) => {
+      const instance = display.instances.find((candidate) => candidate.rowId === group.id
+        && candidate.originalNodeIds.includes(nodeId));
+      const position = instance && instance.position;
+      assert.ok(position, `${nodeId}의 ${group.id} 표시 인스턴스 위치 누락`);
+      assert.ok(position.y >= group.rowTop && position.y + 120 <= group.rowBottom,
+        `${nodeId}가 ${group.id} 행 밖에 배치됨`);
+    });
+  });
+  assert.equal(chainB.members.endpoints.length, 20);
+  assert.ok(hiddenGroups.flatMap((group) => Object.values(group.members).flat()).length
+    > new Set(hiddenGroups.flatMap((group) => Object.values(group.members).flat())).size,
+  "공유 원본은 Hidden Row마다 배치하되 Snapshot Node 수는 유지");
+  assert.equal(first.plan.controllerGroups.filter((group) => group.controllerFqcn === "com.example.OrderController").length, 2,
+    "서로 다른 Chain의 실제 Handler 메서드는 별도 표시 그룹으로 유지");
+  const sharedSecurityEdgeA = display.displayEdgeInstances.filter((edge) => edge.originalEdgeIds.includes("shared-security-a"));
+  const sharedSecurityEdgeB = display.displayEdgeInstances.filter((edge) => edge.originalEdgeIds.includes("shared-security-b"));
+  assert.equal(sharedSecurityEdgeA.length, 1);
+  assert.equal(sharedSecurityEdgeA[0].rowId, "chain:chain-a");
+  assert.equal(sharedSecurityEdgeB.length, 1);
+  assert.equal(sharedSecurityEdgeB[0].rowId, "chain:chain-b");
+  assert.equal(display.originalNodeToInstanceIds["security-shared"].length, 2);
+  assert.deepEqual(first.positions, second.positions);
+  assert.deepEqual(first.plan.displayModel.instances, second.plan.displayModel.instances);
+  assert.deepEqual(first.plan.displayModel.displayEdgeInstances, second.plan.displayModel.displayEdgeInstances);
+  assert.deepEqual(Array.from(hiddenGroups, ({ id, rowTop, rowHeight }) => ({ id, rowTop, rowHeight })),
+    Array.from(second.plan.hiddenGroups, ({ id, rowTop, rowHeight }) => ({ id, rowTop, rowHeight })));
+  assert.equal(JSON.stringify(graph), originalGraph, "레이아웃 계산으로 Snapshot Graph를 변경하지 않음");
+});
+
+test("보안 Display Group은 원본 유형 색상과 접근성 유형을 유지함", () => {
+  const { ui, elements, window, layoutApi } = loadUi();
+  const graph = detailGraphFixture();
+  graph.nodes.push(
+    { id: "authentication-color", type: "AUTHENTICATION", label: "Authentication", attributes: {}, evidenceIds: [] },
+    { id: "business-state-color", type: "BUSINESS_SECURITY_STATE", label: "Business state",
+      attributes: {}, evidenceIds: [] }
+  );
+  const normalizedGraph = ui.normalizeGraph(graph);
+  const layoutResult = layoutApi.semanticLayout(normalizedGraph, { positions: {} });
+  const layers = {
+    svg: elements.get("graph-svg"), viewport: elements.get("graph-viewport"),
+    areaLayer: elements.get("graph-areas"), projectionLayer: elements.get("graph-flow-projection"),
+    guideLayer: elements.get("graph-guides"), edgeLayer: elements.get("graph-edges"),
+    nodeLayer: elements.get("graph-nodes"), findingLayer: elements.get("graph-finding-sections"),
+    findingTitleLayer: elements.get("graph-finding-section-titles")
+  };
+  window.MapInBootGraph.render(normalizedGraph, layers, {
+    positions: layoutResult.positions, bounds: { width: layoutResult.width, height: layoutResult.height },
+    layoutPlan: layoutResult.plan, findings: []
+  });
+
+  const expected = {
+    AUTHENTICATION: "#38bdf8",
+    AUTHORIZATION: "#fb7185",
+    SECURITY_DATA: "#2dd4bf",
+    BUSINESS_SECURITY_STATE: "#a3e635",
+    HANDLER: "#c4b5fd"
+  };
+  const groupDefinitions = new Map(layoutResult.plan.displayModel.groups.map((group) => [group.id, group]));
+  const renderedGroups = findAllByClass(elements.get("graph-nodes"), "graph-support-group")
+    .concat(findAllByClass(elements.get("graph-nodes"), "graph-controller-group"));
+  assert.ok(renderedGroups.length > 0);
+  renderedGroups.forEach((rendered) => {
+    const definition = groupDefinitions.get(rendered.getAttribute("data-controller-group-id"));
+    const type = definition && definition.type || "HANDLER";
+    const color = expected[type];
+    assert.ok(color, `${type} 색상 정의 누락`);
+    assert.equal(findAllByClass(rendered, "graph-controller-group-card")[0].getAttribute("stroke"), color);
+    assert.equal(findAllByClass(rendered, "graph-node-type-dot")[0].getAttribute("fill"), color);
+    assert.equal(findAllByClass(rendered, "graph-node-type")[0].getAttribute("fill"), color);
+    assert.ok(rendered.getAttribute("aria-label").startsWith(window.MapInBootGraph.nodeTypeLabel(type)));
+  });
+  const ordinaryNodes = findAllByClass(elements.get("graph-nodes"), "graph-node")
+    .filter((node) => ["authentication-color", "business-state-color"].includes(node.getAttribute("data-node-id")));
+  assert.equal(ordinaryNodes.length, 2);
+  ordinaryNodes.forEach((node) => {
+    const type = node.getAttribute("data-node-type");
+    assert.equal(findAllByClass(node, "graph-node-card")[0].getAttribute("stroke"), expected[type]);
+  });
+});
+
+test("인가 표시 그룹은 혼합 정책을 집계하고 Inspector에서 원본 정책과 근거를 보존함", async () => {
+  const { ui, elements } = loadUi();
+  const graph = detailGraphFixture();
+  graph.evidence ||= [];
+  graph.nodes.find((node) => node.id === "chain-a").attributes.matcherCondition = "/internal/**";
+  graph.nodes.find((node) => node.id === "authorization-b").attributes = {
+    policySource: "URL", policyKind: "AUTHORITY_REQUIRED", requiredAuthority: "ROLE_CUSTOMER",
+    policyMatcherCondition: "ANY", policyOrder: "1", chainKey: "chain-b", chainOrder: "2"
+  };
+  const policyKinds = ["PERMIT_ALL", "PERMIT_ALL", "PERMIT_ALL", "AUTHENTICATED", "AUTHENTICATED", "AUTHORITY_REQUIRED"];
+  policyKinds.forEach((policyKind, index) => {
+    const id = `url-policy-${index + 1}`;
+    graph.nodes.push({
+      id,
+      type: "AUTHORIZATION",
+      serviceId: "orders",
+      label: id,
+      attributes: {
+        policySource: "URL",
+        policyKind,
+        policyMatcherCondition: "ANY",
+        policyMatcherType: "ANY",
+        policyOrder: String(index + 1),
+        chainKey: "chain-a",
+        chainOrder: "1",
+        ...(policyKind === "AUTHORITY_REQUIRED" ? { requiredAuthority: "ROLE_CUSTOMER" } : {})
+      },
+      evidenceIds: [`evidence-${id}`]
+    });
+    graph.edges.push({
+      id: `secured-${id}`, sourceId: "handler-a", targetId: id, type: "SECURED_BY",
+      attributes: {}, confidence: "CONFIRMED", evidenceIds: [`evidence-secured-${id}`]
+    });
+    graph.evidence.push({
+      id: `evidence-${id}`, source: "CODE_PATTERN", location: `SecurityConfig#policy${index + 1}`,
+      summary: `인가 정책 ${index + 1}`
+    });
+  });
+  graph.findings = [{ id: "policy-finding", title: "정책 Finding", ruleId: "PUBLIC_ENDPOINT", confidence: "LIKELY",
+    nodeIds: ["url-policy-1"], edgeIds: ["secured-url-policy-1"], evidenceIds: ["evidence-url-policy-1"] }];
+
+  ui.renderGraph(graph);
+  await ui.layoutGraph();
+
+  const definition = ui.state.layout.plan.displayModel.groups.find((group) => group.nodeIds.includes("url-policy-1"));
+  const card = findAllByClass(elements.get("graph-nodes"), "graph-support-group")
+    .find((group) => group.getAttribute("data-controller-group-id") === definition.id);
+  assert.ok(card);
+  const title = findAllByClass(card, "graph-node-label")[0].textContent;
+  const detail = findAllByClass(card, "graph-node-detail")[0].textContent;
+  assert.equal(title, "공개 접근 허용");
+  assert.equal(definition.nodeIds.length, 3);
+  assert.match(detail, /URL 정책 3건/);
+  assert.match(detail, /조건 ANY/);
+  assert.doesNotMatch(`${title} ${detail}`, /\/internal\/\*\*|원본 Fact/);
+  const policyGroups = policyKinds.map((_, index) => ui.state.layout.plan.displayModel.groups
+    .find((group) => group.nodeIds.includes(`url-policy-${index + 1}`)));
+  assert.equal(new Set(policyGroups.slice(0, 3).map((group) => group.id)).size, 1);
+  assert.equal(new Set(policyGroups.slice(3, 5).map((group) => group.id)).size, 1);
+  assert.notEqual(policyGroups[0].id, policyGroups[3].id);
+  assert.notEqual(policyGroups[0].id, policyGroups[5].id);
+
+  const singleDefinition = ui.state.layout.plan.displayModel.groups.find((group) => group.nodeIds.includes("authorization-b"));
+  const singleCard = findAllByClass(elements.get("graph-nodes"), "graph-support-group")
+    .find((group) => group.getAttribute("data-controller-group-id") === singleDefinition.id);
+  assert.equal(findAllByClass(singleCard, "graph-node-label")[0].textContent, "ROLE_CUSTOMER 권한 필요");
+  assert.equal(findAllByClass(singleCard, "graph-node-detail")[0].textContent, "URL 정책 · 조건 ANY · 순서 1");
+
+  card.dispatchEvent({ type: "click", stopPropagation() {} });
+  const inspectorTitle = findAllByClass(elements.get("inspector"), "inspector-title")[0];
+  assert.equal(inspectorTitle.textContent, title);
+  const sourceLinks = findAllByClass(elements.get("inspector"), "inspector-link")
+    .filter((link) => link.getAttribute("data-node-id")?.startsWith("url-policy-"));
+  assert.deepEqual(sourceLinks.map((link) => link.getAttribute("data-node-id")),
+    ["url-policy-1", "url-policy-2", "url-policy-3"]);
+  assert.match(textOf(elements.get("inspector")), /ROLE_CUSTOMER|정책 순서|모든 요청|CODE_PATTERN|SecurityConfig#policy6|evidence-url-policy-6/);
+  assert.match(textOf(elements.get("inspector")), /원본 Node ID|AUTHORIZATION|url-policy-1/);
+  assert.equal(findAllByClass(elements.get("inspector"), "inspector-finding").length, 1);
+});
+
+test("URL 인가 정책은 정확히 일치하는 chainKey만 직접 소속으로 사용함", () => {
+  const { ui, layoutApi } = loadUi();
+  const graph = flowGraphFixture();
+  const addPolicy = (id, chainKey, chainOrder, connectToHandler = true) => {
+    graph.nodes.push({ id, type: "AUTHORIZATION", serviceId: "orders", label: id,
+      attributes: { policySource: "URL", policyKind: "AUTHENTICATED", chainKey, chainOrder }, evidenceIds: [] });
+    if (connectToHandler) graph.edges.push({ id: `edge-${id}`, sourceId: "handler-a", targetId: id, type: "SECURED_BY",
+      attributes: {}, confidence: "CONFIRMED", evidenceIds: [] });
+  };
+  addPolicy("direct-chain-b", "chain-b", "2");
+  addPolicy("direct-without-edge", "chain-b", "2", false);
+  addPolicy("missing-chain-key-match", "missing-chain", "9", false);
+  addPolicy("chain-order-only", undefined, "2");
+  addPolicy("chain-order-conflict", "chain-b", "1");
+  graph.nodes.push({ id: "chain-a-duplicate", type: "SECURITY_CHAIN", serviceId: "orders", label: "duplicate",
+    attributes: { chainKey: "chain-a", chainOrder: "3" }, evidenceIds: [] });
+  addPolicy("ambiguous-chain-key", "chain-a", "1");
+
+  const normalized = ui.normalizeGraph(graph);
+  const plan = layoutApi.semanticLayout(normalized, { positions: {} }).plan;
+  const rowsFor = (nodeId) => plan.displayModel.groups.filter((group) => group.nodeIds.includes(nodeId))
+    .map((group) => group.rowId);
+  const unresolvedSecurityChecks = new Set(plan.hiddenGroups.find((row) => row.id === "unresolved")?.members.securityChecks || []);
+
+  assert.equal(rowsFor("direct-chain-b").join(","), "chain:chain-b");
+  assert.equal(rowsFor("direct-without-edge").join(","), "chain:chain-b");
+  assert.equal(rowsFor("chain-order-only").join(","), "chain:chain-a");
+  assert.ok(unresolvedSecurityChecks.has("chain-order-conflict"));
+  assert.ok(unresolvedSecurityChecks.has("ambiguous-chain-key"));
+  assert.ok(unresolvedSecurityChecks.has("missing-chain-key-match"));
+});
+
+test("SECURITY_DATA 표시 그룹은 실제 JWT 동작별로 분리하고 조회만으로 권한 사용을 표시하지 않음", async () => {
+  const { ui, elements, window } = loadUi();
+  const graph = flowGraphFixture();
+  const operations = [
+    { operation: "WRITE", apiType: "NIMBUS_CLAIMS_BUILDER", apiName: "claim" },
+    { operation: "READ", apiType: "SPRING_SECURITY_JWT", apiName: "getClaim" },
+    { operation: "SIGN", apiType: "NIMBUS_SIGNED_JWT", apiName: "sign" },
+    { operation: "VERIFY_CONFIGURATION", apiType: "SPRING_SECURITY_NIMBUS_DECODER", apiName: "build",
+      verificationKind: "CONFIGURATION" }
+  ];
+  operations.forEach(({ operation, apiType, apiName, verificationKind }, index) => {
+    const id = `jwt-${operation.toLowerCase()}`;
+    graph.nodes.push({ id, type: "SECURITY_DATA", serviceId: "orders", label: id,
+      attributes: { operation, apiType, apiName, claimName: `claim-${index + 1}`, verificationKind,
+        codeLocation: `TokenService#${operation}` }, evidenceIds: [`evidence-${id}`] });
+    graph.edges.push({ id: `reads-${id}`, sourceId: "handler-a", targetId: id, type: "READS_SECURITY_DATA",
+      attributes: {}, confidence: "CONFIRMED", evidenceIds: [] });
+  });
+  ["CREATE", "READ"].forEach((operation) => {
+    const id = `authority-${operation.toLowerCase()}`;
+    graph.nodes.push({ id, type: "SECURITY_DATA", serviceId: "orders", label: id,
+      attributes: { dataKind: "AUTHORITY", apiType: "AUTHORITY", operation }, evidenceIds: [] });
+    graph.edges.push({ id: `reads-${id}`, sourceId: "handler-a", targetId: id, type: "READS_SECURITY_DATA",
+      attributes: {}, confidence: "CONFIRMED", evidenceIds: [] });
+  });
+  graph.evidence = graph.nodes.filter((node) => node.id.startsWith("jwt-")).map((node) => ({
+    id: node.evidenceIds[0], source: "CODE_PATTERN", location: node.attributes.codeLocation, summary: node.attributes.operation
+  }));
+  const displays = graph.nodes.filter((node) => node.id.startsWith("jwt-"))
+    .map((node) => [node.attributes.operation, window.MapInBootGraph.nodeDisplay(node).primary]);
+
+  assert.deepEqual(displays, [
+    ["WRITE", "JWT Claim 작성"],
+    ["READ", "JWT Claim 조회"],
+    ["SIGN", "JWT 서명"],
+    ["VERIFY_CONFIGURATION", "JWT 검증 구성"]
+  ]);
+  assert.ok(displays.every(([, label]) => !label.includes("권한")));
+  assert.equal(window.MapInBootGraph.nodeDisplay(graph.nodes.find((node) => node.id === "authority-create")).primary, "권한 생성");
+  assert.equal(window.MapInBootGraph.nodeDisplay(graph.nodes.find((node) => node.id === "authority-read")).primary, "권한 정보 조회");
+
+  ui.renderGraph(graph);
+  await ui.layoutGraph();
+  const groups = ui.state.layout.plan.displayModel.groups.filter((group) => group.type === "SECURITY_DATA"
+    && group.nodeIds.some((id) => id.startsWith("jwt-")));
+  assert.equal(groups.length, 4);
+  assert.ok(groups.every((group) => group.nodeIds.length === 1), "서로 다른 JWT 동작을 한 카드에 합치지 않음");
+  assert.equal(new Set(groups.map((group) => `${group.position.x}:${group.position.y}`)).size, 4,
+    "의미별 Display Group이 서로 다른 위치를 사용함");
+  const authorityGroups = ui.state.layout.plan.displayModel.groups.filter((group) => group.type === "SECURITY_DATA"
+    && group.nodeIds.some((id) => id.startsWith("authority-")));
+  assert.equal(authorityGroups.length, 2);
+  assert.equal(new Set(authorityGroups.map((group) => `${group.position.x}:${group.position.y}`)).size, 2);
+  const cardFor = (nodeId) => {
+    const definition = groups.find((group) => group.nodeIds.includes(nodeId));
+    return findAllByClass(elements.get("graph-nodes"), "graph-support-group")
+      .find((group) => group.getAttribute("data-controller-group-id") === definition.id);
+  };
+  assert.equal(findAllByClass(cardFor("jwt-write"), "graph-node-label")[0].textContent, "JWT Claim 작성");
+  assert.equal(findAllByClass(cardFor("jwt-read"), "graph-node-label")[0].textContent, "JWT Claim 조회");
+  assert.equal(findAllByClass(cardFor("jwt-sign"), "graph-node-label")[0].textContent, "JWT 서명");
+  assert.equal(findAllByClass(cardFor("jwt-verify_configuration"), "graph-node-label")[0].textContent, "JWT 검증 구성");
+  assert.ok(groups.every((group) => !textOf(cardFor(group.nodeIds[0])).match(/권한 판단|인가 확인/)));
+  const readNode = graph.nodes.find((node) => node.id === "jwt-read");
+  cardFor(readNode.id).dispatchEvent({ type: "click", stopPropagation() {} });
+  assert.equal(findAllByClass(elements.get("inspector"), "inspector-title")[0].textContent, "JWT Claim 조회");
+  assert.match(textOf(elements.get("inspector")), /TokenService#READ/);
+  assert.doesNotMatch(findAllByClass(elements.get("inspector"), "inspector-title")[0].textContent, /권한/);
+});
+
+test("SECURITY_DATA 의미별 그룹은 17개 원본 Fact를 네 종류로 묶고 Inspector 근거를 제한함", async () => {
+  const { ui, elements } = loadUi();
+  const graph = flowGraphFixture();
+  graph.evidence = [];
+  graph.findings = [];
+  const kinds = [
+    { prefix: "principal-read", count: 8, label: "Principal 조회", attributes: (index) => ({
+      dataKind: "PRINCIPAL", apiType: "PRINCIPAL", operation: "READ", principalType: "UserDetails", apiName: `principal${index}`
+    }) },
+    { prefix: "jwt-write", count: 5, label: "JWT Claim 작성", attributes: (index) => ({
+      dataKind: "JWT_CLAIM", apiType: "NIMBUS_CLAIMS_BUILDER", operation: "WRITE", claimName: `claim-${index}`
+    }) },
+    { prefix: "jwt-read", count: 1, label: "JWT Claim 조회", attributes: () => ({
+      dataKind: "JWT_CLAIM", apiType: "SPRING_SECURITY_JWT", operation: "READ", claimName: "subject"
+    }) },
+    { prefix: "authentication-status", count: 3, label: "인증 상태 확인", attributes: (index) => ({
+      sourceKind: "AUTHENTICATION", apiType: "SPRING_AUTHENTICATION", operation: "AUTH_STATUS", apiName: `isAuthenticated${index}`
+    }) }
+  ];
+  const expectedNodeIds = [];
+  kinds.forEach(({ prefix, count, attributes }) => {
+    for (let index = 0; index < count; index += 1) {
+      const id = `${prefix}-${index}`;
+      expectedNodeIds.push(id);
+      graph.nodes.push({ id, type: "SECURITY_DATA", serviceId: "orders", label: id,
+        attributes: { ...attributes(index), codeLocation: `SecurityConfig#${id}` }, evidenceIds: [`evidence-${id}`] });
+      graph.edges.push({ id: `edge-${id}`, sourceId: "handler-a", targetId: id,
+        type: prefix === "jwt-write" ? "WRITES_SECURITY_DATA" : "READS_SECURITY_DATA",
+        attributes: {}, confidence: "CONFIRMED", evidenceIds: [`edge-evidence-${id}`] });
+      graph.evidence.push({ id: `evidence-${id}`, source: "CODE_PATTERN", location: `SecurityConfig#${id}`, summary: id });
+    }
+  });
+  graph.findings = [{ id: "semantic-finding", title: "보안정보 Finding", ruleId: "PUBLIC_ENDPOINT", confidence: "LIKELY",
+    nodeIds: ["jwt-write-0"], edgeIds: ["edge-jwt-write-0"], evidenceIds: ["evidence-jwt-write-0"] }];
+  const originalGraph = JSON.stringify(graph);
+
+  ui.renderGraph(graph);
+  await ui.layoutGraph();
+
+  const rowId = "chain:chain-a";
+  const row = ui.state.layout.plan.hiddenGroups.find((group) => group.id === rowId);
+  const groups = ui.state.layout.plan.displayModel.groups.filter((group) => group.type === "SECURITY_DATA" && group.rowId === rowId
+    && group.nodeIds.some((id) => expectedNodeIds.includes(id)));
+  assert.equal(groups.length, 4);
+  const groupedIds = Array.from(groups).flatMap((group) => Array.from(group.nodeIds));
+  assert.equal(groupedIds.length, 17);
+  assert.deepEqual(Array.from(groupedIds).sort(), expectedNodeIds.slice().sort());
+  const labels = Array.from(groups, (group) => {
+    const card = findAllByClass(elements.get("graph-nodes"), "graph-support-group")
+      .find((element) => element.getAttribute("data-controller-group-id") === group.id);
+    return [findAllByClass(card, "graph-node-label")[0].textContent, group.nodeIds.length];
+  }).sort((left, right) => left[0].localeCompare(right[0]));
+  assert.deepEqual(labels, [
+    ["JWT Claim 작성", 5], ["JWT Claim 조회", 1], ["Principal 조회", 8], ["인증 상태 확인", 3]
+  ].sort((left, right) => left[0].localeCompare(right[0])));
+  assert.equal(new Set(groups.map((group) => `${group.position.x}:${group.position.y}`)).size, 4);
+  assert.ok(groups.every((group) => group.position.y >= row.rowTop && group.position.y + 120 <= row.rowBottom));
+
+  const principalGroup = groups.find((group) => group.nodeIds[0].startsWith("principal-read"));
+  const principalCard = findAllByClass(elements.get("graph-nodes"), "graph-support-group")
+    .find((element) => element.getAttribute("data-controller-group-id") === principalGroup.id);
+  principalCard.dispatchEvent({ type: "click", stopPropagation() {} });
+  const factLinks = findAllByClass(elements.get("inspector"), "inspector-link")
+    .map((link) => link.getAttribute("data-node-id"))
+    .filter((id) => expectedNodeIds.includes(id));
+  assert.deepEqual(Array.from(factLinks).sort(), expectedNodeIds.filter((id) => id.startsWith("principal-read-")).sort());
+  assert.match(textOf(elements.get("inspector")), /evidence-principal-read-0/);
+  assert.doesNotMatch(textOf(elements.get("inspector")), /evidence-jwt-write-0/);
+  assert.equal(JSON.stringify(graph), originalGraph, "Display Group 분할이 원본 Graph, Evidence, Finding을 변경하지 않음");
+});
+
+test("전체 MAP의 API와 Controller Display Group은 1.5행 간격으로 교차 배치되고 Chain Row 안에 머묾", async () => {
+  const { ui, elements, layoutApi, window } = loadUi();
+  const graph = flowGraphFixture();
+  const endpointIds = [];
+  for (let index = 0; index < 16; index += 1) {
+    const controller = `com.example.LayoutController${String(index % 4).padStart(2, "0")}`;
+    const handler = `${controller}#handle${index}`;
+    const endpointId = `stagger-endpoint-${String(index).padStart(2, "0")}`;
+    const handlerId = `stagger-handler-${String(index).padStart(2, "0")}`;
+    endpointIds.push(endpointId);
+    graph.nodes.push(
+      { id: endpointId, type: "ENDPOINT", serviceId: "orders", label: `GET /stagger/${index}`,
+        attributes: { httpMethod: "GET", path: `/stagger/${String(index).padStart(2, "0")}`, handler }, evidenceIds: [] },
+      { id: handlerId, type: "HANDLER", serviceId: "orders", label: handler, attributes: { handler }, evidenceIds: [] }
+    );
+    graph.edges.push({ id: `stagger-match-${index}`, sourceId: endpointId, targetId: "chain-a", type: "MATCHED_BY",
+      confidence: "CONFIRMED", attributes: { chainOrder: "1" }, evidenceIds: [] });
+  }
+  const normalizedGraph = ui.normalizeGraph(graph);
+  const layoutResult = layoutApi.semanticLayout(normalizedGraph, { positions: {} });
+  const plan = layoutResult.plan;
+  const row = plan.hiddenGroups.find((group) => group.id === "chain:chain-a");
+  const rowB = plan.hiddenGroups.find((group) => group.id === "chain:chain-b");
+  const endpointPosition = (id) => plan.displayModel.instances.find((instance) => instance.rowId === row.id
+    && instance.originalNodeIds.includes(id)).position;
+  const orderedEndpoints = row.members.endpoints.map(endpointPosition);
+  assert.equal(plan.lanes.find((lane) => lane.id === "endpoint").columns, 2);
+  assert.equal(orderedEndpoints[1].x - orderedEndpoints[0].x, 360);
+  assert.equal(orderedEndpoints[1].y - orderedEndpoints[0].y, 270);
+  assert.equal(orderedEndpoints[2].x, orderedEndpoints[0].x);
+  assert.equal(orderedEndpoints[2].y - orderedEndpoints[0].y, 180);
+  const lastEndpoint = endpointPosition(endpointIds.at(-1));
+  assert.ok(lastEndpoint.y + 120 <= row.rowBottom, "두 번째 열의 마지막 API가 Chain 행 안에 있음");
+  assert.ok(rowB.rowTop > row.rowBottom, "확장된 Chain 행이 다음 행과 겹치지 않음");
+
+  const controllerGroups = plan.controllerGroups.filter((group) => group.layoutGroupId === row.id
+    && group.controllerFqcn.includes("LayoutController"))
+    .sort((left, right) => left.controllerFqcn.localeCompare(right.controllerFqcn));
+  assert.equal(controllerGroups.length, 4);
+  assert.equal(controllerGroups[1].position.x - controllerGroups[0].position.x, 360);
+  assert.equal(controllerGroups[1].position.y - controllerGroups[0].position.y, 270);
+  assert.ok(controllerGroups.every((group) => group.position.y >= row.rowTop && group.position.y + 120 <= row.rowBottom));
+  const flowIndex = window.MapInBootFlow.createIndex(ui.normalizeGraph(graph));
+  controllerGroups.forEach((group) => group.endpointIds.forEach((endpointId) => {
+    const match = flowIndex.handlerFor(endpointId);
+    assert.equal(match.status, "CONFIRMED");
+    assert.ok(group.handlerIds.includes(match.node.id), `${endpointId}가 실제 Handler 그룹에 연결됨`);
+  }));
+  const layers = {
+    svg: elements.get("graph-svg"), viewport: elements.get("graph-viewport"),
+    areaLayer: elements.get("graph-areas"), projectionLayer: elements.get("graph-flow-projection"),
+    guideLayer: elements.get("graph-guides"), edgeLayer: elements.get("graph-edges"),
+    nodeLayer: elements.get("graph-nodes"), findingLayer: elements.get("graph-finding-sections"),
+    findingTitleLayer: elements.get("graph-finding-section-titles")
+  };
+  window.MapInBootGraph.render(normalizedGraph, layers, { positions: layoutResult.positions,
+    bounds: { width: layoutResult.width, height: layoutResult.height }, layoutPlan: plan, findings: [] });
+  const firstControllerGroup = plan.controllerGroups.find((group) => group.controllerFqcn.includes("LayoutController00"));
+  const firstEndpointId = firstControllerGroup.endpointIds[0];
+  const guide = findAllByClass(elements.get("graph-guides"), "graph-guide-handler")
+    .find((path) => path.getAttribute("data-endpoint-id") === firstEndpointId);
+  assert.ok(guide, "API와 해당 Controller Display Group 사이의 Guide가 존재함");
+  assert.equal(guide.getAttribute("d"), plan.guideRoutes[firstEndpointId],
+    "Guide Route가 실제 Controller Display Group 좌표를 사용함");
+
+  const singleColumnGraph = flowGraphFixture();
+  singleColumnGraph.nodes.push(
+    { id: "single-endpoint-1", type: "ENDPOINT", serviceId: "orders", label: "GET /single/1",
+      attributes: { httpMethod: "GET", path: "/single/1", handler: "SingleController#one" }, evidenceIds: [] },
+    { id: "single-handler-1", type: "HANDLER", serviceId: "orders", label: "SingleController#one",
+      attributes: { handler: "SingleController#one" }, evidenceIds: [] },
+    { id: "single-endpoint-2", type: "ENDPOINT", serviceId: "orders", label: "GET /single/2",
+      attributes: { httpMethod: "GET", path: "/single/2", handler: "SingleController#two" }, evidenceIds: [] },
+    { id: "single-handler-2", type: "HANDLER", serviceId: "orders", label: "SingleController#two",
+      attributes: { handler: "SingleController#two" }, evidenceIds: [] }
+  );
+  singleColumnGraph.edges.push(
+    { id: "single-match-1", sourceId: "single-endpoint-1", targetId: "chain-a", type: "MATCHED_BY", confidence: "CONFIRMED", attributes: {}, evidenceIds: [] },
+    { id: "single-match-2", sourceId: "single-endpoint-2", targetId: "chain-a", type: "MATCHED_BY", confidence: "CONFIRMED", attributes: {}, evidenceIds: [] }
+  );
+  const singlePlan = layoutApi.semanticLayout(ui.normalizeGraph(singleColumnGraph), { positions: {} }).plan;
+  const singleRow = singlePlan.hiddenGroups.find((group) => group.id === "chain:chain-a");
+  const singlePositions = singleRow.members.endpoints.map((id) => singlePlan.displayModel.instances.find((instance) =>
+    instance.rowId === singleRow.id && instance.originalNodeIds.includes(id)).position);
+  assert.equal(singlePlan.lanes.find((lane) => lane.id === "endpoint").columns, 1);
+  assert.equal(singlePositions[1].x, singlePositions[0].x);
+  assert.equal(singlePositions[1].y - singlePositions[0].y, 180);
+});
+
+test("Overview와 Detail은 내부 처리 표시 모델을 분리함", () => {
+  const { ui, layoutApi } = loadUi();
+  const graph = ui.normalizeGraph(detailGraphFixture());
+  const overview = layoutApi.semanticLayout({ ...graph, presentationContext: "overview" }, { positions: {} });
+  const detail = layoutApi.semanticLayout({ ...graph, presentationContext: "detail" }, { positions: {} });
+  assert.equal(overview.plan.projection.nodes.length, 0);
+  assert.equal(overview.plan.displayModel.instances.some((item) => item.originalNodeIds.includes("servlet-1")), false);
+  assert.deepEqual(Array.from(overview.plan.lanes, (lane) => lane.id),
+    ["servlet-filter", "security-chain", "security-filter", "security-checks", "endpoint", "handler"]);
+  assert.ok(detail.plan.projection.nodes.some((node) => node.id === "education-handler-mapping"));
+  assert.ok(detail.plan.lanes.some((lane) => lane.id === "mvc"));
+});
+
+test("확정된 마지막 Filter는 같은 Chain의 URL 정책만 향함", () => {
+  const { ui, layoutApi } = loadUi();
+  const snapshot = detailGraphFixture();
+  snapshot.nodes.push({ id: "url-policy", type: "AUTHORIZATION", serviceId: "orders", label: "URL policy",
+    attributes: { policySource: "URL", chainKey: "chain-a", chainOrder: "1" }, evidenceIds: [] });
+  const graph = ui.normalizeGraph(snapshot);
+  const plan = layoutApi.semanticLayout({ ...graph, presentationContext: "overview" }, { positions: {} }).plan;
+  const target = plan.displayModel.instances.find((instance) => instance.rowId === "chain:chain-a"
+    && instance.originalNodeIds.includes("url-policy"));
+  assert.ok(target);
+  const edge = plan.projection.edges.find((item) => item.id === "filter-to-check-chain-a-url-policy");
+  assert.ok(edge);
+  assert.equal(edge.sourceId, "security-filter-2");
+  assert.equal(edge.targetId, target.id);
+  assert.equal(plan.projection.edges.some((item) => item.id.startsWith("filter-to-dispatcher-")), false);
+});
+
+test("순서 미확정 Chain과 Method 정책은 마지막 Filter 진행선에서 제외됨", () => {
+  const { ui, layoutApi } = loadUi();
+  const snapshot = detailGraphFixture();
+  snapshot.nodes.push({ id: "method-policy", type: "AUTHORIZATION", serviceId: "orders", label: "Method policy",
+    attributes: { policySource: "METHOD" }, evidenceIds: [] });
+  snapshot.edges.push({ id: "method-edge", sourceId: "security-filter-2", targetId: "method-policy", type: "SECURED_BY",
+    attributes: {}, confidence: "CONFIRMED", evidenceIds: [] });
+  let graph = ui.normalizeGraph(snapshot);
+  let plan = layoutApi.semanticLayout({ ...graph, presentationContext: "overview" }, { positions: {} }).plan;
+  assert.equal(plan.projection.edges.some((edge) => (edge.relatedNodeIds || []).includes("method-policy")), false);
+  snapshot.edges.find((edge) => edge.id === "security-filtered-2").attributes.filterOrder = "1";
+  graph = ui.normalizeGraph(snapshot);
+  plan = layoutApi.semanticLayout({ ...graph, presentationContext: "overview" }, { positions: {} }).plan;
+  assert.notEqual(plan.chainFilterOrderStatus["chain-a"], "CONFIRMED");
+  assert.equal(plan.projection.edges.some((edge) => edge.id.startsWith("filter-to-check-chain-a-")), false);
+});
+
+test("Overview 렌더와 Mini Map에서 DispatcherServlet을 제외하고 Detail에서는 유지함", async () => {
+  const { ui, elements } = loadUi();
+  ui.renderGraph(detailGraphFixture());
+  ui.selectView("all-flow");
+  await ui.layoutGraph();
+  assert.equal(findAllByClass(elements.get("graph-nodes"), "graph-node")
+    .some((node) => node.getAttribute("data-node-id") === "servlet-1"), false);
+  assert.equal(ui.state.graphRender.displayNodes.some((node) => node.originalNodeIds?.includes("servlet-1")), false);
+  assert.equal(elements.get("graph-minimap-nodes").children.some((node) =>
+    node.getAttribute("data-node-id") === "servlet-1"), false);
+  ui.selectView("feature-flow");
+  await ui.layoutGraph();
+  assert.ok(ui.state.layout.plan.projection.nodes.some((node) => node.id === "education-handler-mapping"));
+});
+
+test("Overview는 다른 실제 Servlet을 DispatcherServlet으로 취급하지 않음", () => {
+  const { ui, layoutApi } = loadUi();
+  const snapshot = detailGraphFixture();
+  snapshot.nodes.push({ id: "other-servlet", type: "SERVLET", serviceId: "orders", label: "CustomServlet",
+    attributes: { servletKind: "SERVLET", servletClass: "com.example.CustomServlet" }, evidenceIds: [] });
+  const graph = ui.normalizeGraph(snapshot);
+  const layout = layoutApi.semanticLayout({ ...graph, presentationContext: "overview" }, { positions: {} });
+  assert.equal(layout.plan.displayModel.instances.some((instance) => instance.originalNodeIds.includes("servlet-1")), false);
+  assert.equal(layout.plan.displayModel.instances.some((instance) => instance.originalNodeIds.includes("other-servlet")), true);
+  assert.equal(graph.nodes.some((node) => node.id === "servlet-1"), true);
+});
+
+test("Overview 배선은 목적지 앞 공통 선분을 공유하고 각 관계의 연결 순서를 보존함", () => {
+  const { layoutApi } = loadUi();
+  const instances = [
+    { id: "source", position: { x: 0, y: 180 } },
+    { id: "a", position: { x: 1000, y: 0 } },
+    { id: "b", position: { x: 1000, y: 360 } }
+  ];
+  const relations = [
+    { id: "one", sourceInstanceId: "source", targetInstanceId: "a", rowId: "row", role: "evidence" },
+    { id: "two", sourceInstanceId: "source", targetInstanceId: "b", rowId: "row", role: "evidence" }
+  ];
+  const plan = layoutApi.routeOverview(instances, relations);
+  assert.deepEqual(Array.from(plan.unresolved), []);
+  const first = plan.routesByRelationId.one;
+  const second = plan.routesByRelationId.two;
+  const shared = first.orderedSegmentIds.filter((id) => second.orderedSegmentIds.includes(id));
+  assert.ok(shared.length > 0);
+  const segments = new Map(plan.segments.map((segment) => [segment.id, segment]));
+  assert.ok(shared.some((id) => Math.abs(segments.get(id).to.x - segments.get(id).from.x) > 500));
+  for (const route of [first, second]) {
+    let point = route.sourcePort;
+    for (const id of route.orderedSegmentIds) {
+      const segment = segments.get(id);
+      const same = (a, b) => a.x === b.x && a.y === b.y;
+      assert.ok(same(point, segment.from) || same(point, segment.to));
+      point = same(point, segment.from) ? segment.to : segment.from;
+    }
+    assert.deepEqual(point, route.targetPort);
+  }
+});
+
+test("Overview SVG는 새 배선 계획의 물리 선분을 한 번씩 표시함", async () => {
+  const { ui, elements } = loadUi();
+  const snapshot = detailGraphFixture();
+  ui.renderGraph(snapshot);
+  await ui.layoutGraph();
+  const plan = ui.state.layout.plan.overviewRouting;
+  assert.ok(plan && plan.segments.length > 0);
+  const segments = findAllByClass(elements.get("graph-edges"), "graph-overview-segment");
+  assert.equal(segments.length, plan.segments.length);
+  assert.equal(new Set(segments.map((path) => path.getAttribute("data-segment-id"))).size, plan.segments.length);
+});
+
+test("Overview 배선은 표시 관계를 누락하지 않고 해결함", () => {
+  const { ui, layoutApi } = loadUi();
+  const graph = ui.normalizeGraph(detailGraphFixture());
+  const layout = layoutApi.semanticLayout({ ...graph, presentationContext: "overview" }, { positions: {} });
+  const plan = layout.plan.overviewRouting;
+  assert.deepEqual(Array.from(plan.unresolved), []);
+  for (const relation of plan.relations) assert.ok(plan.routesByRelationId[relation.id], relation.id);
+});
+
+test("60 API Overview 배선은 미해결 관계를 남기지 않음", () => {
+  const { ui, layoutApi } = loadUi();
+  const graph = ui.normalizeGraph(supportApiGraph(60));
+  const layout = layoutApi.semanticLayout({ ...graph, presentationContext: "overview" }, { positions: {} });
+  const plan = layout.plan.overviewRouting;
+  assert.deepEqual(Array.from(plan.unresolved), []);
+  const segments = new Map(plan.segments.map((segment) => [segment.id, segment]));
+  const keys = new Set();
+  plan.segments.forEach((segment) => {
+    const ends = [segment.from, segment.to].map((point) => `${point.x}:${point.y}`).sort();
+    const key = ends.join("|");
+    assert.equal(keys.has(key), false, key);
+    keys.add(key);
+  });
+  plan.relations.forEach((relation) => {
+    const route = plan.routesByRelationId[relation.id];
+    assert.ok(route, relation.id);
+    const source = layout.plan.displayModel.instances.find((instance) => instance.id === relation.sourceInstanceId).position;
+    const target = layout.plan.displayModel.instances.find((instance) => instance.id === relation.targetInstanceId).position;
+    assert.equal(route.sourcePort.x, source.x + (source.width || 260), relation.id);
+    assert.equal(route.targetPort.x, target.x, relation.id);
+    let current = route.sourcePort;
+    route.orderedSegmentIds.forEach((id) => {
+      const segment = segments.get(id);
+      assert.ok(segment && segment.relationIds.includes(relation.id), relation.id);
+      layout.plan.displayModel.instances.forEach((instance) => {
+        if (instance.id === relation.sourceInstanceId || instance.id === relation.targetInstanceId) return;
+        const intersects = routeIntersectsPosition({ sections: [{ startPoint: segment.from, endPoint: segment.to }] }, instance.position);
+        if (intersects) assert.ok(segment.routeRole === "TRUNK" && segment.relationIds.length > 1,
+          `${relation.id} / ${instance.id} / ${segment.routeRole}`);
+      });
+      const equal = (left, right) => left.x === right.x && left.y === right.y;
+      assert.ok(equal(current, segment.from) || equal(current, segment.to), relation.id);
+      current = equal(current, segment.from) ? segment.to : segment.from;
+    });
+    assert.equal(current.x, route.targetPort.x, relation.id);
+    assert.equal(current.y, route.targetPort.y, relation.id);
+    if (relation.type === "SECURED_BY") {
+      const maxY = Math.max(...route.orderedSegmentIds.flatMap((id) => [segments.get(id).from.y, segments.get(id).to.y]));
+      assert.ok(maxY <= Math.max(route.sourcePort.y, route.targetPort.y) + 96,
+        `${relation.id}: ${maxY} / ${route.sourcePort.y} / ${route.targetPort.y}`);
+    }
+  });
+});
+
+test("Chain에 연결된 Finding 원본 관계는 가시 배선에서 제외하고 원본에 보존됨", () => {
+  const { ui, layoutApi } = loadUi();
+  const graph = ui.normalizeGraph(graphFixture());
+  const plan = layoutApi.semanticLayout({ ...graph, presentationContext: "overview" }, { positions: {} }).plan.overviewRouting;
+  const relation = plan.relations.find((item) => item.originalEdgeIds?.includes("edge-3"));
+  assert.equal(relation, undefined);
+  assert.ok(graph.edges.some((edge) => edge.id === "edge-3"));
+});
+
+test("완전한 다대다 관계는 하나의 공통 선분을 공유함", () => {
+  const { layoutApi } = loadUi();
+  const instances = [
+    { id: "a", position: { x: 0, y: 0 } }, { id: "b", position: { x: 0, y: 360 } },
+    { id: "x", position: { x: 1000, y: 0 } }, { id: "y", position: { x: 1000, y: 360 } }
+  ];
+  const relations = ["a", "b"].flatMap((sourceInstanceId) => ["x", "y"].map((targetInstanceId) => ({
+    id: `${sourceInstanceId}-${targetInstanceId}`, sourceInstanceId, targetInstanceId, rowId: "row", role: "evidence"
+  })));
+  const plan = layoutApi.routeOverview(instances, relations);
+  assert.deepEqual(Array.from(plan.unresolved), []);
+  assert.ok(plan.segments.some((segment) => segment.relationIds.length === 4
+    && Math.abs(segment.to.x - segment.from.x) > 500));
+});
+
+test("두 열의 완전한 다대다 관계도 모든 표시 경로가 연결됨", () => {
+  const { layoutApi } = loadUi();
+  const instances = [
+    { id: "a", position: { x: 0, y: 0 } }, { id: "b", position: { x: 360, y: 360 } },
+    { id: "x", position: { x: 1600, y: 0 } }, { id: "y", position: { x: 1960, y: 360 } }
+  ];
+  const relations = ["a", "b"].flatMap((sourceInstanceId) => ["x", "y"].map((targetInstanceId) => ({
+    id: `${sourceInstanceId}-${targetInstanceId}`, sourceInstanceId, targetInstanceId, rowId: "row", role: "evidence"
+  })));
+  const plan = layoutApi.routeOverview(instances, relations);
+  assert.deepEqual(Array.from(plan.unresolved), []);
+  assert.ok(plan.segments.some((segment) => segment.relationIds.length === 4));
+  const byId = new Map(plan.segments.map((segment) => [segment.id, segment]));
+  relations.forEach((relation) => {
+    const route = plan.routesByRelationId[relation.id];
+    let point = route.sourcePort;
+    for (const id of route.orderedSegmentIds) {
+      const segment = byId.get(id);
+      const same = (left, right) => left.x === right.x && left.y === right.y;
+      assert.ok(same(point, segment.from) || same(point, segment.to), relation.id);
+      point = same(point, segment.from) ? segment.to : segment.from;
+    }
+    assert.equal(point.x, route.targetPort.x, relation.id);
+    assert.equal(point.y, route.targetPort.y, relation.id);
+  });
+});
+
+test("불완전한 다대다 배선은 존재하지 않는 관계를 생성하지 않음", () => {
+  const { layoutApi } = loadUi();
+  const instances = [
+    { id: "a", position: { x: 0, y: 0 } }, { id: "b", position: { x: 0, y: 360 } },
+    { id: "x", position: { x: 1000, y: 0 } }, { id: "y", position: { x: 1000, y: 360 } }
+  ];
+  const relations = [["a", "x"], ["a", "y"], ["b", "x"]].map(([sourceInstanceId, targetInstanceId]) => ({
+    id: `${sourceInstanceId}-${targetInstanceId}`, sourceInstanceId, targetInstanceId, rowId: "row", role: "evidence"
+  }));
+  const plan = layoutApi.routeOverview(instances, relations);
+  assert.deepEqual(Array.from(plan.unresolved), []);
+  assert.equal(plan.routesByRelationId["b-y"], undefined);
+  assert.equal(plan.segments.some((segment) => segment.relationIds.length === 3), false);
+});
+
+test("Overview Chain은 확정 첫 Filter에만 연결되고 모든 포트는 오른쪽 출력과 왼쪽 입력임", () => {
+  const { ui, layoutApi } = loadUi();
+  const graph = ui.normalizeGraph(detailGraphFixture());
+  const plan = layoutApi.semanticLayout({ ...graph, presentationContext: "overview" }, { positions: {} }).plan;
+  const routing = plan.overviewRouting;
+  const instances = new Map(plan.displayModel.instances.map((instance) => [instance.id, instance]));
+  const chain = instances.get("chain-a");
+  const linked = routing.relations.filter((relation) => relation.sourceInstanceId === chain.id || relation.targetInstanceId === chain.id);
+  assert.equal(linked.length, 1);
+  assert.equal(linked[0].targetInstanceId, "security-filter-1");
+  for (const relation of routing.relations) {
+    const route = routing.routesByRelationId[relation.id];
+    if (!route) continue;
+    const source = instances.get(relation.sourceInstanceId).position;
+    const target = instances.get(relation.targetInstanceId).position;
+    assert.equal(route.sourcePort.x, source.x + (source.width || 260), relation.id);
+    assert.equal(route.targetPort.x, target.x, relation.id);
+  }
+});
+
+test("큰 Principal 그룹은 확인된 사용 주체별로 나누고 원본을 보존함", () => {
+  const { ui, layoutApi } = loadUi();
+  const snapshot = detailGraphFixture();
+  snapshot.nodes.push(
+    { id: "handler-c", type: "HANDLER", serviceId: "orders", label: "OtherController#view", attributes: { handler: "OtherController#view" }, evidenceIds: [] },
+    { id: "endpoint-c", type: "ENDPOINT", serviceId: "orders", label: "GET /other", attributes: { httpMethod: "GET", path: "/other", handler: "OtherController#view" }, evidenceIds: [] }
+  );
+  snapshot.edges.push({ id: "match-c", sourceId: "endpoint-c", targetId: "chain-a", type: "MATCHED_BY", confidence: "CONFIRMED", attributes: {}, evidenceIds: [] });
+  for (let index = 0; index < 6; index += 1) {
+    const id = `principal-${index}`;
+    snapshot.nodes.push({ id, type: "SECURITY_DATA", serviceId: "orders", label: id,
+      attributes: { apiType: "PRINCIPAL", operation: "READ" }, evidenceIds: [`e-${id}`] });
+    snapshot.edges.push({ id: `reads-${id}`, sourceId: index < 3 ? "handler-a" : "handler-c", targetId: id,
+      type: "READS_SECURITY_DATA", confidence: "CONFIRMED", attributes: {}, evidenceIds: [`e-${id}`] });
+  }
+  const graph = ui.normalizeGraph(snapshot);
+  const before = JSON.stringify(graph);
+  const plan = layoutApi.semanticLayout({ ...graph, presentationContext: "overview" }, { positions: {} }).plan;
+  const groups = plan.displayModel.groups.filter((group) => group.nodeIds.some((id) => id.startsWith("principal-")));
+  assert.equal(groups.length, 2);
+  assert.deepEqual(Array.from(groups).flatMap((group) => Array.from(group.nodeIds)).sort(), Array.from({ length: 6 }, (_, index) => `principal-${index}`));
+  assert.equal(JSON.stringify(graph), before);
+  assert.ok(plan.lanes.find((lane) => lane.id === "security-checks").columns <= 2);
+});
+
+test("공유 Trunk는 중간 카드 뒤를 지나고 Branch는 카드를 피함", () => {
+  const { layoutApi } = loadUi();
+  const instances = [
+    { id: "source", position: { x: 0, y: 180 } },
+    { id: "obstacle", position: { x: 450, y: 180 } },
+    { id: "a", position: { x: 1000, y: 0 } }, { id: "b", position: { x: 1000, y: 360 } }
+  ];
+  const relations = ["a", "b"].map((targetInstanceId) => ({ id: targetInstanceId,
+    sourceInstanceId: "source", targetInstanceId, rowId: "row", role: "evidence" }));
+  const plan = layoutApi.routeOverview(instances, relations);
+  assert.deepEqual(Array.from(plan.unresolved), []);
+  assert.ok(plan.segments.some((segment) => segment.routeRole === "TRUNK" && segment.relationIds.length === 2
+    && routeIntersectsPosition({ sections: [{ startPoint: segment.from, endPoint: segment.to }] }, instances[1].position)));
+  plan.segments.filter((segment) => segment.routeRole !== "TRUNK").forEach((segment) => {
+    assert.equal(routeIntersectsPosition({ sections: [{ startPoint: segment.from, endPoint: segment.to }] }, instances[1].position), false);
+  });
+});
+
+test("Overview 공통 Trunk는 카드 가림 마스크를 사용함", async () => {
+  const { ui, elements } = loadUi();
+  ui.renderGraph(supportApiGraph(12));
+  await ui.layoutGraph();
+  const trunks = ui.state.layout.plan.overviewRouting.segments.filter((segment) => segment.routeRole === "TRUNK");
+  assert.ok(trunks.length > 0);
+  const paths = findAllByClass(elements.get("graph-edges"), "graph-overview-segment");
+  trunks.forEach((segment) => {
+    const path = paths.find((item) => item.getAttribute("data-segment-id") === segment.id);
+    assert.equal(path?.getAttribute("mask"), "url(#graph-overview-trunk-mask)");
+  });
+});
+
+test("공유 Segment 선택은 구성 원본 관계를 Inspector에서 제공함", async () => {
+  const { ui, elements } = loadUi();
+  ui.renderGraph(supportApiGraph(12));
+  await ui.layoutGraph();
+  const shared = findAllByClass(elements.get("graph-edges"), "graph-overview-segment")
+    .find((path) => (path.getAttribute("data-edge-ids") || "").split(",").filter(Boolean).length > 1);
+  assert.ok(shared);
+  const ids = shared.getAttribute("data-edge-ids").split(",");
+  shared.dispatchEvent({ type: "click" });
+  const links = findAllByClass(elements.get("inspector"), "inspector-link");
+  ids.forEach((id) => assert.ok(links.some((link) => link.getAttribute("data-edge-id") === id), id));
+});
+
+test("Overview 관계 선택 시 원본 관계명을 표시함", async () => {
+  const { ui, elements } = loadUi();
+  ui.renderGraph(detailGraphFixture());
+  await ui.layoutGraph();
+  const path = findAllByClass(elements.get("graph-edges"), "graph-overview-segment")
+    .find((item) => (item.getAttribute("data-edge-ids") || "").split(",").includes("secured-a"));
+  assert.ok(path);
+  path.dispatchEvent({ type: "click" });
+  const label = findAllByClass(elements.get("graph-edges"), "graph-edge-label")
+    .find((item) => item.getAttribute("data-edge-id") === "secured-a");
+  assert.ok(label);
+  assert.match(label.textContent, /보호 근거/);
+  assert.equal(label.getAttribute("data-visible"), "true");
+});
+
+test("마지막 Filter의 구조 연결은 다른 Filter의 보안정보 사용을 전가하지 않음", () => {
+  const { ui, layoutApi } = loadUi();
+  const snapshot = detailGraphFixture();
+  snapshot.nodes.push({ id: "filter-data", type: "SECURITY_DATA", serviceId: "orders", label: "header",
+    attributes: { apiType: "HEADER", operation: "READ" }, evidenceIds: [] });
+  snapshot.edges.push({ id: "filter-read", sourceId: "security-filter-1", targetId: "filter-data",
+    type: "READS_SECURITY_DATA", confidence: "CONFIRMED", attributes: {}, evidenceIds: [] });
+  const graph = ui.normalizeGraph(snapshot);
+  const plan = layoutApi.semanticLayout({ ...graph, presentationContext: "overview" }, { positions: {} }).plan;
+  assert.equal(plan.projection.edges.some((edge) => edge.id.startsWith("filter-to-check-chain-a-")
+    && (edge.relatedNodeIds || []).includes("filter-data")), false);
+  assert.ok(plan.overviewRouting.relations.some((relation) => relation.originalEdgeIds?.includes("filter-read")));
+  assert.equal(graph.edges.find((edge) => edge.id === "filter-read").sourceId, "security-filter-1");
+});
+
+test("서로 다른 JWT Claim과 요구 권한은 같은 표시 그룹으로 뭉치지 않음", () => {
+  const { ui, layoutApi } = loadUi();
+  const snapshot = detailGraphFixture();
+  for (const [id, claimName] of [["claim-one", "subject"], ["claim-two", "identity_verified"]]) {
+    snapshot.nodes.push({ id, type: "SECURITY_DATA", serviceId: "orders", label: id,
+      attributes: { apiType: "NIMBUS_CLAIMS_SET", dataKind: "JWT_CLAIM", operation: "READ", claimName }, evidenceIds: [] });
+    snapshot.edges.push({ id: `edge-${id}`, sourceId: "handler-a", targetId: id, type: "READS_SECURITY_DATA", confidence: "CONFIRMED", attributes: {}, evidenceIds: [] });
+  }
+  for (const [id, requiredAuthority] of [["role-one", "ROLE_CUSTOMER"], ["role-two", "ROLE_BANK_ADMIN"]]) {
+    snapshot.nodes.push({ id, type: "AUTHORIZATION", serviceId: "orders", label: id,
+      attributes: { policySource: "URL", policyKind: "AUTHORITY_REQUIRED", chainKey: "chain-a", requiredAuthority }, evidenceIds: [] });
+  }
+  const graph = ui.normalizeGraph(snapshot);
+  const plan = layoutApi.semanticLayout({ ...graph, presentationContext: "overview" }, { positions: {} }).plan;
+  for (const [a, b] of [["claim-one", "claim-two"], ["role-one", "role-two"]]) {
+    assert.notEqual(plan.displayModel.nodeToDisplay[a], plan.displayModel.nodeToDisplay[b]);
+  }
+});
+
+test("Filter 행 전환은 같은 Chain에서 오른쪽 출력과 왼쪽 입력을 사용함", () => {
+  const { ui, layoutApi } = loadUi();
+  const graph = ui.normalizeGraph(laneGraphFixture());
+  const layout = layoutApi.semanticLayout({ ...graph, presentationContext: "overview" }, { positions: {} });
+  const plan = layout.plan.overviewRouting;
+  const instances = new Map(layout.plan.displayModel.instances.map((instance) => [instance.id, instance]));
+  const wraps = plan.relations.filter((relation) => relation.routeKind === "filter-wrap");
+  assert.ok(wraps.length > 0);
+  for (const relation of wraps) {
+    const route = plan.routesByRelationId[relation.id];
+    assert.ok(route, relation.id);
+    const source = instances.get(relation.sourceInstanceId);
+    const target = instances.get(relation.targetInstanceId);
+    assert.equal(source.rowId, target.rowId);
+    assert.equal(route.sourcePort.x, source.position.x + 260, relation.id);
+    assert.equal(route.targetPort.x, target.position.x, relation.id);
+    const row = layout.plan.hiddenGroups.find((group) => group.id === source.rowId);
+    const segments = new Map(plan.segments.map((segment) => [segment.id, segment]));
+    for (const id of route.orderedSegmentIds) {
+      const segment = segments.get(id);
+      assert.ok(Math.min(segment.from.y, segment.to.y) >= row.rowTop - 26, relation.id);
+      assert.ok(Math.max(segment.from.y, segment.to.y) <= row.rowBottom + 26, relation.id);
+      assert.equal(segment.routeRole, "FILTER_WRAP");
+    }
+  }
+});
+
+test("Chain 선택으로 원본 등록선이 새로 표시되지 않음", async () => {
+  const { ui, elements } = loadUi();
+  ui.renderGraph(wrappedFilterGraph(0, 5));
+  await ui.layoutGraph();
+  const plan = ui.state.layout.plan.overviewRouting;
+  const chainRelations = plan.relations.filter((relation) => relation.sourceInstanceId === "chain" || relation.targetInstanceId === "chain");
+  assert.equal(chainRelations.length, 1);
+  assert.equal(chainRelations[0].targetInstanceId, "security-filter-0");
+  const before = findAllByClass(elements.get("graph-edges"), "graph-overview-segment")
+    .map((path) => [path.getAttribute("data-segment-id"), path.getAttribute("d")]);
+  ui.selectGraphElement("node", "chain");
+  const after = findAllByClass(elements.get("graph-edges"), "graph-overview-segment")
+    .map((path) => [path.getAttribute("data-segment-id"), path.getAttribute("d")]);
+  assert.deepEqual(after, before);
+  assert.equal(after.some(([id]) => !id), false);
+  assert.equal(plan.relations.some((relation) => relation.type === "FILTERED_BY" || relation.type === "MATCHED_BY"), false);
+  assert.equal(ui.state.graph.edges.filter((edge) => edge.type === "FILTERED_BY").length, 5);
 });

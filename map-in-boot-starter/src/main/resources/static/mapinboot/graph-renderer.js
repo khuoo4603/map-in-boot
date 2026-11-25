@@ -158,11 +158,18 @@
     HANDLER: "#c4b5fd",
     SECURITY_CHAIN: "#fbbf24",
     FILTER: "#fb923c",
-    AUTHENTICATION: "#f9a8d4",
-    AUTHORIZATION: "#fda4af",
-    SECURITY_DATA: "#a7f3d0",
-    BUSINESS_SECURITY_STATE: "#bef264"
+    AUTHENTICATION: "#38bdf8",
+    AUTHORIZATION: "#fb7185",
+    SECURITY_DATA: "#2dd4bf",
+    BUSINESS_SECURITY_STATE: "#a3e635"
   };
+  function nodeStyleFor(node) {
+    if (node.type !== "FILTER") return nodeStyles[node.type] || "#94a3b8";
+    const registrationKind = node.attributes && node.attributes.registrationKind;
+    if (registrationKind === "SERVLET") return "#4ade80";
+    if (registrationKind === "SECURITY") return nodeStyles.FILTER;
+    return "#94a3b8";
+  }
   const edgeStyles = {
     FLOWS_TO: { color: "#7dd3fc", dash: "none" },
     MATCHED_BY: { color: "#c4b5fd", dash: "6 4" },
@@ -398,12 +405,35 @@
     return text;
   }
 
-  function policyDisplay(value) {
+  function policySourceDisplay(value) {
     return {
-      PERMIT_ALL: "모두 허용",
-      AUTHENTICATED: "인증 필요",
-      AUTHORITY_REQUIRED: "권한 필요"
-    }[value] || stringValue(value, "인가 조건 확인 필요");
+      URL: "URL 정책",
+      METHOD: "메서드 정책",
+      OBJECT: "객체 정책",
+      ANNOTATION: "어노테이션 정책"
+    }[value] || "인가 정책";
+  }
+
+  function authorizationDisplay(attributes) {
+    const semantic = window.MapInBootLayout && window.MapInBootLayout.supportDisplaySemantic
+      ? window.MapInBootLayout.supportDisplaySemantic({ type: "AUTHORIZATION", attributes })
+      : { primary: "인가 조건 미확정", detail: "분석 근거 확인 필요" };
+    if (attributes.factType === "OBJECT_AUTHORIZATION_REQUIREMENT" || attributes.factType === "OBJECT_ACCESS_PATH") {
+      return { primary: semantic.primary, detail: handlerDisplay(attributes.handler) || semantic.detail };
+    }
+    const source = policySourceDisplay(attributes.policySource);
+    const condition = attributes.policyMatcherCondition || attributes.matcherCondition
+      ? `조건 ${matcherDisplay(attributes.policyMatcherCondition || attributes.matcherCondition)}` : "";
+    const order = attributes.policyOrder ? `순서 ${attributes.policyOrder}` : "";
+    const method = attributes.httpMethod ? `HTTP ${attributes.httpMethod}` : "";
+    const declaration = attributes.policySource === "METHOD"
+      ? [attributes.annotationType, attributes.declarationKind, attributes.expressionKind, attributes.requiredAuthority]
+        .filter(Boolean).join(" · ") : "";
+    const semanticDetail = attributes.policySource ? "" : semantic.detail;
+    return {
+      primary: semantic.primary,
+      detail: [source, condition, order, method, declaration || semanticDetail].filter(Boolean).join(" · ")
+    };
   }
 
   function attributeDetails(attributes, keys) {
@@ -421,30 +451,18 @@
       .slice(0, 2);
   }
 
+  function securityDataKind(attributes) {
+    const semantic = window.MapInBootLayout && window.MapInBootLayout.supportDisplaySemantic
+      ? window.MapInBootLayout.supportDisplaySemantic({ type: "SECURITY_DATA", attributes }) : null;
+    return semantic ? semantic.kind : "";
+  }
+
   function securityDataDisplay(attributes, fallback) {
-    const operation = stringValue(attributes.operation, "");
-    const apiType = stringValue(attributes.apiType, "");
-    const sourceKind = stringValue(attributes.sourceKind, "");
-    const mappingKind = stringValue(attributes.mappingKind, "");
-    if (operation === "VERIFY_CONFIGURATION" || attributes.verificationKind === "CONFIGURATION") {
-      return { primary: "JWT 검증 구성", detail: stringValue(attributes.apiName, "검증 설정 확인 필요") };
-    }
-    if (mappingKind === "GRANTED_AUTHORITY_CREATION" || apiType === "AUTHORITY") {
-      return { primary: "권한 매핑", detail: stringValue(attributes.apiName, "권한 생성") };
-    }
-    if (sourceKind === "JWT" || apiType === "SPRING_SECURITY_JWT") {
-      return { primary: "JWT 정보 읽기", detail: attributes.claimName ? `Claim ${attributes.claimName}` : stringValue(attributes.apiName, "읽기") };
-    }
-    if (apiType === "PRINCIPAL" || attributes.principalType) {
-      return {
-        primary: operation === "DECLARE" ? "Principal 선언" : "Principal 조회",
-        detail: friendlyClassName(attributes.principalType) || stringValue(attributes.apiName, "Principal")
-      };
-    }
-    return {
-      primary: fallback || "보안 정보 확인 불가",
-      detail: stringValue(attributes.apiName, "속성 확인 필요")
-    };
+    const semantic = window.MapInBootLayout && window.MapInBootLayout.supportDisplaySemantic
+      ? window.MapInBootLayout.supportDisplaySemantic({ type: "SECURITY_DATA", attributes }) : null;
+    return semantic
+      ? { primary: semantic.primary, detail: semantic.detail || "원본 확인 필요" }
+      : { primary: fallback || "보안 정보 확인 필요", detail: "원본 확인 필요" };
   }
 
   function nodeDisplayRaw(node, displayOptions = {}) {
@@ -501,52 +519,36 @@
       };
     }
     if (node.type === "AUTHORIZATION") {
-      if (attributes.factType === "OBJECT_AUTHORIZATION_REQUIREMENT" || attributes.factType === "OBJECT_ACCESS_PATH") {
-        return {
-          primary: attributes.factType === "OBJECT_AUTHORIZATION_REQUIREMENT" ? "객체 인가 요구" : "객체 접근 경로",
-          detail: handlerDisplay(attributes.handler) || "핸들러 확인 불가"
-        };
-      }
-      return {
-        primary: policyDisplay(attributes.policyKind),
-        detail: [attributes.requiredAuthority, attributes.policyMatcherCondition].filter(Boolean).join(" · ") || "인가 조건 확인 필요"
-      };
+      return authorizationDisplay(attributes);
     }
     if (node.type === "AUTHENTICATION") {
+      const authenticationKind = stringValue(attributes.authenticationKind, "");
+      const kind = authenticationKind === "JWT_AUTHENTICATION" ? "JWT" : authenticationKind;
       return {
-        primary: attributes.authenticationKind || node.label,
-        detail: attributes.provider ? simpleClassName(attributes.provider) : "인증 공급자 확인 필요"
+        primary: kind ? `${kind} 인증 구성` : "인증 구성 확인",
+        detail: attributes.provider ? simpleClassName(attributes.provider) : "인증 방식 확인 필요"
       };
     }
     if (node.type === "SECURITY_DATA") {
-      const dataKindNames = {
-        JWT: "JWT",
-        JWT_CLAIM: "JWT Claim",
-        SESSION_STATE: "Session 상태",
-        HEADER: "Header",
-        PRINCIPAL: "Principal",
-        AUTHORITY: "권한"
-      };
-      const dataKind = stringValue(attributes.dataKind, "");
-      if (dataKindNames[dataKind]) {
-        const detailValue = dataKind === "JWT_CLAIM" ? attributes.claimName
-          : dataKind === "PRINCIPAL" ? friendlyClassName(attributes.principalType)
-            : dataKind === "HEADER" ? attributes.headerName
-              : attributes.apiName;
-        const operationNames = { READ: "조회", CREATE: "생성", VERIFY_CONFIGURATION: "검증 구성", DECLARE: "선언" };
-        const detail = [detailValue, operationNames[attributes.operation]].filter(Boolean).join(" · ");
-        return { primary: dataKindNames[dataKind], detail };
-      }
-      return securityDataDisplay(attributes, attributes.dataType || attributes.securityKind || "보안 정보");
+      return securityDataDisplay(attributes, "보안 정보 확인 필요");
     }
     if (node.type === "BUSINESS_SECURITY_STATE") {
       const kind = attributes.factType === "BUSINESS_STATE_EVALUATION" ? "업무 상태 검증"
         : attributes.factType === "BUSINESS_STATE_REQUIREMENT" || attributes.stateAction === "REQUIRES" ? "업무 상태 요구"
           : attributes.stateAction === "PRODUCES" ? "업무 상태 생성" : "업무 보안 상태";
+      const outcomes = {
+        BYPASS_PATH: "검증 경로 우회", GUARDED: "보호 경로 확인", UNGUARDED: "보호 확인 없음",
+        SOURCE_MISMATCH: "인증 주체 불일치", ENFORCED: "보호 적용 경로", UNRESOLVED: "판단 미완료", UNKNOWN: "판단 확인 필요"
+      };
+      const coverages = {
+        ALL: "전체 분석 범위", COMPLETE_SUPPORTED_PATH: "지원 경로 전체", PARTIAL: "일부 분석 범위",
+        NONE: "해당 없음", INCOMPLETE: "분석 불완전", UNKNOWN: "범위 확인 필요"
+      };
+      const stateDetail = outcomes[attributes.pathOutcome] || coverages[attributes.coverage]
+        || handlerDisplay(attributes.handler) || "상태 정보 확인";
       return {
         primary: [kind, attributes.stateName].filter(Boolean).join(" · "),
-        detail: attributes.pathOutcome === "BYPASS_PATH" ? "검증 경로 우회"
-          : handlerDisplay(attributes.handler) || "상태 정보 확인"
+        detail: stateDetail
       };
     }
     const keys = detailKeys[node.type] || [];
@@ -711,6 +713,153 @@
     };
   }
 
+  function securityChainIndex(graph) {
+    const index = new Map();
+    (graph.nodes || []).filter((node) => node.type === "SECURITY_CHAIN").forEach((node) => {
+      const attributes = node.attributes || {};
+      const key = stringValue(attributes.chainKey, "");
+      if (!node.serviceId || !key) return;
+      const indexKey = `${node.serviceId}\u0000${key}`;
+      const matches = index.get(indexKey) || [];
+      matches.push(node);
+      index.set(indexKey, matches);
+    });
+    return index;
+  }
+
+  function securityGroupContext(group, nodes, graph, nodeById, chainsByKey) {
+    const urlPolicies = nodes.filter((node) => node.type === "AUTHORIZATION"
+      && node.attributes && node.attributes.policySource === "URL");
+    const keyedPolicies = urlPolicies.filter((node) => stringValue(node.attributes.chainKey, ""));
+    if (keyedPolicies.length > 0) {
+      if (keyedPolicies.length !== urlPolicies.length) return "일부 정책의 Chain 소속 미확정";
+      const chains = [];
+      for (const policy of keyedPolicies) {
+        if (!policy.serviceId) return "Chain 소속 미확정";
+        const matches = chainsByKey.get(`${policy.serviceId}\u0000${policy.attributes.chainKey}`) || [];
+        if (matches.length !== 1) return "Chain 소속 미확정";
+        const chain = matches[0];
+        const chainOrder = stringValue(chain.attributes && chain.attributes.chainOrder, "");
+        const policyOrder = stringValue(policy.attributes.chainOrder, "");
+        if (chainOrder && policyOrder) {
+          const chainOrderNumber = /^\d+$/.test(chainOrder) ? Number(chainOrder) : null;
+          const policyOrderNumber = /^\d+$/.test(policyOrder) ? Number(policyOrder) : null;
+          const orderConflict = chainOrderNumber !== null && policyOrderNumber !== null
+            ? chainOrderNumber !== policyOrderNumber : chainOrder !== policyOrder;
+          if (orderConflict) return "Chain 소속 미확정";
+        }
+        if (!chains.some((entry) => entry.id === chain.id)) chains.push(chain);
+      }
+      const rowChainId = stringValue(group.rowId, "").startsWith("chain:")
+        ? String(group.rowId).slice("chain:".length) : "";
+      if (rowChainId && chains.some((chain) => chain.id !== rowChainId)) return "표시 행과 직접 소속 Chain 불일치";
+      return `${chains.map((chain) => {
+        const order = stringValue(chain.attributes && chain.attributes.chainOrder, "");
+        return order ? `Chain ${order}` : "Chain 확인 필요";
+      }).join(" · ")} 직접 소속`;
+    }
+
+    const rowChainId = stringValue(group.rowId, "").startsWith("chain:")
+      ? String(group.rowId).slice("chain:".length) : "";
+    const chain = rowChainId ? nodeById.get(rowChainId) : null;
+    if (!chain) return "Chain 소속 미확정";
+    const nodeIds = new Set(group.nodeIds || []);
+    const supportEdges = new Set(["SECURED_BY", "READS_SECURITY_DATA", "WRITES_SECURITY_DATA",
+      "CONVERTS_TO_AUTHORITY", "USES_FOR_AUTHORIZATION", "SECURITY_STATE"]);
+    const hasHandlerRelation = (graph.edges || []).some((edge) => {
+      if (edge.confidence !== "CONFIRMED" || !supportEdges.has(edge.type)) return false;
+      const relatedId = nodeIds.has(edge.sourceId) ? edge.targetId : nodeIds.has(edge.targetId) ? edge.sourceId : null;
+      return relatedId && nodeById.get(relatedId)?.type === "HANDLER";
+    });
+    const order = stringValue(chain.attributes && chain.attributes.chainOrder, "");
+    const context = order ? `Chain ${order}` : "Chain 확인 필요";
+    return hasHandlerRelation ? `${context} · Handler 간접 연관` : `${context} · 표시 맥락`;
+  }
+
+  function securityGroupDisplay(group, graph, displayIds, suppliedNodeById = null, suppliedChainIndex = null) {
+    const nodeById = suppliedNodeById || new Map((graph.nodes || []).map((node) => [node.id, node]));
+    const chainsByKey = suppliedChainIndex || securityChainIndex(graph);
+    const nodes = (group.nodeIds || []).map((id) => nodeById.get(id)).filter(Boolean);
+    const displayId = controllerGroupDisplay(group, displayIds).displayId;
+    const context = securityGroupContext(group, nodes, graph, nodeById, chainsByKey);
+    if (nodes.length === 0) {
+      return { primary: "보안 정보 확인 필요", detail: "원본 확인 필요", context, displayId };
+    }
+
+    if (group.type === "AUTHORIZATION") {
+      const semantics = nodes.map((node) => window.MapInBootLayout.supportDisplaySemantic(node));
+      const semanticKeys = new Set(semantics.map((semantic) => semantic.key));
+      const attributes = nodes.map((node) => node.attributes || {});
+      if (semanticKeys.size === 1) {
+        const semantic = semantics[0];
+        const authorities = new Set(attributes.map((item) => stringValue(item.requiredAuthority, "")).filter(Boolean));
+        let primary = semantic.primary;
+        if (semantic.key === "URL:AUTHORITY_REQUIRED") {
+          primary = authorities.size === 1 ? `${Array.from(authorities)[0]} 권한 필요` : "권한 요구";
+        }
+        if (nodes.length === 1) {
+          return { primary, detail: [group.subgroupLabel || "", authorizationDisplay(attributes[0]).detail]
+            .filter(Boolean).join(" · "), context, displayId };
+        }
+        const conditions = new Set(attributes.map((item) => stringValue(item.policyMatcherCondition || item.matcherCondition, ""))
+          .filter(Boolean));
+        const orders = new Set(attributes.map((item) => stringValue(item.policyOrder, "")).filter(Boolean));
+        const methods = new Set(attributes.map((item) => stringValue(item.httpMethod, "")).filter(Boolean));
+        const detail = [group.subgroupLabel || "", `${policySourceDisplay(attributes[0].policySource)} ${nodes.length}건`,
+          conditions.size === 1 ? `조건 ${matcherDisplay(Array.from(conditions)[0])}`
+            : conditions.size > 1 ? `조건 ${conditions.size}종` : "",
+          orders.size ? `정책 순서 ${Array.from(orders).sort().join(", ")}` : "",
+          methods.size ? `HTTP ${Array.from(methods).sort().join(", ")}` : "",
+          semantic.key === "METHOD:DECLARATION"
+            ? `선언 ${new Set(attributes.map((item) => item.annotationType || item.declarationKind).filter(Boolean)).size}종` : ""]
+          .filter(Boolean).join(" · ");
+        return { primary, detail, context, displayId };
+      }
+      return { primary: `인가 근거 ${nodes.length}건`,
+        detail: `${semanticKeys.size}개 의미 유형`, context, displayId };
+    }
+
+    if (group.type === "SECURITY_DATA") {
+      const displays = nodes.map((node) => securityDataDisplay(node.attributes || {}));
+      const actionCounts = new Map();
+      displays.forEach((display) => actionCounts.set(display.primary, (actionCounts.get(display.primary) || 0) + 1));
+      if (actionCounts.size === 1) {
+        return { primary: displays[0].primary,
+          detail: [group.subgroupLabel || "", nodes.length === 1 ? displays[0].detail : `관련 정보 ${nodes.length}건`]
+            .filter(Boolean).join(" · "),
+          context, displayId };
+      }
+      const kinds = new Set(nodes.map((node) => securityDataKind(node.attributes || {})).filter(Boolean));
+      const kind = kinds.size === 1 ? Array.from(kinds)[0] : "";
+      const kindLabel = { JWT: "JWT", JWT_CLAIM: "JWT Claim", SESSION: "Session", HEADER: "Request Header",
+        PRINCIPAL: "Principal", AUTHORITY: "권한", AUTH_STATUS: "인증 상태", AUTHENTICATION: "인증",
+        SECURITY_CONTEXT: "SecurityContext", REQUEST: "요청" }[kind] || "보안 정보";
+      const actionEntries = Array.from(actionCounts, ([label, count]) => {
+        const action = label.startsWith("JWT Claim ") ? label.slice("JWT Claim ".length)
+          : label.startsWith("JWT ") ? label.slice("JWT ".length) : label;
+        return `${action} ${count}`;
+      });
+      const actionLines = [];
+      for (let index = 0; index < actionEntries.length; index += 2) {
+        actionLines.push(actionEntries.slice(index, index + 2).join(" · "));
+      }
+      return { primary: `${kindLabel} ${nodes.length}건`, detail: actionLines.join(" · "), detailLines: actionLines,
+        context, displayId };
+    }
+
+    const displays = nodes.map((node) => nodeDisplay(node));
+    const labels = new Map();
+    displays.forEach((display) => labels.set(display.primary, (labels.get(display.primary) || 0) + 1));
+    if (labels.size === 1) {
+      return { primary: displays[0].primary,
+        detail: nodes.length === 1 ? displays[0].detail : `관련 보안정보 ${nodes.length}건`,
+        context, displayId };
+    }
+    return { primary: `${nodeTypeLabel(group.type)} ${nodes.length}건`,
+      detail: Array.from(labels, ([label, count]) => `${label} ${count}`).join(" · "),
+      context, displayId };
+  }
+
   function positionsFor(nodes, supplied) {
     const positions = {};
     nodes.forEach((node, index) => {
@@ -846,45 +995,11 @@
     return placed;
   }
 
-  function renderLaneBox(layer, lane) {
-    if (!lane || !lane.bounds) return null;
-    const group = createElement("g");
-    group.setAttribute("class", "graph-area");
-    group.setAttribute("data-area-id", lane.id);
-    const box = createElement("rect");
-    box.setAttribute("class", "graph-area-box");
-    box.setAttribute("x", String(lane.bounds.left));
-    box.setAttribute("y", String(lane.bounds.top));
-    box.setAttribute("width", String(lane.bounds.right - lane.bounds.left));
-    box.setAttribute("height", String(lane.bounds.bottom - lane.bounds.top));
-    group.appendChild(box);
-    addText(group, "graph-area-label", lane.bounds.left + 12, lane.bounds.top + 18, lane.label);
-    layer.appendChild(group);
-    return { id: lane.id, label: lane.label, nodeIds: [] };
-  }
-
-  function renderEducationArea(layer, area) {
-    if (!area) return null;
-    const group = createElement("g");
-    group.setAttribute("class", "graph-area");
-    group.setAttribute("data-area-id", "education");
-    const box = createElement("rect");
-    box.setAttribute("class", "graph-area-box graph-education-area-box");
-    box.setAttribute("x", String(area.left));
-    box.setAttribute("y", String(area.top));
-    box.setAttribute("width", String(area.right - area.left));
-    box.setAttribute("height", String(area.bottom - area.top));
-    group.appendChild(box);
-    addText(group, "graph-area-label", Number.isFinite(area.titleX) ? area.titleX : area.left + 12,
-      Number.isFinite(area.titleY) ? area.titleY : area.top + 18, "내부 처리 과정");
-    layer.appendChild(group);
-    return { id: "education", label: "내부 처리 과정", nodeIds: [] };
-  }
-
   function renderChainGroup(layer, groupDefinition, plan) {
     const group = createElement("g");
     group.setAttribute("class", "graph-chain-area");
     group.setAttribute("data-chain-id", groupDefinition.id);
+    group.setAttribute("data-related", "false");
     if (Number.isFinite(groupDefinition.left) && Number.isFinite(groupDefinition.right)) {
       const box = createElement("rect");
       box.setAttribute("class", "graph-chain-area-box");
@@ -895,10 +1010,10 @@
       group.appendChild(box);
       addText(group, "graph-chain-area-label", groupDefinition.left + 12, String(groupDefinition.top + 16), groupDefinition.label);
       layer.appendChild(group);
-      return;
+      return { id: groupDefinition.id, nodeIds: groupDefinition.nodeIds || [], element: group };
     }
     const filterLane = plan.lanes.find((lane) => lane.id === "security-filter");
-    if (!filterLane || !Number.isInteger(groupDefinition.column)) return;
+    if (!filterLane || !Number.isInteger(groupDefinition.column)) return null;
     const leftX = filterLane.x + (groupDefinition.column - filterLane.column) * (filterLane.width / filterLane.columns);
     const box = createElement("rect");
     box.setAttribute("class", "graph-chain-area-box");
@@ -909,53 +1024,207 @@
     group.appendChild(box);
     addText(group, "graph-chain-area-label", leftX, String(groupDefinition.top + 16), groupDefinition.label);
     layer.appendChild(group);
+    return { id: groupDefinition.id, nodeIds: groupDefinition.nodeIds || [], element: group };
   }
 
-  function renderAreas(graph, positions, layer, plan, height) {
-    if (!layer) return [];
+  function technicalAreaId(node) {
+    if (node.type === "APPLICATION") return "request-entry";
+    if (node.type === "SERVLET") return "mvc";
+    if (node.type === "FILTER") {
+      if (node.attributes && node.attributes.registrationKind === "SERVLET") return "servlet-filter";
+      if (node.attributes && node.attributes.registrationKind === "SECURITY") return "spring-security";
+      return null;
+    }
+    if (node.type === "SECURITY_CHAIN") return "spring-security";
+    if (node.type === "ENDPOINT") return "api-mapping";
+    if (node.type === "HANDLER") return "controller-handler";
+    if (["AUTHENTICATION", "AUTHORIZATION", "SECURITY_DATA", "BUSINESS_SECURITY_STATE"].includes(node.type)) {
+      return "security-checks";
+    }
+    return null;
+  }
+
+  function renderAreas(graph, positions, layer, plan) {
+    if (!layer) return { areas: [], chainAreas: [] };
     layer.replaceChildren();
     const areas = [];
-    if (plan && Array.isArray(plan.lanes)) {
-      plan.lanes.forEach((lane) => {
-        const area = renderLaneBox(layer, lane);
-        if (area) areas.push(area);
-      });
-      (plan.chainGroups || []).forEach((group) => renderChainGroup(layer, group, plan));
-      const education = renderEducationArea(layer, plan.educationArea);
-      if (education) areas.push(education);
-      return areas;
-    }
+    const sourceNodes = new Map(graph.nodes.map((node) => [node.id, node]));
+    const displayInstances = plan && plan.displayModel && Array.isArray(plan.displayModel.instances)
+      ? plan.displayModel.instances
+      : graph.nodes.map((node) => ({ id: node.id, originalNodeIds: [node.id], displayType: node.type, position: positions[node.id] }));
     const areaDefinitions = [
-      { id: "servlet-entry", label: "서블릿 컨테이너·진입", matches: (node) => ["APPLICATION", "SERVLET"].includes(node.type) },
-      { id: "servlet-filter", label: "서블릿 필터", matches: (node) => node.type === "FILTER" && node.attributes.registrationKind === "SERVLET" },
-      { id: "spring-security", label: "스프링 시큐리티", matches: (node) => node.type === "SECURITY_CHAIN"
-        || (node.type === "FILTER" && node.attributes.registrationKind === "SECURITY") },
-      { id: "servlet-handler", label: "서블릿·핸들러", matches: (node) => ["ENDPOINT", "HANDLER"].includes(node.type) },
-      { id: "authentication-authorization", label: "인증·인가·보안정보", matches: (node) => ["AUTHENTICATION", "AUTHORIZATION", "SECURITY_DATA", "BUSINESS_SECURITY_STATE"].includes(node.type) }
+      { id: "request-entry", label: "요청·진입" },
+      { id: "servlet-filter", label: "Servlet 필터" },
+      { id: "spring-security", label: "Spring Security" },
+      { id: "security-checks", label: "SECURITY CHECKS" },
+      { id: "mvc", label: "Servlet / MVC" },
+      { id: "api-mapping", label: "API 매핑" },
+      { id: "controller-handler", label: "컨트롤러 / 핸들러" }
     ];
     areaDefinitions.forEach((definition) => {
-      const members = graph.nodes.filter(definition.matches).map((node) => ({ node, position: positions[node.id] }))
-        .filter((item) => item.position);
+      const members = displayInstances.map((instance) => {
+        const node = sourceNodes.get((instance.originalNodeIds || [])[0]);
+        const areaNode = node ? { ...node, type: instance.displayType || node.type } : null;
+        return { instance, node, areaId: areaNode && technicalAreaId(areaNode), position: instance.position || positions[instance.id] };
+      }).filter((item) => item.areaId === definition.id && item.position);
       if (members.length === 0) return;
-      const left = Math.min(...members.map((item) => item.position.x)) - 22;
-      const top = Math.min(...members.map((item) => item.position.y)) - 30;
-      const right = Math.max(...members.map((item) => item.position.x + NODE_WIDTH)) + 22;
-      const bottom = Math.max(...members.map((item) => item.position.y + NODE_HEIGHT)) + 22;
+      const bounds = {
+        left: Math.min(...members.map((item) => item.position.x)) - 22,
+        top: Math.min(...members.map((item) => item.position.y)) - 30,
+        right: Math.max(...members.map((item) => item.position.x + NODE_WIDTH)) + 22,
+        bottom: Math.max(...members.map((item) => item.position.y + NODE_HEIGHT)) + 22
+      };
       const group = createElement("g");
       group.setAttribute("class", "graph-area");
       group.setAttribute("data-area-id", definition.id);
+      group.setAttribute("data-area-kind", "technical");
       const box = createElement("rect");
       box.setAttribute("class", "graph-area-box");
-      box.setAttribute("x", String(left));
-      box.setAttribute("y", String(top));
-      box.setAttribute("width", String(right - left));
-      box.setAttribute("height", String(bottom - top));
+      box.setAttribute("x", String(bounds.left));
+      box.setAttribute("y", String(bounds.top));
+      box.setAttribute("width", String(bounds.right - bounds.left));
+      box.setAttribute("height", String(bounds.bottom - bounds.top));
       group.appendChild(box);
-      addText(group, "graph-area-label", left + 12, top + 18, definition.label);
+      addText(group, "graph-area-label", bounds.left + 12, bounds.top + 18, definition.label);
       layer.appendChild(group);
-      areas.push({ id: definition.id, label: definition.label, nodeIds: members.map((item) => item.node.id) });
+      areas.push({ id: definition.id, label: definition.label,
+        nodeIds: Array.from(new Set(members.flatMap((item) => item.instance.originalNodeIds || []))),
+        instanceIds: members.map((item) => item.instance.id), bounds: [bounds] });
     });
-    return areas;
+    const chainAreas = plan && Array.isArray(plan.chainGroups)
+      ? plan.chainGroups.map((group) => renderChainGroup(layer, group, plan)).filter(Boolean)
+      : [];
+    return { areas, chainAreas };
+  }
+
+  function graphFocusNodeIds(focus, rendered) {
+    const nodeIds = new Set();
+    if (!focus) return nodeIds;
+    if (focus.kind === "node") nodeIds.add(focus.id);
+    if (focus.kind === "controller-group") {
+      nodeIds.add(focus.id);
+      const group = (rendered.nodeElements || []).find((element) => element.getAttribute("data-controller-group-id") === focus.id);
+      ["data-handler-ids", "data-endpoint-ids", "data-node-ids"].forEach((attribute) => {
+        (group && group.getAttribute(attribute) || "").split(",").filter(Boolean).forEach((id) => nodeIds.add(id));
+      });
+    }
+    return nodeIds;
+  }
+
+  function membershipVisible(edge, graph, focus) {
+    if (!edge || !focus) return false;
+    if (focus.kind === "edge") return focus.id === edge.id;
+    if (focus.kind !== "node") return false;
+    const node = graph.nodes.find((item) => item.id === focus.id);
+    if (!node) return false;
+    if (node.type === "SECURITY_CHAIN") return edge.sourceId === node.id;
+    if (node.type === "FILTER" && node.attributes && node.attributes.registrationKind === "SECURITY") {
+      return edge.targetId === node.id;
+    }
+    return false;
+  }
+
+  function applyGraphEmphasis(rendered, graph, focus, related, retainedRelated) {
+    if (!rendered || !graph) return;
+    const relatedNodeIds = new Set();
+    const relatedEdgeIds = new Set();
+    [related, retainedRelated].filter(Boolean).forEach((item) => {
+      if (item.nodeIds instanceof Set) item.nodeIds.forEach((id) => relatedNodeIds.add(id));
+      if (item.edgeIds instanceof Set) item.edgeIds.forEach((id) => relatedEdgeIds.add(id));
+    });
+    const focusNodeIds = graphFocusNodeIds(focus, rendered);
+    const matchedChains = new Set((graph.edges || []).filter((edge) => edge.type === "MATCHED_BY"
+      && edge.confidence === "CONFIRMED" && focusNodeIds.has(edge.sourceId)
+      && graph.nodes.some((node) => node.id === edge.targetId && node.type === "SECURITY_CHAIN"))
+      .map((edge) => edge.targetId));
+    const focusedChainIds = matchedChains.size === 1 ? matchedChains : new Set();
+    const primaryNodeIds = new Set(focusNodeIds);
+    const primaryEdgeIds = new Set();
+    if (focus && focus.kind === "edge") primaryEdgeIds.add(focus.id);
+    if (focusNodeIds.size) {
+      graph.edges.forEach((edge) => {
+        if (!focusNodeIds.has(edge.sourceId) && !focusNodeIds.has(edge.targetId)) return;
+        primaryEdgeIds.add(edge.id);
+        primaryNodeIds.add(edge.sourceId);
+        primaryNodeIds.add(edge.targetId);
+      });
+    }
+    if (focus && focus.kind === "edge") {
+      const selectedEdge = graph.edges.find((edge) => edge.id === focus.id);
+      if (selectedEdge) {
+        primaryNodeIds.add(selectedEdge.sourceId);
+        primaryNodeIds.add(selectedEdge.targetId);
+      }
+    }
+    const nodeState = (ids) => {
+      if (!focus) return "base";
+      if (ids.some((id) => primaryNodeIds.has(id))) return "primary";
+      if (ids.some((id) => relatedNodeIds.has(id))) return "secondary";
+      return "unrelated";
+    };
+    (rendered.nodeElements || []).forEach((element) => {
+      const ids = [element.getAttribute("data-node-id"), element.getAttribute("data-controller-group-id"),
+        ...(element.getAttribute("data-handler-ids") || "").split(","),
+        ...(element.getAttribute("data-endpoint-ids") || "").split(","),
+        ...(element.getAttribute("data-node-ids") || "").split(",")].filter(Boolean);
+      element.setAttribute("data-emphasis", nodeState(ids));
+    });
+    [...(rendered.edgeElements || []), ...(rendered.edgeTrunkElements || [])].forEach((element) => {
+      const edgeIds = (element.getAttribute("data-edge-ids") || element.getAttribute("data-edge-id") || "").split(",").filter(Boolean);
+      const nodeIds = (element.getAttribute("data-related-node-ids") || "").split(",").filter(Boolean);
+      const flowGroups = (element.getAttribute("data-flow-groups") || "").split(",").filter(Boolean);
+      const emphasis = !focus ? "base"
+        : edgeIds.some((id) => primaryEdgeIds.has(id)) || nodeIds.some((id) => focusNodeIds.has(id))
+          || flowGroups.some((id) => focusedChainIds.has(id)) ? "primary"
+          : edgeIds.some((id) => relatedEdgeIds.has(id)) ? "secondary" : "unrelated";
+      element.setAttribute("data-emphasis", emphasis);
+      if (element.getAttribute("data-segment-id")) element.setAttribute("data-related", String(emphasis !== "unrelated"));
+      if (element.getAttribute("data-reference-only") === "true") {
+        element.setAttribute("data-reference-visible", String(Boolean(focus) && emphasis !== "unrelated"));
+      }
+      const membershipIds = edgeIds.filter((id) => rendered.securityMembershipEdgeIds
+        && rendered.securityMembershipEdgeIds.has(id));
+      if (membershipIds.length) {
+        const edgeById = rendered.edgeById || new Map((graph.edges || []).map((edge) => [edge.id, edge]));
+        element.setAttribute("data-membership-visible", String(membershipIds.some((id) =>
+          membershipVisible(edgeById.get(id), graph, focus))));
+      }
+    });
+    (rendered.edgeLabelElements || []).forEach((element) => {
+      const edgeId = element.getAttribute("data-edge-id");
+      const edgeIds = (element.getAttribute("data-edge-ids") || edgeId || "").split(",").filter(Boolean);
+      const emphasis = !focus ? "base"
+        : edgeIds.some((id) => primaryEdgeIds.has(id)) ? "primary"
+          : edgeIds.some((id) => relatedEdgeIds.has(id)) ? "secondary" : "unrelated";
+      element.setAttribute("data-emphasis", emphasis);
+      if (element.getAttribute("data-overview-label") === "true") {
+        element.setAttribute("data-visible", String(element.getAttribute("data-collision") !== "true"
+          && Boolean(focus && focus.kind === "edge" && edgeIds.includes(focus.id))));
+      }
+      if (rendered.securityMembershipEdgeIds && rendered.securityMembershipEdgeIds.has(edgeId)) {
+        const edgeById = rendered.edgeById || new Map((graph.edges || []).map((edge) => [edge.id, edge]));
+        element.setAttribute("data-membership-visible", String(membershipVisible(edgeById.get(edgeId), graph, focus)));
+      }
+    });
+    (rendered.chainAreas || []).forEach((area) => {
+      if (!area.element) return;
+      area.element.setAttribute("data-related", String((area.nodeIds || []).some((id) => relatedNodeIds.has(id))));
+    });
+  }
+
+  function securityMembershipEdgeIds(graph, options) {
+    const ids = new Set(options.layoutPlan && Array.isArray(options.layoutPlan.securityMembershipEdgeIds)
+      ? options.layoutPlan.securityMembershipEdgeIds : []);
+    if (ids.size) return ids;
+    const flowIndex = options.flowIndex || (window.MapInBootFlow && window.MapInBootFlow.createIndex
+      ? window.MapInBootFlow.createIndex(graph)
+      : null);
+    if (!flowIndex || typeof flowIndex.securityFiltersForChain !== "function") return ids;
+    graph.nodes.filter((node) => node.type === "SECURITY_CHAIN").forEach((chain) => {
+      const result = flowIndex.securityFiltersForChain(chain.id);
+      (result.edges || []).forEach((edge) => ids.add(edge.id));
+    });
+    return ids;
   }
 
   function renderGuides(graph, positions, layer, plan, flowIndex, selection, detailMode) {
@@ -972,7 +1241,9 @@
       const match = index.handlerFor(endpoint.id);
       const handler = match && match.status === "CONFIRMED" ? match.node : null;
       const source = positions[endpoint.id];
-      const target = handler && positions[handler.id];
+      const controller = handler && (plan.controllerGroups || []).find((group) => (group.handlerIds || []).includes(handler.id)
+        && (detailMode || (group.endpointIds || []).includes(endpoint.id)));
+      const target = handler && !detailMode && controller ? controller.position : handler && positions[handler.id];
       if (!source || !target) return;
       const related = guideRelated(plan, endpoint.id, handler.id, selection);
       const path = createElement("path");
@@ -981,7 +1252,6 @@
       path.setAttribute("data-endpoint-id", endpoint.id);
       path.setAttribute("data-handler-id", handler.id);
       path.setAttribute("data-related", String(related));
-      const controller = (plan.controllerGroups || []).find((group) => (group.handlerIds || []).includes(handler.id));
       const matchesGroup = !controller || (controller.position.x === target.x && controller.position.y === target.y);
       const planned = !detailMode && matchesGroup && plan.guideRoutes && plan.guideRoutes[endpoint.id];
       path.setAttribute("d", planned || projectionRoute(source, target));
@@ -1022,8 +1292,10 @@
         .find((item) => item.id === selection.id);
       if (!group) return false;
       const groupNodeIds = new Set([...(group.endpointIds || []), ...(group.handlerIds || [])]);
-      return groupNodeIds.has(edge.sourceId) || groupNodeIds.has(edge.targetId);
+      return groupNodeIds.has(edge.sourceId) || groupNodeIds.has(edge.targetId)
+        || (edge.relatedNodeIds || []).some((id) => groupNodeIds.has(id));
     }
+    if (selection.kind === "node" && (edge.relatedNodeIds || []).includes(selection.id)) return true;
     let selectedChainId = null;
     let selectedEndpointId = null;
     if (selection.kind === "node") {
@@ -1042,6 +1314,7 @@
     const group = (plan.chainGroups || []).find((item) => item.id === selectedChainId);
     const branchIds = group ? new Set(group.nodeIds) : new Set();
     if (selectedChainId && (branchIds.has(edge.sourceId) || branchIds.has(edge.targetId))) return true;
+    if (selectedChainId && (edge.flowGroup === selectedChainId || (edge.flowGroups || []).includes(selectedChainId))) return true;
     if (selectedChainId && edge.id.includes(selectedChainId)) return true;
     if (selectedEndpointId && edge.id.includes(selectedEndpointId)) return true;
     if (selectedEndpointId && edge.id.startsWith("adapter-to-")) {
@@ -1071,26 +1344,7 @@
     const routes = {};
     const nodeElements = [];
     const edgeCounts = new Map();
-    let projectionEdges = projection.edges;
-    if (!options.detailMode) {
-      const mappingEdges = projectionEdges.filter((edge) => edge.id.startsWith("mapping-to-") || edge.id.startsWith("endpoint-to-adapter-"));
-      const seen = new Set();
-      projectionEdges = projectionEdges.filter((edge) => {
-        if (mappingEdges.includes(edge)) return false;
-        if (!edge.id.startsWith("adapter-to-")) return true;
-        const mapping = plan.displayModel && plan.displayModel.nodeToDisplay;
-        const sourceId = mapping && mapping[edge.sourceId] || edge.sourceId;
-        const targetId = mapping && mapping[edge.targetId] || edge.targetId;
-        const key = `${sourceId}\u0000${targetId}`;
-        if (seen.has(key)) return false;
-        seen.add(key);
-        return true;
-      });
-      if (mappingEdges.length) projectionEdges = projectionEdges.concat({
-        id: "mapping-to-adapter-shared", sourceId: "education-handler-mapping", targetId: "education-handler-adapter", kind: "education"
-      });
-    }
-    projectionEdges.forEach((edge) => {
+    projection.edges.forEach((edge) => {
       const source = allPositions[edge.sourceId];
       const target = allPositions[edge.targetId];
       if (!source || !target) return;
@@ -1107,6 +1361,8 @@
       path.setAttribute("d", route);
       path.setAttribute("data-projection-edge-id", edge.id);
       path.setAttribute("data-projection-kind", edge.kind || "education");
+      path.setAttribute("data-projection-purpose", edge.projectionKind || "education");
+      path.setAttribute("data-flow-group", edge.flowGroup || "");
       path.setAttribute("data-route-kind", edge.routeKind || "direct");
       path.setAttribute("data-related", String(projectionRelated(edge, graph, plan, options.flowIndex, options.selection)));
       path.setAttribute("marker-end", "url(#graph-guide-arrow)");
@@ -1124,6 +1380,7 @@
       group.setAttribute("data-projection-id", node.id);
       group.setAttribute("data-projection-kind", node.kind || "education");
       group.setAttribute("aria-label", `${node.primary} ${node.detail}`);
+      if (node.chainId) group.setAttribute("data-chain-id", node.chainId);
       const card = createElement("rect");
       card.setAttribute("class", "graph-projection-card");
       card.setAttribute("width", String(nodeWidth));
@@ -1270,6 +1527,12 @@
     return rendered;
   }
 
+  function applyGraphViewState(svg, options) {
+    if (!svg) return;
+    svg.setAttribute("data-view", options.view || "all-flow");
+    svg.setAttribute("data-selection-active", String(Boolean(options.selection)));
+  }
+
   function render(graph, layers, options = {}) {
     const findings = Array.isArray(options.findings) ? options.findings : [];
     const displayIds = options.displayIds || createDisplayIds(graph);
@@ -1313,21 +1576,32 @@
         parent.appendChild(marker);
       });
     }
-    const positions = positionsFor(graph.nodes, options.positions);
+    const overviewInstances = !options.detailMode && options.layoutPlan && options.layoutPlan.displayModel
+      && Array.isArray(options.layoutPlan.displayModel.instances) ? options.layoutPlan.displayModel.instances : null;
+    const visibleOriginalIds = overviewInstances && new Set(overviewInstances.flatMap((instance) => instance.originalNodeIds));
+    const positions = positionsFor(visibleOriginalIds
+      ? graph.nodes.filter((node) => visibleOriginalIds.has(node.id)) : graph.nodes, options.positions);
+    applyGraphViewState(layers.svg, options);
     const visibleIds = new Set(graph.nodes.map((node) => node.id));
     const controllerGroups = !options.detailMode && options.layoutPlan && Array.isArray(options.layoutPlan.controllerGroups)
       ? options.layoutPlan.controllerGroups.concat(options.layoutPlan.displayModel ? options.layoutPlan.displayModel.groups : [])
         .filter((group) => (group.handlerIds || []).every((id) => visibleIds.has(id)))
       : [];
     const groupedHandlerIds = new Set(controllerGroups.flatMap((group) => group.handlerIds || []));
-    const displayPositions = { ...positions };
+    const displayPositions = overviewInstances ? {} : { ...positions };
     controllerGroups.forEach((group) => {
       displayPositions[group.id] = group.position;
-      (group.handlerIds || []).forEach((handlerId) => { displayPositions[handlerId] = group.position; });
     });
+    const displayModel = options.layoutPlan && options.layoutPlan.displayModel;
+    if (!options.detailMode && displayModel && Array.isArray(displayModel.instances)) {
+      displayModel.instances.forEach((instance) => { displayPositions[instance.id] = instance.position; });
+    }
     const size = graphSize(displayPositions, options.bounds);
     const nodeById = new Map(graph.nodes.map((node) => [node.id, node]));
+    const chainsByKey = securityChainIndex(graph);
+    const edgeById = new Map(graph.edges.map((edge) => [edge.id, edge]));
     const selection = options.selection || null;
+    const membershipEdgeIds = securityMembershipEdgeIds(graph, options);
     const relatedNodeIds = options.related && options.related.nodeIds instanceof Set
       ? options.related.nodeIds
       : new Set();
@@ -1336,53 +1610,121 @@
       : new Set();
     const edgePairCounts = new Map();
     const edgeElements = [];
+    const edgeTrunkElements = [];
     const edgeLabelElements = [];
     const nodeElements = [];
-    const areas = renderAreas(graph, positions, layers.areaLayer, options.layoutPlan, size.height);
+    const areaResult = renderAreas(graph, displayPositions, layers.areaLayer, options.layoutPlan);
+    const overviewRouting = !options.detailMode && options.layoutPlan && options.layoutPlan.overviewRouting;
     let guides;
-    if (options.findingDetailMode && !options.detailMode) {
+    if (overviewRouting || (options.findingDetailMode && !options.detailMode)) {
       if (layers.guideLayer) layers.guideLayer.replaceChildren();
       guides = [];
     } else {
       guides = renderGuides(graph, displayPositions, layers.guideLayer, options.layoutPlan, options.flowIndex, selection, options.detailMode);
     }
     let projection;
-    if (options.findingDetailMode && !options.detailMode) {
+    if (overviewRouting || (options.findingDetailMode && !options.detailMode)) {
       if (layers.projectionLayer) layers.projectionLayer.replaceChildren();
       projection = { nodes: [], edges: [] };
     } else {
       projection = renderProjection(graph, displayPositions, layers.projectionLayer, options.layoutPlan && options.layoutPlan.projection, options.layoutPlan || {}, options);
     }
     const renderEdgeRoutes = { ...(options.edgeRoutes || {}) };
-    graph.edges.forEach((edge) => {
-      const model = options.layoutPlan && options.layoutPlan.displayModel;
-      const matchesGrouping = model && [edge.sourceId, edge.targetId].every((id) =>
-        groupedHandlerIds.has(id) === (model.nodeToDisplay[id] !== id));
-      const route = !options.detailMode && matchesGrouping && options.layoutPlan.displayEdgeRoutes
-        && options.layoutPlan.displayEdgeRoutes[edge.id];
-      if (route) renderEdgeRoutes[edge.id] = route;
-      else if (groupedHandlerIds.has(edge.sourceId) || groupedHandlerIds.has(edge.targetId)) delete renderEdgeRoutes[edge.id];
-    });
-    const labelPositions = placeEdgeLabels(graph, displayPositions, renderEdgeRoutes, options);
+    const displayRouteEdgeIds = new Set();
+    const edgeViews = !options.detailMode && displayModel && Array.isArray(displayModel.displayEdgeInstances)
+      ? displayModel.displayEdgeInstances.filter((instance) => !instance.selfConnection).map((instance) => {
+        const original = edgeById.get(instance.originalEdgeIds[0]);
+        if (!original) return null;
+        const route = options.layoutPlan.displayEdgeInstanceRoutes
+          && options.layoutPlan.displayEdgeInstanceRoutes[instance.id];
+        if (route) {
+          renderEdgeRoutes[instance.id] = route;
+          displayRouteEdgeIds.add(instance.id);
+        }
+        return { ...original, originalEdgeId: original.id, originalSourceId: original.sourceId,
+          originalTargetId: original.targetId, originalEdgeIds: instance.originalEdgeIds,
+          id: original.id, routeId: instance.id, rowId: instance.rowId,
+          sourceId: instance.sourceInstanceId, targetId: instance.targetInstanceId };
+      }).filter(Boolean)
+      : graph.edges.map((edge) => ({ ...edge, originalEdgeId: edge.id, originalSourceId: edge.sourceId,
+        originalTargetId: edge.targetId, originalEdgeIds: [edge.id], routeId: edge.id, rowId: null }));
+    const labelGraph = {
+      nodes: !options.detailMode && displayModel && Array.isArray(displayModel.instances)
+        ? displayModel.instances.map((instance) => ({ id: instance.id, type: instance.displayType })) : graph.nodes,
+      edges: edgeViews
+    };
+    const labelPositions = placeEdgeLabels(labelGraph, displayPositions, renderEdgeRoutes, options);
     layers.edgeLayer.replaceChildren();
     layers.nodeLayer.replaceChildren();
     layers.svg.setAttribute("viewBox", `0 0 ${size.width} ${size.height}`);
     layers.svg.setAttribute("data-layout-mode", options.layoutMode || "initial");
     if (layers.viewport) layers.viewport.setAttribute("data-layout-mode", options.layoutMode || "initial");
 
-    const activeDisplayIds = {};
-    controllerGroups.forEach((group) => (group.handlerIds || []).forEach((id) => { activeDisplayIds[id] = group.id; }));
     const bundles = new Map();
-    graph.edges.forEach((edge) => {
-      const sourceId = activeDisplayIds[edge.sourceId] || edge.sourceId;
-      const targetId = activeDisplayIds[edge.targetId] || edge.targetId;
-      const grouped = sourceId !== edge.sourceId || targetId !== edge.targetId;
-      const key = !options.detailMode && grouped ? JSON.stringify([sourceId, targetId, edge.type]) : edge.id;
-      const bundle = bundles.get(key) || { edge, edgeIds: [] };
-      bundle.edgeIds.push(edge.id);
+    edgeViews.forEach((edge) => {
+      const key = !options.detailMode ? JSON.stringify([edge.rowId, edge.sourceId, edge.targetId, edge.type]) : edge.id;
+      const bundle = bundles.get(key) || { edge, edgeIds: [], routeIds: [] };
+      (edge.originalEdgeIds || [edge.id]).forEach((id) => {
+        if (!bundle.edgeIds.includes(id)) bundle.edgeIds.push(id);
+      });
+      bundle.routeIds.push(edge.routeId);
       bundles.set(key, bundle);
     });
-    Array.from(bundles.values()).forEach(({ edge, edgeIds }) => {
+    const availableEdgeIds = new Set(edgeViews.map((edge) => edge.routeId));
+    const candidateRouteGroups = overviewRouting ? [] : options.detailMode
+      ? options.layoutPlan && options.layoutPlan.commonEdgeRouteGroups || []
+      : options.layoutPlan && options.layoutPlan.displayCommonEdgeRouteGroups || [];
+    const routeGroups = candidateRouteGroups.filter((group) =>
+      (group.edgeIds || []).length > 1 && group.edgeIds.every((id) =>
+        availableEdgeIds.has(id) && renderEdgeRoutes[id]
+        && (options.detailMode || displayRouteEdgeIds.has(id))));
+    const rendererRouteFallbacks = candidateRouteGroups.filter((group) => !routeGroups.includes(group))
+      .map((group) => {
+        const missingId = (group.edgeIds || []).find((id) => !availableEdgeIds.has(id));
+        const missingRouteId = !missingId && (group.edgeIds || []).find((id) => !renderEdgeRoutes[id]);
+        return { groupId: group.id, reason: missingId ? "display-instance-missing"
+          : missingRouteId ? "route-missing" : "display-route-missing" };
+      });
+    layers.svg.setAttribute("data-common-route-group-count", String(candidateRouteGroups.length));
+    layers.svg.setAttribute("data-common-route-rendered-count", String(routeGroups.length));
+    layers.svg.setAttribute("data-common-route-fallbacks", JSON.stringify([
+      ...(options.layoutPlan && (options.detailMode
+        ? options.layoutPlan.commonEdgeRouteFallbacks : options.layoutPlan.displayCommonEdgeRouteFallbacks) || []),
+      ...rendererRouteFallbacks
+    ]));
+    const edgeViewByRouteId = new Map(edgeViews.map((edge) => [edge.routeId, edge]));
+    const routeGroupByEdgeId = new Map();
+    routeGroups.forEach((group) => (group.edgeIds || []).forEach((id) => routeGroupByEdgeId.set(id, group)));
+    const renderedRouteGroups = new Set();
+    routeGroups.forEach((group) => {
+      if (!group.edgeIds || group.edgeIds.length < 2 || renderedRouteGroups.has(group.id)) return;
+      const style = edgeStyles[group.type];
+      if (!style) return;
+      const originalIds = Array.from(new Set(group.edgeIds.flatMap((id) =>
+        edgeViewByRouteId.get(id)?.originalEdgeIds || [id])));
+      const trunk = createElement("path");
+      trunk.setAttribute("class", "graph-edge graph-edge-trunk");
+      trunk.setAttribute("d", group.trunk.d);
+      trunk.setAttribute("data-common-group-id", group.id);
+      trunk.setAttribute("data-edge-ids", originalIds.join(","));
+      trunk.setAttribute("data-edge-type", group.type);
+      trunk.setAttribute("data-edge-layer", group.type === "FLOWS_TO" ? "flow" : "analysis");
+      trunk.setAttribute("data-source-ids", (group.sourceIds || []).join(","));
+      trunk.setAttribute("data-target-ids", (group.targetIds || []).join(","));
+      trunk.setAttribute("data-has-finding", String(findings.some((entry) =>
+        entry.edgeIds.some((id) => originalIds.includes(id)))));
+      trunk.setAttribute("data-selected", String(Boolean(selection && selection.kind === "edge" && originalIds.includes(selection.id))));
+      trunk.setAttribute("data-related", String(!selection || originalIds.some((id) => relatedEdgeIds.has(id))));
+      trunk.setAttribute("stroke", style.color);
+      trunk.setAttribute("stroke-dasharray", style.dash);
+      if (group.sharedTarget && group.targetIds.length === 1) trunk.setAttribute("marker-end", "url(#graph-arrow)");
+      trunk.setAttribute("pointer-events", "none");
+      trunk.setAttribute("aria-hidden", "true");
+      layers.edgeLayer.appendChild(trunk);
+      edgeTrunkElements.push(trunk);
+      renderedRouteGroups.add(group.id);
+    });
+    if (!overviewRouting) Array.from(bundles.values()).forEach(({ edge, edgeIds, routeIds }) => {
       const source = displayPositions[edge.sourceId];
       const target = displayPositions[edge.targetId];
       if (!source || !target) return;
@@ -1390,24 +1732,36 @@
       const parallelIndex = edgePairCounts.get(pairKey) || 0;
       edgePairCounts.set(pairKey, parallelIndex + 1);
       const style = edgeStyles[edge.type];
+      const routeGroup = routeGroupByEdgeId.get(edge.routeId);
+      const usesCommonRoute = routeGroup && routeIds.every((id) => routeGroupByEdgeId.get(id) === routeGroup);
+      const branchRoute = usesCommonRoute && routeGroup.branches[edge.routeId];
+      const branchEndsAtSharedTarget = usesCommonRoute && routeGroup.sharedTarget && routeGroup.targetIds.length === 1;
       const path = createElement("path");
-      path.setAttribute("class", "graph-edge");
-      path.setAttribute("d", routedPath(renderEdgeRoutes[edge.id], edgePath(source, target, parallelIndex)));
+      const isSecurityMembership = edgeIds.some((id) => membershipEdgeIds.has(id));
+      path.setAttribute("class", `graph-edge${usesCommonRoute ? " graph-edge-branch" : ""}${isSecurityMembership ? " graph-edge-security-filter-membership" : ""}`);
+      path.setAttribute("d", routedPath(branchRoute || renderEdgeRoutes[edge.routeId], edgePath(source, target, parallelIndex)));
       path.setAttribute("data-edge-id", edge.id);
+      path.setAttribute("data-edge-instance-id", edge.routeId);
       path.setAttribute("data-edge-ids", edgeIds.join(","));
       path.setAttribute("data-edge-type", edge.type);
-      path.setAttribute("data-source-id", edge.sourceId);
-      path.setAttribute("data-target-id", edge.targetId);
+      path.setAttribute("data-edge-layer", edge.type === "FLOWS_TO" ? "flow" : "analysis");
+      if (usesCommonRoute) path.setAttribute("data-common-group-id", routeGroup.id);
+      if (isSecurityMembership) path.setAttribute("data-membership-kind", "security-chain");
+      path.setAttribute("data-source-id", edge.originalSourceId);
+      path.setAttribute("data-target-id", edge.originalTargetId);
+      path.setAttribute("data-display-source-id", edge.sourceId);
+      path.setAttribute("data-display-target-id", edge.targetId);
       path.setAttribute("data-confidence", edge.confidence);
       path.setAttribute("data-evidence-ids", edge.evidenceIds.join(","));
+      path.setAttribute("data-has-finding", String(findings.some((entry) => entry.edgeIds.some((id) => edgeIds.includes(id)))));
       path.setAttribute("tabindex", "0");
       path.setAttribute("role", "button");
-      path.setAttribute("aria-label", `${edgeTypeLabel(edge.type)} · ${displayIds.node(edge.sourceId)} → ${displayIds.node(edge.targetId)}`);
+      path.setAttribute("aria-label", `${edgeTypeLabel(edge.type)} · ${displayIds.node(edge.originalSourceId)} → ${displayIds.node(edge.originalTargetId)}`);
       path.setAttribute("data-selected", String(Boolean(selection && selection.kind === "edge" && edgeIds.includes(selection.id))));
       path.setAttribute("data-related", String(!selection || edgeIds.some((id) => relatedEdgeIds.has(id))));
       path.setAttribute("stroke", style.color);
       path.setAttribute("stroke-dasharray", style.dash);
-      path.setAttribute("marker-end", "url(#graph-arrow)");
+      if (!branchEndsAtSharedTarget) path.setAttribute("marker-end", "url(#graph-arrow)");
       if (options.onEdgeClick) path.addEventListener("click", (event) => {
         if (event && event.stopPropagation) event.stopPropagation();
         options.onEdgeClick(edge.id, path);
@@ -1438,10 +1792,14 @@
       const label = createElement("text");
       label.setAttribute("class", "graph-edge-label");
       label.setAttribute("data-edge-id", edge.id);
+      label.setAttribute("data-edge-instance-id", edge.routeId);
+      label.setAttribute("data-edge-ids", edgeIds.join(","));
       label.setAttribute("data-edge-type", edge.type);
+      label.setAttribute("data-edge-layer", edge.type === "FLOWS_TO" ? "flow" : "analysis");
+      if (isSecurityMembership) label.setAttribute("data-membership-kind", "security-chain");
       label.setAttribute("data-selected", String(Boolean(selection && selection.kind === "edge" && selection.id === edge.id)));
       label.setAttribute("data-related", String(!selection || relatedEdgeIds.has(edge.id)));
-      const labelPosition = labelPositions.get(edge.id) || edgeLabelPosition(source, target, parallelIndex, renderEdgeRoutes[edge.id]);
+      const labelPosition = labelPositions.get(edge.routeId) || edgeLabelPosition(source, target, parallelIndex, renderEdgeRoutes[edge.routeId]);
       label.setAttribute("x", String(labelPosition.x));
       label.setAttribute("y", String(labelPosition.y));
       label.setAttribute("text-anchor", "middle");
@@ -1466,10 +1824,179 @@
       path.addEventListener("blur", () => setHoveredLabel(false));
     });
 
-    graph.nodes.forEach((node) => {
-      if (groupedHandlerIds.has(node.id)) return;
-      const position = displayPositions[node.id];
-      const style = nodeStyles[node.type];
+    if (overviewRouting) {
+      const relations = new Map(overviewRouting.relations.map((relation) => [relation.id, relation]));
+      const markedFindings = new Set();
+      const labeledRelations = new Set();
+      let maskDefs = Array.from(layers.svg.children || []).find((child) => child.getAttribute("data-overview-mask") === "true");
+      if (!maskDefs) {
+        maskDefs = createElement("defs");
+        maskDefs.setAttribute("data-overview-mask", "true");
+        layers.svg.appendChild(maskDefs);
+      }
+      const mask = createElement("mask");
+      mask.setAttribute("id", "graph-overview-trunk-mask");
+      mask.setAttribute("maskUnits", "userSpaceOnUse");
+      mask.setAttribute("x", "-100000");
+      mask.setAttribute("y", "-100000");
+      mask.setAttribute("width", "200000");
+      mask.setAttribute("height", "200000");
+      const background = createElement("rect");
+      background.setAttribute("x", "-100000");
+      background.setAttribute("y", "-100000");
+      background.setAttribute("width", "200000");
+      background.setAttribute("height", "200000");
+      background.setAttribute("fill", "white");
+      mask.appendChild(background);
+      overviewInstances.forEach((instance) => {
+        const position = instance.position;
+        if (!position) return;
+        const card = createElement("rect");
+        card.setAttribute("x", String(position.x));
+        card.setAttribute("y", String(position.y));
+        card.setAttribute("width", String(position.width || NODE_WIDTH));
+        card.setAttribute("height", String(position.height || NODE_HEIGHT));
+        card.setAttribute("fill", "black");
+        mask.appendChild(card);
+      });
+      maskDefs.replaceChildren(mask);
+      layers.svg.setAttribute("data-unresolved-routes", JSON.stringify(overviewRouting.unresolved));
+      overviewRouting.segments.forEach((segment) => {
+        const members = segment.relationIds.map((id) => relations.get(id)).filter(Boolean);
+        if (!members.length) return;
+        const originalIds = Array.from(new Set(members.flatMap((relation) => relation.originalEdgeIds || [])));
+        const relation = members[0];
+        const style = edgeStyles[relation.type];
+        const targetRoute = members.map((member) => overviewRouting.routesByRelationId[member.id])
+          .find((route) => route && route.orderedSegmentIds.at(-1) === segment.id);
+        const reverse = targetRoute && targetRoute.targetPort.x === segment.from.x && targetRoute.targetPort.y === segment.from.y;
+        const start = reverse ? segment.to : segment.from;
+        const end = reverse ? segment.from : segment.to;
+        const path = createElement("path");
+        path.setAttribute("class", `graph-edge graph-overview-segment${style ? "" : " graph-projection-edge"}`);
+        path.setAttribute("d", `M ${start.x} ${start.y} L ${end.x} ${end.y}`);
+        path.setAttribute("data-segment-id", segment.id);
+        path.setAttribute("data-route-role", segment.routeRole || "DIRECT");
+        if (segment.routeRole === "TRUNK" && segment.relationIds.length > 1) {
+          path.setAttribute("mask", "url(#graph-overview-trunk-mask)");
+        }
+        path.setAttribute("data-relation-ids", segment.relationIds.join(","));
+        path.setAttribute("data-flow-groups", Array.from(new Set(members.map((member) => member.flowGroup).filter(Boolean))).join(","));
+        path.setAttribute("data-edge-ids", originalIds.join(","));
+        if (members.every((member) => member.role === "REGISTRATION_REFERENCE")) {
+          path.setAttribute("data-reference-only", "true");
+          path.setAttribute("data-reference-visible", "false");
+        }
+        const nodeIds = Array.from(new Set(members.flatMap((member) => [
+          ...(displayModel.instanceToOriginalNodeIds[member.sourceInstanceId] || []),
+          ...(displayModel.instanceToOriginalNodeIds[member.targetInstanceId] || []),
+          ...(member.relatedNodeIds || [])
+        ])));
+        path.setAttribute("data-related-node-ids", nodeIds.join(","));
+        path.setAttribute("data-related", String(!selection || originalIds.some((id) => relatedEdgeIds.has(id))));
+        path.setAttribute("data-has-finding", String(findings.some((entry) => entry.edgeIds.some((id) => originalIds.includes(id)))));
+        path.setAttribute("data-selected", String(Boolean(selection && selection.kind === "edge" && originalIds.includes(selection.id))));
+        if (style) {
+          path.setAttribute("data-edge-type", relation.type);
+          path.setAttribute("data-edge-layer", relation.type === "FLOWS_TO" ? "flow" : "analysis");
+          path.setAttribute("stroke", style.color);
+          path.setAttribute("stroke-dasharray", style.dash);
+        }
+        if (targetRoute && (!style || members.every((member) => member.visualDirection !== "REVERSED"))) {
+          path.setAttribute("marker-end", style ? "url(#graph-arrow)" : "url(#graph-guide-arrow)");
+        }
+        if (originalIds.length) {
+          path.setAttribute("data-edge-id", originalIds[0]);
+          path.setAttribute("tabindex", "0");
+          path.setAttribute("role", "button");
+          const original = edgeById.get(originalIds[0]);
+          if (original) path.setAttribute("aria-label", `${edgeTypeLabel(original.type)} · ${displayIds.node(original.sourceId)} → ${displayIds.node(original.targetId)}`);
+          if (options.onEdgeClick) path.addEventListener("click", (event) => {
+            if (event && event.stopPropagation) event.stopPropagation();
+            options.onEdgeClick(originalIds[0], path, originalIds);
+          });
+          path.addEventListener("keydown", (event) => {
+            if (event.key !== "Enter" && event.key !== " ") return;
+            if (event.preventDefault) event.preventDefault();
+            if (options.onEdgeClick) options.onEdgeClick(originalIds[0], path, originalIds);
+          });
+          if (options.onEdgeFocus) path.addEventListener("focus", () => options.onEdgeFocus(originalIds[0], path));
+          if (options.onEdgeBlur) path.addEventListener("blur", () => options.onEdgeBlur(originalIds[0], path));
+          if (options.onEdgeHover) path.addEventListener("mouseenter", () => options.onEdgeHover(originalIds[0], path));
+          if (options.onEdgeLeave) path.addEventListener("mouseleave", () => options.onEdgeLeave(originalIds[0], path));
+        }
+        layers.edgeLayer.appendChild(path);
+        edgeElements.push(path);
+        members.filter((member) => (member.originalEdgeIds || []).length
+          && overviewRouting.routesByRelationId[member.id]?.orderedSegmentIds.at(-1) === segment.id
+          && !labeledRelations.has(member.id)).forEach((member) => {
+          const original = edgeById.get(member.originalEdgeIds[0]);
+          if (!original || !style) return;
+          const placed = labelPositions.get(member.id);
+          const label = createElement("text");
+          label.setAttribute("class", "graph-edge-label");
+          label.setAttribute("data-overview-label", "true");
+          label.setAttribute("data-edge-id", original.id);
+          label.setAttribute("data-edge-ids", member.originalEdgeIds.join(","));
+          label.setAttribute("data-edge-type", original.type);
+          label.setAttribute("data-edge-layer", original.type === "FLOWS_TO" ? "flow" : "analysis");
+          label.setAttribute("x", String(placed ? placed.x : (start.x + end.x) / 2));
+          label.setAttribute("y", String(placed ? placed.y : (start.y + end.y) / 2 - 8));
+          label.setAttribute("text-anchor", "middle");
+          label.setAttribute("data-collision", String(Boolean(placed && placed.collision)));
+          label.setAttribute("data-visible", String(shouldShowEdgeLabel(original, options, relatedEdgeIds)
+            && !(placed && placed.collision)));
+          label.setAttribute("fill", style.color);
+          label.textContent = edgeTypeLabel(original.type);
+          layers.edgeLayer.appendChild(label);
+          edgeLabelElements.push(label);
+          labeledRelations.add(member.id);
+          const setLabelVisible = (visible) => {
+            if (options.displayEdgeLabels === false || (placed && placed.collision)) return;
+            label.setAttribute("data-visible", String(visible || Boolean(selection
+              && selection.kind === "edge" && member.originalEdgeIds.includes(selection.id))));
+          };
+          path.addEventListener("mouseenter", () => setLabelVisible(true));
+          path.addEventListener("mouseleave", () => setLabelVisible(false));
+          path.addEventListener("focus", () => setLabelVisible(true));
+          path.addEventListener("blur", () => setLabelVisible(false));
+        });
+        findings.filter((entry) => !markedFindings.has(entry.finding.id) && entry.edgeIds.some((id) => originalIds.includes(id)))
+          .forEach((entry) => {
+            appendMarkers(layers.edgeLayer, [entry], (start.x + end.x) / 2, (start.y + end.y) / 2);
+            markedFindings.add(entry.finding.id);
+          });
+      });
+      // Chain에 직접 연결하지 않는 원본 관계의 Finding 위치 표시
+      findings.filter((entry) => !markedFindings.has(entry.finding.id)).forEach((entry) => {
+        const edge = entry.edgeIds.map((id) => edgeById.get(id)).find((item) => item
+          && [item.sourceId, item.targetId].some((id) => nodeById.get(id)?.type === "SECURITY_CHAIN"));
+        if (!edge) return;
+        const chainId = [edge.sourceId, edge.targetId].find((id) => nodeById.get(id)?.type === "SECURITY_CHAIN");
+        const instance = overviewInstances.find((item) => (item.originalNodeIds || []).includes(chainId));
+        if (!instance || !instance.position) return;
+        const previousLength = layers.edgeLayer.children.length;
+        appendMarkers(layers.edgeLayer, [entry], instance.position.x + NODE_WIDTH - 14, instance.position.y + NODE_HEIGHT - 14);
+        const marker = layers.edgeLayer.children[previousLength];
+        if (marker) {
+          marker.setAttribute("data-edge-reference-id", edge.id);
+          marker.setAttribute("aria-label", `${marker.getAttribute("aria-label")} · 표시 제외된 원본 관계`);
+        }
+        markedFindings.add(entry.finding.id);
+      });
+    }
+
+    const nodeInstances = !options.detailMode && displayModel && Array.isArray(displayModel.instances)
+      ? displayModel.instances.filter((instance) => instance.kind === "node")
+      : graph.nodes.filter((node) => !groupedHandlerIds.has(node.id)).map((node) => ({
+        id: node.id, originalNodeIds: [node.id], position: displayPositions[node.id]
+      }));
+    nodeInstances.forEach((instance) => {
+      const node = nodeById.get((instance.originalNodeIds || [])[0]);
+      if (!node) return;
+      const position = instance.position || displayPositions[instance.id];
+      if (!position) return;
+      const style = nodeStyleFor(node);
     const display = nodeDisplay(node, { filterOrderInfo: options.layoutPlan && {
       ...(options.layoutPlan.securityFilterOrder || {}),
       ...(options.layoutPlan.servletFilterOrder || {})
@@ -1478,6 +2005,8 @@
       group.setAttribute("class", "graph-node");
       group.setAttribute("transform", `translate(${position.x} ${position.y})`);
       group.setAttribute("data-node-id", node.id);
+      group.setAttribute("data-display-instance-id", instance.id);
+      if (instance.rowId) group.setAttribute("data-row-id", instance.rowId);
       group.setAttribute("data-has-finding", String(findings.some((entry) => entry.nodeIds.includes(node.id))));
       group.setAttribute("data-node-type", node.type);
       group.setAttribute("data-evidence-ids", node.evidenceIds.join(","));
@@ -1548,7 +2077,9 @@
     controllerGroups.forEach((groupDefinition) => {
       const position = displayPositions[groupDefinition.id];
       if (!position) return;
-      const display = controllerGroupDisplay(groupDefinition, displayIds);
+      const display = groupDefinition.type
+        ? securityGroupDisplay(groupDefinition, graph, displayIds, nodeById, chainsByKey)
+        : controllerGroupDisplay(groupDefinition, displayIds);
       const group = createElement("g");
       group.setAttribute("class", groupDefinition.type ? "graph-node graph-support-group" : "graph-node graph-controller-group");
       group.setAttribute("transform", `translate(${position.x} ${position.y})`);
@@ -1556,6 +2087,7 @@
       group.setAttribute("data-has-finding", String(findings.some((entry) => entry.nodeIds.some((id) =>
         (groupDefinition.nodeIds || []).includes(id) || (groupDefinition.handlerIds || []).includes(id)))));
       group.setAttribute("data-controller-fqcn", groupDefinition.controllerFqcn);
+      group.setAttribute("data-node-ids", (groupDefinition.nodeIds || []).join(","));
       group.setAttribute("data-handler-ids", (groupDefinition.handlerIds || []).join(","));
       group.setAttribute("data-endpoint-ids", (groupDefinition.endpointIds || []).join(","));
       group.setAttribute("data-selected", String(Boolean(selection
@@ -1564,7 +2096,8 @@
         || (groupDefinition.handlerIds || []).some((id) => relatedNodeIds.has(id))));
       group.setAttribute("tabindex", "0");
       group.setAttribute("role", "button");
-      group.setAttribute("aria-label", `Controller ${display.primary} ${display.detail}`);
+      const groupType = groupDefinition.type || "HANDLER";
+      group.setAttribute("aria-label", `${nodeTypeLabel(groupType)} ${display.primary} ${display.detail}`);
       if (options.onControllerGroupClick) group.addEventListener("click", (event) => {
         if (event && event.stopPropagation) event.stopPropagation();
         options.onControllerGroupClick(groupDefinition.id, group);
@@ -1588,7 +2121,7 @@
       card.setAttribute("width", String(NODE_WIDTH));
       card.setAttribute("height", String(NODE_HEIGHT));
       card.setAttribute("rx", "7");
-      const groupColor = "#c4b5fd";
+      const groupColor = nodeStyleFor({ type: groupType });
       card.setAttribute("stroke", groupColor);
       group.appendChild(card);
       addNodeBackgroundTint(group, groupColor);
@@ -1603,16 +2136,16 @@
       });
       const groupedNodeIds = (groupDefinition.nodeIds || []).concat(groupDefinition.handlerIds || []);
       layers.nodeLayer.appendChild(group);
-      const groupType = groupDefinition.type === "AUTHORIZATION" ? "인가 근거"
-        : groupDefinition.type === "SECURITY_DATA" ? "보안정보 사용" : "Controller";
-      addNodeHeader(group, groupType, display.displayId, groupColor);
+      const groupTypeLabel = groupDefinition.type === "AUTHORIZATION" ? "인가 근거"
+        : groupDefinition.type === "SECURITY_DATA" ? "보안정보 사용" : nodeTypeLabel(groupType);
+      addNodeHeader(group, groupTypeLabel, display.displayId, groupColor);
       const title = addNodeText(group, "graph-node-label", 14, 56, display.primary, cardTextWidth, textFallbackLimit);
       title.setAttribute("clip-path", "url(#graph-node-content-clip)");
-      const detail = groupDefinition.type ? `원본 Fact ${(groupDefinition.nodeIds || []).length}건` : display.detail;
-      if (detail) {
-        const detailText = addNodeText(group, "graph-node-detail", 14, 84, detail, cardTextWidth, textFallbackLimit);
+      const detailLines = Array.isArray(display.detailLines) ? display.detailLines : [display.detail];
+      detailLines.filter(Boolean).slice(0, 2).forEach((detail, index) => {
+        const detailText = addNodeText(group, "graph-node-detail", 14, 84 + index * 16, detail, cardTextWidth, textFallbackLimit);
         detailText.setAttribute("clip-path", "url(#graph-node-content-clip)");
-      }
+      });
       appendMarkers(layers.nodeLayer, groupFindingEntries,
         position.x + NODE_WIDTH - 14, position.y + NODE_HEIGHT - 14);
       nodeElements.push(group);
@@ -1626,26 +2159,45 @@
     } else {
       layers.svg.removeAttribute("hidden");
     }
-    const displayNodes = graph.nodes.filter((node) => !groupedHandlerIds.has(node.id)).map((node) => ({
-      ...node,
-      position: displayPositions[node.id],
-      width: NODE_WIDTH,
-      height: NODE_HEIGHT,
-      bounds: { x: displayPositions[node.id].x, y: displayPositions[node.id].y, width: NODE_WIDTH, height: NODE_HEIGHT },
-      kind: "actual"
-    })).concat(controllerGroups.map((group) => ({
-      id: group.id,
-      type: "CONTROLLER_GROUP",
-      label: group.controllerName || group.controllerFqcn,
-      position: group.position,
-      width: NODE_WIDTH,
-      height: NODE_HEIGHT,
-      bounds: { x: group.position.x, y: group.position.y, width: NODE_WIDTH, height: NODE_HEIGHT },
-      kind: "controller-group"
-    })));
+    const displayNodes = !options.detailMode && displayModel && Array.isArray(displayModel.instances)
+      ? displayModel.instances.map((instance) => {
+        const sourceNode = nodeById.get((instance.originalNodeIds || [])[0]);
+        const definition = controllerGroups.find((group) => group.id === instance.id);
+        const position = instance.position;
+        return {
+          ...(instance.kind === "node" ? sourceNode : {}),
+          id: instance.id,
+          type: instance.kind === "controller-group" ? "CONTROLLER_GROUP" : instance.displayType,
+          label: definition ? definition.controllerName || definition.controllerFqcn : sourceNode && sourceNode.label,
+          originalNodeIds: instance.originalNodeIds,
+          rowId: instance.rowId,
+          position,
+          width: NODE_WIDTH,
+          height: NODE_HEIGHT,
+          bounds: { x: position.x, y: position.y, width: NODE_WIDTH, height: NODE_HEIGHT },
+          kind: instance.kind
+        };
+      })
+      : graph.nodes.filter((node) => !groupedHandlerIds.has(node.id)).map((node) => ({
+        ...node,
+        position: displayPositions[node.id],
+        width: NODE_WIDTH,
+        height: NODE_HEIGHT,
+        bounds: { x: displayPositions[node.id].x, y: displayPositions[node.id].y, width: NODE_WIDTH, height: NODE_HEIGHT },
+        kind: "actual"
+      })).concat(controllerGroups.map((group) => ({
+        id: group.id,
+        type: "CONTROLLER_GROUP",
+        label: group.controllerName || group.controllerFqcn,
+        position: group.position,
+        width: NODE_WIDTH,
+        height: NODE_HEIGHT,
+        bounds: { x: group.position.x, y: group.position.y, width: NODE_WIDTH, height: NODE_HEIGHT },
+        kind: "controller-group"
+      })));
     const findingSections = renderFindingSections(graph, displayPositions, layers.findingLayer, layers.findingTitleLayer,
       options.findingSections, options.onFindingSectionClick || options.onFindingClick, options.layoutPlan);
-    return {
+    const rendered = {
       positions: displayPositions,
       actualPositions: positions,
       width: size.width,
@@ -1657,23 +2209,31 @@
       invalidEdges: graph.invalidEdges,
       nodeElements,
       edgeElements,
+      edgeTrunkElements,
       edgeLabelElements,
       nodeById,
-      areas,
+      edgeById,
+      securityMembershipEdgeIds: membershipEdgeIds,
+      areas: areaResult.areas,
+      chainAreas: areaResult.chainAreas,
       guides,
       projection,
       findingSections
     };
+    applyGraphEmphasis(rendered, graph, selection, options.related);
+    return rendered;
   }
 
   function updateState(rendered, graph, options = {}, layers = {}) {
     if (!rendered) return null;
+    applyGraphViewState(layers.svg, options);
     const selection = options.selection || null;
     const relatedNodeIds = options.related && options.related.nodeIds instanceof Set ? options.related.nodeIds : new Set();
     const relatedEdgeIds = options.related && options.related.edgeIds instanceof Set ? options.related.edgeIds : new Set();
     const findings = Array.isArray(options.findings) ? options.findings : [];
     const findingIds = new Set(findings.map((entry) => entry.finding.id));
     const findingNodeIds = new Set(findings.flatMap((entry) => entry.nodeIds || []));
+    const findingEdgeIds = new Set(findings.flatMap((entry) => entry.edgeIds || []));
     rendered.nodeElements.forEach((element) => {
       const nodeId = element.getAttribute("data-node-id");
       const groupId = element.getAttribute("data-controller-group-id");
@@ -1682,14 +2242,25 @@
         || (selection.kind === "controller-group" && selection.id === groupId)));
       element.setAttribute("data-selected", String(selected));
       element.setAttribute("data-related", String(!selection || relatedNodeIds.has(id)
-        || (element.getAttribute("data-handler-ids") || "").split(",").some((item) => relatedNodeIds.has(item))));
+        || (element.getAttribute("data-handler-ids") || "").split(",").some((item) => relatedNodeIds.has(item))
+        || (element.getAttribute("data-node-ids") || "").split(",").some((item) => relatedNodeIds.has(item))));
       if (nodeId) element.setAttribute("data-has-finding", String(findingNodeIds.has(nodeId)));
-      if (groupId) element.setAttribute("data-has-finding", String((element.getAttribute("data-handler-ids") || "").split(",").some((item) => findingNodeIds.has(item))));
+      if (groupId) element.setAttribute("data-has-finding", String([
+        ...(element.getAttribute("data-handler-ids") || "").split(","),
+        ...(element.getAttribute("data-node-ids") || "").split(",")
+      ].some((item) => findingNodeIds.has(item))));
     });
     rendered.edgeElements.forEach((element) => {
       const edgeIds = (element.getAttribute("data-edge-ids") || element.getAttribute("data-edge-id") || "").split(",");
       element.setAttribute("data-selected", String(Boolean(selection && selection.kind === "edge" && edgeIds.includes(selection.id))));
       element.setAttribute("data-related", String(!selection || edgeIds.some((id) => relatedEdgeIds.has(id))));
+      element.setAttribute("data-has-finding", String(edgeIds.some((id) => findingEdgeIds.has(id))));
+    });
+    (rendered.edgeTrunkElements || []).forEach((element) => {
+      const edgeIds = (element.getAttribute("data-edge-ids") || "").split(",").filter(Boolean);
+      element.setAttribute("data-selected", String(Boolean(selection && selection.kind === "edge" && edgeIds.includes(selection.id))));
+      element.setAttribute("data-related", String(!selection || edgeIds.some((id) => relatedEdgeIds.has(id))));
+      element.setAttribute("data-has-finding", String(edgeIds.some((id) => findingEdgeIds.has(id))));
     });
     rendered.edgeLabelElements.forEach((element) => {
       const edgeId = element.getAttribute("data-edge-id");
@@ -1698,6 +2269,7 @@
       element.setAttribute("data-related", String(!selection || relatedEdgeIds.has(edgeId)));
       if (selected) element.setAttribute("data-visible", "true");
     });
+    applyGraphEmphasis(rendered, graph, selection, options.related);
     (rendered.guides || []).forEach((guide) => {
       if (guide.element) guide.element.setAttribute("data-related", String(guideRelated(options.layoutPlan, guide.endpointId, guide.handlerId, selection)));
     });
@@ -1755,12 +2327,14 @@
     handlerDisplay,
     shortHandlerSignature,
     controllerGroupDisplay,
+    securityGroupDisplay,
     securityDataDisplay,
     normalize,
     indexFindings,
     filter: filterGraph,
     render,
     updateState,
+    updateEmphasis: applyGraphEmphasis,
     nodeDisplay
   };
 })();

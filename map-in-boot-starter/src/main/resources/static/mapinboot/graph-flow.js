@@ -94,8 +94,9 @@
     }
 
     function filtersFor(sourceId, registrationKind) {
-      const relationships = (outgoingByNode.get(sourceId) || [])
-        .filter((edge) => edge.type === EDGE_TYPES.FILTERED_BY)
+      const memberships = (outgoingByNode.get(sourceId) || [])
+        .filter((edge) => edge.type === EDGE_TYPES.FILTERED_BY);
+      const relationships = memberships
         .map((edge) => ({ edge, node: nodeById.get(edge.targetId) }))
         .filter((item) => item.node && item.node.type === NODE_TYPES.FILTER
           && attributes(item.node).registrationKind === registrationKind
@@ -110,9 +111,12 @@
         orderStatus: "UNKNOWN"
       };
       const orderValues = items.map((item) => orderInfo[item.id]);
-      if (orderValues.some((item) => item.status === "MISMATCHED")) result.orderStatus = "UNKNOWN";
+      if (relationships.length === 0 || memberships.length !== relationships.length
+        || relationships.some((item) => text(item.edge.confidence) !== "CONFIRMED")) result.orderStatus = "UNKNOWN";
+      else if (orderValues.some((item) => item.status === "MISMATCHED")) result.orderStatus = "UNKNOWN";
       else if (orderValues.some((item) => item.status === "UNKNOWN")) result.orderStatus = "UNKNOWN";
-      else if (new Set(orderValues.map((item) => item.order)).size !== orderValues.length) result.orderStatus = "AMBIGUOUS";
+      else if (new Set(items.map((item) => item.id)).size !== items.length
+        || new Set(orderValues.map((item) => item.order)).size !== orderValues.length) result.orderStatus = "AMBIGUOUS";
       else result.orderStatus = "CONFIRMED";
       result.filters.sort((left, right) => {
         const leftOrder = orderInfo[left.id].order === null ? Number.POSITIVE_INFINITY : orderInfo[left.id].order;
