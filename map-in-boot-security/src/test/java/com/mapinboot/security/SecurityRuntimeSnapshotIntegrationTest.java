@@ -78,13 +78,14 @@ class SecurityRuntimeSnapshotIntegrationTest {
             assertTrue(analysis.relations().stream().anyMatch(relation -> relation.type() == EdgeType.SECURED_BY));
 
             SecurityGraph graph = new GraphBuilder().build("main", analysis);
-            assertEquals(2, graph.edges().size());
+            assertEquals(3, graph.edges().size());
+            assertEquals(1, graph.edges().stream().filter(edge -> edge.type() == EdgeType.FLOWS_TO).count());
             assertTrue(graph.edges().get(0).sourceId() != null);
             assertTrue(graph.edges().get(0).targetId() != null);
 
-            Snapshot snapshot = new SnapshotAssembler(List.of(ruleEngine), "1")
-                    .assemble(analysis, "main", "instance", "test");
-            assertEquals(2, snapshot.edges().size());
+            Snapshot snapshot = new SnapshotAssembler(List.of(ruleEngine))
+                    .assemble(analysis, "main", "instance", "test", com.mapinboot.core.snapshot.runtime.RuntimeArchitectureAssembler.unknown());
+            assertEquals(3, snapshot.edges().size());
             assertTrue(snapshot.findings().isEmpty());
             assertTrue(snapshot.analysisStatus().containsKey(analyzer.id()));
             assertEvidenceReferences(collection, analysis, snapshot);
@@ -158,10 +159,10 @@ class SecurityRuntimeSnapshotIntegrationTest {
                     diagnostic.summary().contains("Relation ID 충돌")));
 
             SecurityGraph graph = new GraphBuilder().build("main", analysis);
-            assertEquals(3, graph.edges().size());
-            Snapshot snapshot = new SnapshotAssembler(List.of(), "1")
-                    .assemble(analysis, "main", "instance", "test");
-            assertEquals(3, snapshot.edges().size());
+            assertEquals(5, graph.edges().size());
+            Snapshot snapshot = new SnapshotAssembler(List.of())
+                    .assemble(analysis, "main", "instance", "test", com.mapinboot.core.snapshot.runtime.RuntimeArchitectureAssembler.unknown());
+            assertEquals(5, snapshot.edges().size());
             assertEvidenceReferences(collection, analysis, snapshot);
         }
     }
@@ -180,9 +181,11 @@ class SecurityRuntimeSnapshotIntegrationTest {
             assertEquals(AnalysisStatus.PARTIAL, analysis.statusByAdapter().get(analyzer.id()));
             assertTrue(analysis.relations().isEmpty());
 
-            Snapshot snapshot = new SnapshotAssembler(List.of(), "1")
-                    .assemble(analysis, "main", "instance", "test");
-            assertTrue(snapshot.edges().isEmpty());
+            Snapshot snapshot = new SnapshotAssembler(List.of())
+                    .assemble(analysis, "main", "instance", "test", com.mapinboot.core.snapshot.runtime.RuntimeArchitectureAssembler.unknown());
+            assertEquals(1, snapshot.edges().stream().filter(edge -> edge.type() == EdgeType.FLOWS_TO).count());
+            assertTrue(snapshot.edges().stream().noneMatch(edge -> edge.type() == EdgeType.MATCHED_BY
+                    || edge.type() == EdgeType.SECURED_BY));
             assertEquals(AnalysisStatus.PARTIAL, snapshot.analysisStatus().get(analyzer.id()));
         }
     }
@@ -240,8 +243,8 @@ class SecurityRuntimeSnapshotIntegrationTest {
             CollectionReport collection = collect(context, chainCollector);
             AnalysisReport analysis = new AnalysisProvider().execute(
                     new AnalysisContext(collection, "main"), List.of(analyzer));
-            Snapshot snapshot = new SnapshotAssembler(List.of(ruleEngine), "1")
-                    .assemble(analysis, "main", "instance", "test");
+            Snapshot snapshot = new SnapshotAssembler(List.of(ruleEngine))
+                    .assemble(analysis, "main", "instance", "test", com.mapinboot.core.snapshot.runtime.RuntimeArchitectureAssembler.unknown());
 
             assertEquals(1, context.getBeansOfType(com.mapinboot.core.finding.FindingEvaluator.class).size());
             assertEquals(1, snapshot.findings().size());
@@ -261,8 +264,8 @@ class SecurityRuntimeSnapshotIntegrationTest {
             CollectionReport collection = collect(context, chainCollector);
             AnalysisReport analysis = new AnalysisProvider().execute(
                     new AnalysisContext(collection, "main"), List.of(analyzer));
-            Snapshot snapshot = new SnapshotAssembler(List.of(ruleEngine), "1")
-                    .assemble(analysis, "main", "instance", "test");
+            Snapshot snapshot = new SnapshotAssembler(List.of(ruleEngine))
+                    .assemble(analysis, "main", "instance", "test", com.mapinboot.core.snapshot.runtime.RuntimeArchitectureAssembler.unknown());
 
             assertEquals(1, context.getBeansOfType(com.mapinboot.core.finding.FindingEvaluator.class).size());
             assertTrue(snapshot.findings().isEmpty());

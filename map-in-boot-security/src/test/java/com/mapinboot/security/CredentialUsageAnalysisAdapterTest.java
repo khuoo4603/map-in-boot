@@ -285,16 +285,17 @@ class CredentialUsageAnalysisAdapterTest {
         AnalysisReport report = execute(List.of(endpoint, jwtRead));
 
         SecurityGraph graph = new GraphBuilder().build("credential", report);
-        assertEquals(1, graph.edges().size());
-        assertEquals(EdgeType.READS_SECURITY_DATA, graph.edges().get(0).type());
-        assertEquals(Confidence.CONFIRMED, graph.edges().get(0).confidence());
+        assertEquals(2, graph.edges().size());
+        assertTrue(graph.edges().stream().anyMatch(edge -> edge.type() == EdgeType.READS_SECURITY_DATA
+                && edge.confidence() == Confidence.CONFIRMED));
+        assertTrue(graph.edges().stream().anyMatch(edge -> edge.type() == EdgeType.FLOWS_TO));
 
         AnalysisReport reordered = execute(List.of(jwtRead, endpoint));
         assertEquals(report.relations().get(0).id(), reordered.relations().get(0).id());
 
-        Snapshot snapshot = new SnapshotAssembler(List.of(), "1")
-                .assemble(report, "credential", "instance", "test");
-        assertEquals(1, snapshot.edges().size());
+        Snapshot snapshot = new SnapshotAssembler(List.of())
+                .assemble(report, "credential", "instance", "test", com.mapinboot.core.snapshot.runtime.RuntimeArchitectureAssembler.unknown());
+        assertEquals(2, snapshot.edges().size());
         assertTrue(snapshot.edges().get(0).evidenceIds().stream()
                 .allMatch(id -> snapshot.evidence().stream().anyMatch(evidence -> evidence.id().equals(id))));
     }

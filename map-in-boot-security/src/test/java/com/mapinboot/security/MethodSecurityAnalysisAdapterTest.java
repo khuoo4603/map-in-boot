@@ -238,8 +238,9 @@ class MethodSecurityAnalysisAdapterTest {
         AnalysisReport report = execute(List.of(endpoint, method), AnalysisStatus.READY, AnalysisStatus.READY);
         SecurityGraph graph = new GraphBuilder().build("account", report);
 
-        assertEquals(1, graph.edges().size());
+        assertEquals(2, graph.edges().size());
         assertTrue(graph.edges().stream().anyMatch(edge -> edge.type() == EdgeType.SECURED_BY));
+        assertTrue(graph.edges().stream().anyMatch(edge -> edge.type() == EdgeType.FLOWS_TO));
         assertTrue(graph.edges().stream().allMatch(edge -> edge.evidenceIds().stream()
                 .allMatch(id -> report.evidence().stream().anyMatch(evidence -> evidence.id().equals(id)))));
     }
