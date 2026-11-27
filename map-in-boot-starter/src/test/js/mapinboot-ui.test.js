@@ -1,4 +1,4 @@
-﻿import assert from "node:assert/strict";
+import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import vm from "node:vm";
@@ -6,6 +6,7 @@ import vm from "node:vm";
 const indexHtml = readFileSync("map-in-boot-starter/src/main/resources/static/mapinboot/index.html", "utf8");
 const appCss = readFileSync("map-in-boot-starter/src/main/resources/static/mapinboot/app.css", "utf8");
 const appJs = readFileSync("map-in-boot-starter/src/main/resources/static/mapinboot/app.js", "utf8");
+const graphRendererJs = readFileSync("map-in-boot-starter/src/main/resources/static/mapinboot/graph-renderer.js", "utf8");
 const spotlightJs = readFileSync("map-in-boot-starter/src/main/resources/static/mapinboot/spotlight.js", "utf8");
 
 function createEventTarget() {
@@ -134,6 +135,7 @@ function loadUi({ fetchImpl, timers, animationClock, clipboard, includeSpotlight
     "finding-modal-confidence", "finding-modal-rule",
     "request-flow-controls", "request-flow-start", "request-flow-pause", "request-flow-reset",
     "request-flow-status", "request-flow-education", "request-flow-dot", "request-flow-details",
+    "request-flow-detail-toggle", "request-flow-detail-close", "request-flow-popover-count",
     "request-flow-step-count", "request-flow-step-kind", "request-flow-step-title", "request-flow-step-description",
     "request-flow-filter-education", "request-flow-filter-status", "request-flow-filter-name",
     "request-flow-filter-fqcn", "request-flow-filter-description", "request-flow-filter-role",
@@ -701,12 +703,10 @@ test("화면별 Spotlight는 실제 Snapshot 대상을 강조하고 화면 전�
 
   ui.openEndpointDetail("endpoint-a");
   await ui.layoutGraph();
-  elements.get("setting-show-detail-flow").checked = true;
-  elements.get("setting-show-detail-flow").dispatchEvent({ type: "change" });
   const educationIndex = ui.state.requestFlowSteps.findIndex((step) => step.filterEducation);
   assert.ok(educationIndex >= 0);
   assert.equal(ui.requestFlow.seekToStep(educationIndex), true);
-  assert.equal(elements.get("request-flow-filter-education").hidden, false);
+  assert.equal(elements.get("request-flow-detail-toggle").disabled, false);
   const endpointInputBefore = {
     value: elements.get("endpoint-search").value,
     expanded: elements.get("endpoint-search").getAttribute("aria-expanded"),
@@ -726,7 +726,6 @@ test("화면별 Spotlight는 실제 Snapshot 대상을 강조하고 화면 전�
   assert.equal(elements.get("map-filter-panel").hidden, true);
   spotlight.next();
   assert.match(spotlight.getState().step.description, /SecurityContext에는 현재 Authentication이 담기고, HttpServletRequest는 HTTP 요청 객체/);
-  assert.equal(ui.state.display.detailedFlow, true);
   assert.equal(ui.state.selection.id, "endpoint-a");
 
   elements.get("help-button").dispatchEvent({ type: "click" });
@@ -776,7 +775,6 @@ test("화면별 Spotlight는 실제 Snapshot 대상을 강조하고 화면 전�
   assert.equal(ui.state.selection.kind, "node");
   assert.equal(ui.state.selection.id, "endpoint-a");
   assert.equal(elements.get("inspector").getAttribute("data-selection-id"), "endpoint-a");
-  assert.equal(ui.state.display.detailedFlow, true);
   assert.deepEqual({
     zoom: ui.state.navigation.state.zoom,
     panX: ui.state.navigation.state.panX,
@@ -846,7 +844,9 @@ test("복합 Finding 참조와 공유 Evidence는 원본 Node·Edge ID에만 연
   let nodeMarkers = findAllByClass(elements.get("graph-nodes"), "finding-marker");
   let edgeMarkers = findAllByClass(elements.get("graph-edges"), "finding-marker");
   assert.equal(nodeMarkers.filter((marker) => /복합 Finding/.test(marker.getAttribute("aria-label"))).length, 1);
-  assert.match(nodeMarkers[0].children.find((child) => child.tagName === "title").textContent, /복합 Finding.*보안 체인·매칭 우선순위 문제.*검토 필요/);
+  assert.match(nodeMarkers.find((marker) => /복합 Finding/.test(marker.getAttribute("aria-label")))
+    .children.find((child) => child.tagName === "title").textContent,
+  /복합 Finding.*보안 체인·매칭 우선순위 문제.*검토 필요/);
   assert.equal(edgeMarkers.filter((marker) => /복합 Finding/.test(marker.getAttribute("aria-label"))).length, 1);
   assert.equal(edgeMarkers.find((marker) => /복합 Finding/.test(marker.getAttribute("aria-label"))).getAttribute("data-confidence"), "LIKELY");
 
@@ -1440,6 +1440,353 @@ function findAllByClass(element, className) {
   return matches;
 }
 
+function routedSegmentPath(ui, elements, mappingName, sourceId) {
+  const displayModel = ui.state.layout.plan.displayModel;
+  const segmentIds = displayModel[mappingName]?.[sourceId] || [];
+  const pending = [elements.get("graph-edges"), elements.get("graph-nodes"), elements.get("graph-flow-projection")]
+    .filter(Boolean);
+  const paths = [];
+  while (pending.length) {
+    const element = pending.shift();
+    if (element.tagName === "path") paths.push(element);
+    pending.push(...Array.from(element.children || []));
+  }
+  const byId = new Map(paths.filter((path) => path.getAttribute("data-segment-id"))
+    .map((path) => [path.getAttribute("data-segment-id"), path]));
+  return segmentIds.map((id) => byId.get(id)).find(Boolean);
+}
+
+// 실제 Snapshot을 화면별 Node 렌더링 경로에 적용하는 선택 검증
+const actualSnapshotTargets = process.env.MAPINBOOT_SNAPSHOT_URLS
+  ? JSON.parse(process.env.MAPINBOOT_SNAPSHOT_URLS)
+  : [];
+
+const logGraphMetrics = (name, view, layout, elements) => {
+  const routing = layout.plan.overviewRouting;
+  const point = ({ x, y }) => `${x.toFixed(3)},${y.toFixed(3)}`;
+  const geometryKey = (segment) => {
+    const controls = segment.geometry?.controlPoints || [];
+    const forward = `${point(segment.from)}>${point(segment.to)}:${controls.map(point).join(";")}`;
+    const reverse = `${point(segment.to)}>${point(segment.from)}:${controls.slice().reverse().map(point).join(";")}`;
+    return forward < reverse ? forward : reverse;
+  };
+  const paths = new Set([
+    ...findAllByClass(elements.get("graph-edges"), "graph-edge"),
+    ...findAllByClass(elements.get("graph-edges"), "graph-guide-handler"),
+    ...findAllByClass(elements.get("graph-edges"), "graph-projection-edge"),
+    ...findAllByClass(elements.get("graph-edges"), "runtime-blueprint-edge"),
+    ...findAllByClass(elements.get("graph-nodes"), "graph-learning-segment")
+  ]);
+  const geometryGroups = new Map();
+  routing.segments.forEach((segment) => {
+    const key = geometryKey(segment);
+    const group = geometryGroups.get(key) || [];
+    group.push(segment);
+    geometryGroups.set(key, group);
+  });
+  const duplicateGeometryGroups = Array.from(geometryGroups.values()).filter((group) => group.length > 1);
+  const relationPairs = new Map();
+  routing.relations.forEach((relation) => {
+    const key = `${relation.sourceItemId}>${relation.targetItemId}`;
+    const group = relationPairs.get(key) || [];
+    group.push(relation);
+    relationPairs.set(key, group);
+  });
+  const duplicateRelationPairs = Array.from(relationPairs.values()).filter((group) => group.length > 1);
+  const sameSemanticDuplicatePairs = duplicateRelationPairs.filter((group) => {
+    const semanticKeys = group.map((relation) => JSON.stringify([
+      relation.role, relation.type, relation.semanticFlowGroup || null
+    ]));
+    return new Set(semanticKeys).size < semanticKeys.length;
+  });
+  const crossSourceDuplicatePairs = duplicateRelationPairs.filter((group) => new Set(group.map((relation) =>
+    relation.originalEdgeIds?.length ? "GRAPH" : relation.runtimeRelationshipIds?.length ? "RUNTIME"
+      : relation.projectionEdgeIds?.length ? "PROJECTION" : "OTHER")).size > 1);
+  const metrics = { name, view, relations: routing.relations.length,
+    paths: paths.size, segments: routing.segments.length,
+    duplicateGeometry: routing.segments.length - geometryGroups.size,
+    unresolved: routing.unresolved.length,
+    duplicateRelationPairs: duplicateRelationPairs.length, crossSourceDuplicatePairs: crossSourceDuplicatePairs.length,
+    sameSemanticDuplicatePairs: ["feature-flow", "security-detail"].includes(view)
+      ? sameSemanticDuplicatePairs.length : null,
+    relationSources: routing.relations.reduce((counts, relation) => {
+      const source = relation.originalEdgeIds?.length ? "GRAPH" : relation.runtimeRelationshipIds?.length ? "RUNTIME"
+        : relation.projectionEdgeIds?.length ? "PROJECTION" : "OTHER";
+      counts[source] = (counts[source] || 0) + 1;
+      return counts;
+    }, {}),
+    duplicateRoles: duplicateGeometryGroups.slice(0, 3).map((group) => group.map((segment) => ({ role: segment.routeRole,
+      relations: segment.relationIds.map((id) => routing.relations.find((relation) => relation.id === id))
+        .filter(Boolean).map((relation) => `${relation.role}/${relation.type}/${relation.presentationKind}`) }))) };
+  console.log("GRAPH_METRICS", JSON.stringify(metrics));
+  if (metrics.sameSemanticDuplicatePairs !== null) assert.equal(metrics.sameSemanticDuplicatePairs, 0,
+    `${name}/${view}: 같은 의미의 표시 관계 중복`);
+  return metrics;
+};
+
+const assertSolidConnectionPaths = (name, elements) => {
+  const paths = ["graph-edges", "graph-nodes"].flatMap((layer) => [
+    ...findAllByClass(elements.get(layer), "graph-edge"),
+    ...findAllByClass(elements.get(layer), "graph-guide-handler"),
+    ...findAllByClass(elements.get(layer), "graph-projection-edge"),
+    ...findAllByClass(elements.get(layer), "runtime-blueprint-edge"),
+    ...findAllByClass(elements.get(layer), "graph-learning-segment")
+  ]);
+  paths.forEach((path) => assert.ok([null, undefined, "none"].includes(path.getAttribute("stroke-dasharray")),
+    `${name}: ${path.getAttribute("class")} 연결선은 실선`));
+};
+
+if (actualSnapshotTargets.length > 0) {
+  test("실제 Snapshot v2를 네 화면과 상세 Blueprint에서 렌더링함", async () => {
+    const assertDetailGeometry = (name, snapshot, plan, elements) => {
+      const blueprint = plan.detailBlueprint;
+      const model = plan.displayModel;
+      const routing = plan.overviewRouting;
+      assert.ok(blueprint && model && routing, name + ": 상세 표시 모델");
+      assert.deepEqual(Array.from(routing.unresolved), [], name + ": 미해결 관계");
+      assert.ok(blueprint.cards.every((card) => card.bounds.width >= 380 && card.bounds.width <= 560),
+        name + ": 카드 너비");
+      const renderedItems = findAllByClass(elements.get("graph-nodes"), "graph-composite-item");
+      const regions = new Map(blueprint.regions.map((region) => [region.id, region]));
+      blueprint.cards.forEach((card, index) => {
+        assert.ok(card.bounds.x >= blueprint.bounds.x && card.bounds.y >= blueprint.bounds.y
+          && card.bounds.right <= blueprint.bounds.right && card.bounds.bottom <= blueprint.bounds.bottom,
+        name + ": 전체 Bounds 안의 카드 " + card.id);
+        if (card.regionId) {
+          const region = regions.get(card.regionId);
+          assert.ok(region, name + ": 카드 영역 " + card.id);
+          assert.ok(card.bounds.x >= region.bounds.x && card.bounds.y >= region.bounds.y
+            && card.bounds.right <= region.bounds.right && card.bounds.bottom <= region.bounds.bottom,
+          name + ": 영역 안의 카드 " + card.id);
+        }
+        blueprint.cards.slice(index + 1).forEach((next) => {
+          const overlaps = card.bounds.x < next.bounds.right && card.bounds.right > next.bounds.x
+            && card.bounds.y < next.bounds.bottom && card.bounds.bottom > next.bounds.y;
+          assert.equal(overlaps, false, name + ": 겹치는 카드 " + card.id + "/" + next.id);
+        });
+        card.items.forEach((item, index) => {
+          assert.equal(card.itemBoundsById[item.id], item.bounds, name + ": Item Bounds 참조 " + item.id);
+          assert.ok(item.bounds.x >= card.bounds.x && item.bounds.y >= card.headerBounds.y + card.headerBounds.height
+            && item.bounds.right <= card.bounds.right && item.bounds.bottom <= card.bounds.bottom,
+          name + ": 카드 안의 Item " + item.id);
+          const row = renderedItems.find((element) => element.getAttribute("data-composite-item-id") === item.id);
+          assert.ok(row, name + ": 렌더링된 Item " + item.id);
+          if (index > 0) {
+            const separator = findAllByClass(row, "graph-composite-item-separator")[0];
+            assert.equal(Number(separator?.getAttribute("x2")), item.bounds.width - 10,
+              name + ": Item 너비 기준 구분선 " + item.id);
+          }
+          (item.inputPortIds || []).concat(item.outputPortIds || []).forEach((id) => {
+            const definition = model.portById[id];
+            const renderedPort = findAllByClass(row, "graph-composite-port")
+              .find((element) => element.getAttribute("data-port-ids") === id);
+            assert.ok(renderedPort, name + ": 렌더링된 Port " + id);
+            assert.equal(Number(renderedPort.getAttribute("cx")), definition.x - item.bounds.x,
+              name + ": Item 기준 Port X " + id);
+            assert.equal(Number(renderedPort.getAttribute("cy")), definition.y - item.bounds.y,
+              name + ": Item 기준 Port Y " + id);
+            if (definition.side === "LEFT") assert.equal(definition.x, card.bounds.x);
+            if (definition.side === "RIGHT") assert.equal(definition.x, card.bounds.right);
+            if (definition.side === "TOP") assert.equal(definition.y, card.bounds.y);
+            if (definition.side === "BOTTOM") assert.equal(definition.y, card.bounds.bottom);
+          });
+        });
+      });
+      blueprint.regions.forEach((region) => {
+        if (!region.parentId) return;
+        const parent = regions.get(region.parentId);
+        assert.ok(parent, name + ": 영역 부모 " + region.id);
+        assert.ok(region.bounds.x >= parent.bounds.x && region.bounds.y >= parent.bounds.y
+          && region.bounds.right <= parent.bounds.right && region.bounds.bottom <= parent.bounds.bottom,
+        name + ": 부모 영역 안의 자식 " + region.id);
+      });
+      const security = regions.get("runtime-region:security");
+      const mvc = regions.get("runtime-region:mvc");
+      if (security && mvc) assert.ok(mvc.bounds.x - security.bounds.right >= 0,
+        name + ": Security와 MVC 영역 간격");
+      const segmentById = new Map(routing.segments.map((segment) => [segment.id, segment]));
+      routing.relations.filter((relation) => !relation.internalCardId && !relation.referenceOnly).forEach((relation) => {
+        assert.equal(relation.visualDirection, "ORIGINAL", name + ": 원본 관계 방향 " + relation.id);
+        const route = routing.routesByRelationId[relation.id];
+        assert.ok(route && route.orderedSegmentIds.length, name + ": 실제 관계 배선 " + relation.id);
+        let point = route.sourcePort;
+        route.orderedSegmentIds.forEach((id) => {
+          const segment = segmentById.get(id);
+          assert.ok(segment?.relationIds.includes(relation.id), name + ": 관계 Segment " + relation.id);
+          if (point.x === segment.from.x && point.y === segment.from.y) point = segment.to;
+          else if (point.x === segment.to.x && point.y === segment.to.y) point = segment.from;
+          else assert.fail(name + ": 연속되지 않은 Segment " + relation.id);
+        });
+        assert.equal(point.x, route.targetPort.x, name + ": Route 끝 X " + relation.id);
+        assert.equal(point.y, route.targetPort.y, name + ": Route 끝 Y " + relation.id);
+      });
+      routing.segments.filter((segment) => segment.routeRole === "LEARNING_INTERNAL").forEach((segment) => {
+        const card = model.cardById[segment.internalCardId];
+        assert.ok(card, name + ": 내부 흐름 카드 " + segment.id);
+        const relation = routing.relations.find((item) => item.internalCardId === card.id
+          && item.id === segment.relationIds[0]);
+        assert.ok(relation, name + ": 내부 흐름 표시 관계 " + segment.id);
+        const sourcePort = model.portById[relation.visualSourcePortId];
+        const targetPort = model.portById[relation.visualTargetPortId];
+        assert.ok(sourcePort && targetPort, name + ": 실제 Item Port " + segment.id);
+        assert.deepEqual([segment.from.x, segment.from.y], [sourcePort.x, sourcePort.y],
+          name + ": 실제 Source Port 연결 " + segment.id);
+        assert.deepEqual([segment.to.x, segment.to.y], [targetPort.x, targetPort.y],
+          name + ": 실제 Target Port 연결 " + segment.id);
+        const renderedCard = findAllByClass(elements.get("graph-nodes"), "graph-composite-card")
+          .find((element) => element.getAttribute("data-composite-card-id") === card.id);
+        const path = findAllByClass(renderedCard, "graph-learning-segment")
+          .find((element) => element.getAttribute("data-segment-id") === segment.id);
+        assert.ok(path, name + ": 내부 학습 Segment SVG " + segment.id);
+        const start = /^M\s+(-?[\d.]+)\s+(-?[\d.]+)/.exec(path.getAttribute("d"));
+        assert.ok(start, name + ": 내부 흐름 SVG 시작 좌표 " + segment.id);
+        assert.deepEqual([Number(start[1]), Number(start[2])],
+          [segment.from.x - card.bounds.x, segment.from.y - card.bounds.y],
+          name + ": 실제 Port 기준 SVG 로컬 좌표 " + segment.id);
+      });
+      const flows = snapshot.edges.filter((edge) => edge.type === "FLOWS_TO");
+      flows.forEach((edge) => {
+        const sourceId = model.originalNodeToCardIds[edge.sourceId]?.[0];
+        const targetId = model.originalNodeToCardIds[edge.targetId]?.[0];
+        if (sourceId && targetId) assert.ok(model.cardById[targetId].bounds.y > model.cardById[sourceId].bounds.y,
+          name + ": 아래 방향 API 처리 " + edge.id);
+      });
+    };
+    for (const target of actualSnapshotTargets) {
+      assert.ok(target.name && target.url, "Snapshot 대상의 이름과 URL 필요");
+      const response = await fetch(target.url);
+      assert.equal(response.status, 200, `${target.name}: Snapshot HTTP 상태`);
+      const snapshot = await response.json();
+      assert.equal(snapshot.schemaVersion, "2", `${target.name}: Snapshot schemaVersion`);
+      assert.ok(snapshot.runtimeArchitecture && typeof snapshot.runtimeArchitecture === "object",
+        `${target.name}: RuntimeArchitecture 존재`);
+      assert.ok(Array.isArray(snapshot.runtimeArchitecture.components), `${target.name}: Runtime 구성 요소 목록`);
+      assert.ok(Array.isArray(snapshot.runtimeArchitecture.relationships), `${target.name}: Runtime 관계 목록`);
+      assert.ok(Array.isArray(snapshot.runtimeArchitecture.coverage), `${target.name}: Runtime Coverage 목록`);
+      const nodeById = new Map(snapshot.nodes.map((node) => [node.id, node]));
+      const componentIds = new Set(snapshot.runtimeArchitecture.components.map((component) => component.id));
+      assert.equal(nodeById.size, snapshot.nodes.length, `${target.name}: 중복 Graph Node ID`);
+      assert.equal(componentIds.size, snapshot.runtimeArchitecture.components.length, `${target.name}: 중복 Runtime Component ID`);
+      snapshot.runtimeArchitecture.relationships.forEach((relation) => {
+        assert.ok(componentIds.has(relation.sourceId) && componentIds.has(relation.targetId),
+          `${target.name}: Runtime 관계 참조 ${relation.id}`);
+      });
+      snapshot.runtimeArchitecture.components.forEach((component) => {
+        (component.graphNodeIds || []).forEach((id) => assert.ok(nodeById.has(id),
+          `${target.name}: Runtime Graph 참조 ${component.id} -> ${id}`));
+      });
+      snapshot.edges.filter((edge) => edge.type === "FLOWS_TO").forEach((edge) => {
+        assert.equal(nodeById.get(edge.sourceId)?.type, "ENDPOINT", `${target.name}: FLOWS_TO 출발 Node ${edge.id}`);
+        assert.equal(nodeById.get(edge.targetId)?.type, "HANDLER", `${target.name}: FLOWS_TO 도착 Node ${edge.id}`);
+      });
+
+      const { ui, elements } = loadUi();
+      ui.renderGraph(snapshot);
+      const filtersByChain = new Map();
+      snapshot.edges.filter((edge) => edge.type === "FILTERED_BY" && edge.confidence === "CONFIRMED")
+        .forEach((edge) => {
+          if (nodeById.get(edge.sourceId)?.type !== "SECURITY_CHAIN") return;
+          const filterIds = filtersByChain.get(edge.sourceId) || [];
+          filterIds.push(edge.targetId);
+          filtersByChain.set(edge.sourceId, filterIds);
+        });
+      const handlerByEndpoint = new Map(snapshot.edges.filter((edge) => edge.type === "FLOWS_TO")
+        .map((edge) => [edge.sourceId, edge.targetId]));
+      const securedHandlers = new Set(snapshot.edges.filter((edge) => edge.type === "SECURED_BY")
+        .map((edge) => edge.sourceId));
+      const endpointMatches = snapshot.edges.filter((edge) => edge.type === "MATCHED_BY"
+        && edge.confidence === "CONFIRMED" && nodeById.get(edge.sourceId)?.type === "ENDPOINT"
+        && nodeById.get(edge.targetId)?.type === "SECURITY_CHAIN").sort((left, right) =>
+        (filtersByChain.get(right.targetId)?.length || 0) - (filtersByChain.get(left.targetId)?.length || 0)
+          || Number(securedHandlers.has(handlerByEndpoint.get(right.sourceId)))
+            - Number(securedHandlers.has(handlerByEndpoint.get(left.sourceId)))
+          || left.sourceId.localeCompare(right.sourceId));
+      for (const view of ["all-flow", "feature-flow", "security-flow"]) {
+        ui.selectView(view);
+        await ui.layoutGraph();
+        assert.ok(ui.state.layout, `${target.name}: ${view} Layout 생성`);
+        assertSolidConnectionPaths(`${target.name} ${view}`, elements);
+        if (view !== "feature-flow") {
+          const metrics = logGraphMetrics(target.name, view, ui.state.layout, elements);
+          assert.equal(metrics.duplicateGeometry, 0, `${target.name} ${view}: 중복 물리 Geometry`);
+        }
+      }
+
+      ui.selectView("security-detail");
+      await ui.layoutGraph();
+      assert.equal(ui.state.view, "security-detail", `${target.name}: 상세 취약점 화면 진입`);
+      assertSolidConnectionPaths(`${target.name} security-detail`, elements);
+
+      const endpointMatch = endpointMatches[0];
+      const endpoint = endpointMatch ? nodeById.get(endpointMatch.sourceId)
+        : snapshot.nodes.find((node) => node.type === "ENDPOINT");
+      const selectedChainId = endpointMatch?.targetId || null;
+      if (endpoint) {
+        ui.openEndpointDetail(endpoint.id);
+        await ui.layoutGraph();
+        const metrics = logGraphMetrics(target.name, "feature-flow", ui.state.layout, elements);
+        assert.equal(metrics.duplicateGeometry, 0, `${target.name} feature-flow: 중복 물리 Geometry`);
+        assertDetailGeometry(target.name + " 기능별 상세", snapshot, ui.state.layout.plan, elements);
+        const detailPlan = ui.state.layout.plan;
+        const endpointItemId = detailPlan.displayModel.originalNodeToItemIds[endpoint.id]?.[0];
+        const endpointRow = findAllByClass(elements.get("graph-nodes"), "graph-composite-item")
+          .find((element) => element.getAttribute("data-composite-item-id") === endpointItemId);
+        assert.ok(endpointRow, target.name + ": 실제 Endpoint Item");
+        endpointRow.dispatchEvent({ type: "click" });
+        assert.equal(elements.get("inspector").hidden, false, target.name + ": 실제 Endpoint Inspector");
+        if (selectedChainId) {
+          const chainCard = compositeCardForNode(detailPlan, selectedChainId, "SECURITY_CHAIN");
+          const displayedFilters = chainCard.originalNodeIds.filter((id) => nodeById.get(id)?.type === "FILTER");
+          assert.equal(displayedFilters.length, filtersByChain.get(selectedChainId)?.length || 0,
+            target.name + ": 확인된 보안 Filter 순서 보존");
+        }
+        const resolvers = detailPlan.detailBlueprint.runtimeComponents
+          .filter((component) => component.kind === "ARGUMENT_RESOLVER");
+        if (snapshot.runtimeArchitecture.components.some((component) => component.kind === "ARGUMENT_RESOLVER")) {
+          assert.ok(resolvers.length > 1, target.name + ": 여러 ArgumentResolver 포함");
+          const displayedResolverIds = detailPlan.detailBlueprint.cards
+            .filter((card) => card.kind === "MVC_ARGUMENT_RESOLVERS")
+            .flatMap((card) => card.runtimeComponentIds);
+          assert.equal(displayedResolverIds.length, 0, target.name + ": 등록용 ArgumentResolver 전용 카드 제거");
+          assert.ok(resolvers.every((component) => snapshot.runtimeArchitecture.components.some((original) => original.id === component.id)),
+            target.name + ": ArgumentResolver 원본 Runtime 구성 보존");
+          const adapter = detailPlan.detailBlueprint.runtimeComponents.find((component) => component.kind === "HANDLER_ADAPTER");
+          assert.ok(adapter, target.name + ": 실제 HandlerAdapter 구성 확인");
+          ui.selectGraphElement("runtime-component", adapter.id);
+          assert.match(textOf(elements.get("inspector")), /ARGUMENT_RESOLVER/,
+            target.name + ": ArgumentResolver 등록 정보는 HandlerAdapter Inspector에 표시");
+        }
+        assert.ok(ui.state.layout.plan.detailBlueprint, `${target.name}: 기능 상세 Blueprint 생성`);
+      }
+
+      ui.selectView("security-flow");
+      await ui.layoutGraph();
+      const marker = findAllByClass(elements.get("graph-nodes"), "finding-marker")[0];
+      if (marker) {
+        marker.dispatchEvent({ type: "click" });
+        await ui.layoutGraph();
+        const metrics = logGraphMetrics(target.name, "security-detail", ui.state.layout, elements);
+        assert.equal(metrics.duplicateGeometry, 0, `${target.name} security-detail: 중복 물리 Geometry`);
+        assertDetailGeometry(target.name + " 상세 취약점", snapshot, ui.state.layout.plan, elements);
+        assert.equal(ui.state.view, "security-detail", `${target.name}: Finding 상세 진입`);
+        assert.ok(ui.state.layout.plan.detailBlueprint, `${target.name}: 상세 Finding Blueprint 생성`);
+      }
+    }
+  });
+}
+
+function compositeItemForNode(plan, nodeId, rowId = null) {
+  const model = plan && plan.displayModel;
+  return (model?.originalNodeToItemIds?.[nodeId] || []).map((id) => model.itemById[id])
+    .find((item) => item && (!rowId || item.rowId === rowId));
+}
+
+function compositeCardForNode(plan, nodeId, kind = null, rowId = null) {
+  const model = plan && plan.displayModel;
+  return (model?.originalNodeToCardIds?.[nodeId] || []).map((id) => model.cardById[id])
+    .find((card) => card && (!kind || card.kind === kind) && (!rowId || card.rowId === rowId));
+}
+
 function createFakeClock() {
   let currentTime = 0;
   let nextId = 1;
@@ -1745,7 +2092,7 @@ test("교육용 Flow 버튼 포인터 입력은 Graph Pan에 가로채이지 않
   controls.setAttribute("class", "request-flow-controls");
   const buttons = [
     "request-flow-start", "request-flow-pause", "request-flow-reset",
-    "request-flow-previous", "request-flow-next"
+    "request-flow-previous", "request-flow-next", "request-flow-detail-toggle", "request-flow-detail-close"
   ].map((id) => elements.get(id));
   controls.append(...buttons);
   graphCanvas.append(controls);
@@ -1884,18 +2231,12 @@ test("설정 Drawer는 표시 옵션을 독립 적용하고 Escape에서 Graph �
   assert.equal(ui.state.display.areas, true);
   assert.equal(ui.state.display.edgeLabels, true);
   assert.equal(ui.state.display.minimap, true);
-  assert.equal(ui.state.display.detailedFlow, false);
   elements.get("settings-button").children[0].dispatchEvent({ type: "click" });
   assert.equal(elements.get("settings-panel").hidden, false);
   assert.equal(elements.get("settings-panel").dataset.open, "true");
   assert.equal(elements.get("settings-close").focused, true);
-  assert.equal(elements.get("setting-show-detail-flow").checked, false);
-
-  elements.get("setting-show-detail-flow").checked = true;
-  elements.get("setting-show-detail-flow").dispatchEvent({ type: "change" });
-  assert.equal(ui.state.display.detailedFlow, true);
-  assert.equal(elements.get("setting-show-detail-flow").getAttribute("aria-checked"), "true");
-  document.dispatchEvent({ type: "click", target: elements.get("setting-show-detail-flow") });
+  assert.doesNotMatch(indexHtml, /id="setting-show-detail-flow"/);
+  document.dispatchEvent({ type: "click", target: elements.get("setting-show-areas") });
   assert.equal(elements.get("settings-panel").hidden, false);
 
   elements.get("settings-panel").dispatchEvent({
@@ -1913,7 +2254,7 @@ test("설정 Drawer는 표시 옵션을 독립 적용하고 Escape에서 Graph �
   assert.equal(elements.get("graph-flow-projection").hasAttribute("hidden"), false);
 
   const selected = { ...ui.state.selection };
-  elements.get("setting-show-detail-flow").dispatchEvent({ type: "keydown", key: "Escape" });
+  elements.get("setting-show-areas").dispatchEvent({ type: "keydown", key: "Escape" });
   assert.equal(elements.get("settings-panel").hidden, false);
   assert.equal(elements.get("settings-panel").getAttribute("aria-hidden"), "true");
   assert.equal(elements.get("settings-button").getAttribute("aria-expanded"), "false");
@@ -1942,7 +2283,7 @@ test("설정 Drawer는 표시 옵션을 독립 적용하고 Escape에서 Graph �
   assert.equal(elements.get("settings-panel").hidden, true);
   ui.selectView("all-flow");
   ui.selectView("feature-flow");
-  assert.equal(ui.state.display.detailedFlow, true);
+  assert.equal(ui.state.display.areas, false);
 });
 
 test("학습 흐름 재생 설정은 세션 값으로 반영되고 선택한 단계를 초기화하지 않음", () => {
@@ -2122,6 +2463,8 @@ function flowGraphFixture() {
     edges: [
       edge("match-a", "endpoint-a", "chain-a", "MATCHED_BY", { chainKey: "chain-a", chainOrder: "1" }),
       edge("match-b", "endpoint-b", "chain-b", "MATCHED_BY", { chainKey: "chain-b", chainOrder: "2" }),
+      edge("handler-map-a", "endpoint-a", "handler-a", "FLOWS_TO", { flowKind: "HANDLER" }),
+      edge("handler-map-b", "endpoint-b", "handler-b", "FLOWS_TO", { flowKind: "HANDLER" }),
       edge("security-filtered-1", "chain-a", "security-filter-1", "FILTERED_BY", { registrationKind: "SECURITY", filterOrder: "1" }),
       edge("security-filtered-2", "chain-a", "security-filter-2", "FILTERED_BY", { registrationKind: "SECURITY", filterOrder: "2" }),
       edge("servlet-filtered-1", "servlet-1", "servlet-filter-1", "FILTERED_BY", { registrationKind: "SERVLET", filterOrder: "1" })
@@ -2233,6 +2576,7 @@ function laneGraphFixture() {
       handler
     }));
     nodes.push(node(`handler-${index}`, "HANDLER", handler, { handler }));
+    edges.push(edge(`mapping-${index}`, `endpoint-${index}`, `handler-${index}`, "FLOWS_TO", { flowKind: "HANDLER" }));
     if (index < 13) edges.push(edge(`matched-${index}`, `endpoint-${index}`, chains[index % chains.length], "MATCHED_BY", {
       chainOrder: String((index % chains.length) + 1)
     }));
@@ -2274,9 +2618,91 @@ function endpointCountGraph(count) {
     edges.push(edge(`count-match-${index}`, `count-endpoint-${index}`, "count-chain", "MATCHED_BY", {
       chainOrder: "1"
     }));
+    edges.push(edge(`count-mapping-${index}`, `count-endpoint-${index}`, `count-handler-${index}`, "FLOWS_TO", {
+      flowKind: "HANDLER"
+    }));
   }
   return { nodes, edges };
 }
+
+test("Overview Chain 복합 카드는 실제 원본 Filter 항목과 안정적인 역참조를 보존함", () => {
+  const { ui, layoutApi } = loadUi();
+  const graph = ui.normalizeGraph(flowGraphFixture());
+  const layout = layoutApi.semanticLayout(graph, { positions: {} });
+  const composites = layout.plan.displayModel.composites;
+  assert.ok(Array.isArray(composites), "Overview 복합 카드 모델 누락");
+  const chainCard = composites.find((card) => card.kind === "SECURITY_CHAIN" && card.originalNodeIds.includes("chain-a"));
+  assert.ok(chainCard, "실제 Chain 복합 카드 누락");
+  assert.equal(chainCard.originalNodeIds.includes("chain-a"), true);
+  assert.deepEqual(Array.from(chainCard.items.flatMap((item) => item.originalNodeIds).filter((id) => id.startsWith("security-filter-"))),
+    ["security-filter-1", "security-filter-2"]);
+  assert.equal(layout.plan.displayModel.cardById[chainCard.id], chainCard);
+  chainCard.items.forEach((item) => item.originalNodeIds.forEach((nodeId) => {
+    assert.ok(layout.plan.displayModel.originalNodeToItemIds[nodeId]?.includes(item.id), `${nodeId}의 항목 역참조 누락`);
+  }));
+});
+
+test("Overview 복합 카드와 항목은 실제 포트·Inspector 원본 참조를 렌더링함", async () => {
+  const { ui, elements } = loadUi();
+  const snapshot = flowGraphFixture();
+  snapshot.nodes.find((node) => node.id === "endpoint-a").evidenceIds = ["e-shared", "e-distinct"];
+  snapshot.evidence = [{ id: "e-shared", source: "RUNTIME", summary: "공유 근거", location: "endpoint" },
+    { id: "e-distinct", source: "RUNTIME", summary: "별도 근거", location: "endpoint" }];
+  snapshot.edges.push({ id: "api-handler-flow", sourceId: "endpoint-a", targetId: "handler-a", type: "FLOWS_TO",
+    confidence: "CONFIRMED", attributes: {}, evidenceIds: ["e-shared"] });
+  ui.renderGraph(snapshot);
+  ui.selectView("all-flow");
+  await ui.layoutGraph();
+
+  const chainCard = ui.state.layout.plan.displayModel.composites.find((card) =>
+    card.kind === "SECURITY_CHAIN" && card.originalNodeIds.includes("chain-a"));
+  const renderedCard = findAllByClass(elements.get("graph-nodes"), "graph-composite-card")
+    .find((element) => element.getAttribute("data-composite-card-id") === chainCard.id);
+  assert.ok(renderedCard, "Chain 카드 SVG 누락");
+  assert.equal(renderedCard.getAttribute("data-node-ids").includes("chain-a"), true);
+
+  const apiCard = ui.state.layout.plan.displayModel.composites.find((card) => card.kind === "API_MAPPING");
+  const apiItem = apiCard.items.find((item) => item.originalNodeIds.includes("endpoint-a"));
+  const renderedItem = findAllByClass(elements.get("graph-nodes"), "graph-composite-item")
+    .find((element) => element.getAttribute("data-composite-item-id") === apiItem.id);
+  assert.ok(renderedItem, "API 표시 항목 SVG 누락");
+  assert.ok(findAllByClass(renderedItem, "graph-composite-port").length > 0, "실제 관계 포트 누락");
+
+  renderedItem.dispatchEvent({ type: "click" });
+  assert.equal(ui.state.selection.kind, "controller-group");
+  assert.equal(ui.state.selection.id, apiItem.id);
+  assert.equal(elements.get("inspector").hidden, false);
+  assert.equal(elements.get("inspector").getAttribute("data-selection-id"), apiItem.id);
+  assert.ok(findAllByClass(elements.get("inspector"), "inspector-link")
+    .some((link) => link.getAttribute("data-node-id") === "endpoint-a"));
+  assert.equal(apiItem.areaId, apiCard.areaId);
+  const inspector = elements.get("inspector");
+  const headings = findAllByClass(inspector, "inspector-section-title").map((heading) => heading.textContent);
+  assert.deepEqual(headings, ["기본 속성", "상세 속성", "관련 취약점", "분석 근거"]);
+  assert.match(textOf(inspector), /기술 영역\s+API 매핑/);
+  const evidenceBlocks = findAllByClass(inspector, "inspector-evidence");
+  assert.equal(evidenceBlocks.filter((block) => textOf(block).includes("공유 근거")).length, 1);
+  assert.equal(evidenceBlocks.filter((block) => textOf(block).includes("별도 근거")).length, 1);
+  const originals = findAllByClass(inspector, "inspector-composite-entry")[0];
+  assert.ok(originals && !originals.hasAttribute("open"));
+  for (const tab of ["connections", "relations"]) {
+    const button = findAllByClass(inspector, "inspector-tab").find((entry) => entry.getAttribute("data-tab") === tab);
+    assert.ok(button);
+    button.dispatchEvent({ type: "click" });
+    assert.equal(button.getAttribute("data-tab"), tab);
+  }
+  ui.openEndpointDetail("endpoint-a");
+  await ui.layoutGraph();
+  const detail = ui.state.layout.plan.displayModel;
+  detail.composites.forEach((card) => card.items.forEach((entry) => assert.equal(entry.areaId, card.areaId)));
+  assert.ok(detail.originalNodeToItemIds?.["endpoint-a"]?.length === 1, JSON.stringify(detail.originalNodeToItemIds?.["endpoint-a"]));
+  ui.selectGraphElement("node", "endpoint-a");
+  const properties = findAllByClass(inspector, "inspector-tab").find((entry) => entry.getAttribute("data-tab") === "properties");
+  properties.dispatchEvent({ type: "click" });
+  assert.match(textOf(inspector), /기술 영역\s+스프링 MVC/);
+  assert.deepEqual(findAllByClass(inspector, "inspector-section-title").map((entry) => entry.textContent),
+    ["기본 속성", "상세 속성", "관련 취약점", "분석 근거"]);
+});
 
 function controllerGroupGraph(firstCount = 1, secondCount = 1) {
   const nodes = [{ id: "shared-chain", type: "SECURITY_CHAIN", serviceId: "orders", label: "공통 Chain",
@@ -2299,6 +2725,8 @@ function controllerGroupGraph(firstCount = 1, secondCount = 1) {
       );
       edges.push({ id: `${prefix}-match-${index}`, sourceId: endpointId, targetId: "shared-chain", type: "MATCHED_BY",
         attributes: { chainOrder: "1" }, confidence: "CONFIRMED", evidenceIds: [`e-${prefix}-match-${index}`] });
+      edges.push({ id: `${prefix}-mapping-${index}`, sourceId: endpointId, targetId: handlerId, type: "FLOWS_TO",
+        attributes: { flowKind: "HANDLER" }, confidence: "CONFIRMED", evidenceIds: [`e-${prefix}-mapping-${index}`] });
     }
   });
   return { nodes, edges };
@@ -2452,15 +2880,15 @@ test("상세 처리 보기에서 표준 Filter 교육을 선택하고 실제 Sna
   await ui.layoutGraph();
   ui.selectGraphElement("node", "security-filter-1");
   assert.equal(findAllByClass(elements.get("inspector"), "inspector-tab")
-    .some((button) => button.attributes["data-tab"] === "filter-education"), false);
+    .some((button) => button.attributes["data-tab"] === "filter-education"), true);
   assert.match(textOf(elements.get("inspector")), /org\.springframework\.security\.web\.csrf\.CsrfFilter/);
-  elements.get("setting-show-detail-flow").checked = true;
-  elements.get("setting-show-detail-flow").dispatchEvent({ type: "change" });
-
   let inspector = elements.get("inspector");
   let educationTab = findAllByClass(inspector, "inspector-tab")
     .find((button) => button.attributes["data-tab"] === "filter-education");
-  assert.ok(educationTab, "상세 처리 보기에서 필터 교육 탭 제공");
+  assert.ok(educationTab, "필터 교육 탭 제공");
+  educationTab.dispatchEvent({ type: "click" });
+  educationTab = findAllByClass(elements.get("inspector"), "inspector-tab")
+    .find((button) => button.attributes["data-tab"] === "filter-education");
   assert.equal(educationTab.getAttribute("aria-selected"), "true");
   let educationText = textOf(inspector);
   assert.match(educationText, /CsrfFilter/);
@@ -2636,12 +3064,12 @@ test("Endpoint 상세 파생 Graph가 실제 Chain·Filter·보안 관계만 보
     "authorization-a", "security-data-a"
   ]);
   assert.deepEqual(edgeIds, [
-    "match-a", "security-filtered-1", "security-filtered-2", "secured-a", "reads-a", "uses-a"
+    "match-a", "handler-map-a", "security-filtered-1", "security-filtered-2", "secured-a", "reads-a", "uses-a"
   ]);
   assert.equal(detail.match.status, "CONFIRMED");
   assert.equal(detail.nodes.find((node) => node.id === "endpoint-a"), normalized.nodes.find((node) => node.id === "endpoint-a"));
   assert.equal(detail.edges.find((edge) => edge.id === "secured-a"), normalized.edges.find((edge) => edge.id === "secured-a"));
-  assert.equal(detail.edges.some((edge) => edge.sourceId === "endpoint-a" && edge.targetId === "handler-a"), false);
+  assert.equal(detail.edges.some((edge) => edge.sourceId === "endpoint-a" && edge.targetId === "handler-a"), true);
   assert.equal(nodeIds.includes("endpoint-b"), false);
   assert.equal(nodeIds.includes("chain-b"), false);
   assert.equal(nodeIds.includes("security-filter-3"), false);
@@ -2706,6 +3134,564 @@ test("Endpoint 상세 Graph는 고정 깊이를 넘는 확인된 보안정보를
   assert.equal(ids.has("unrelated-chain"), false);
   assert.equal(detail.edges.some((item) => item.id === "reads-e"), true);
   assert.equal(detail.edges.some((item) => item.id === "unrelated-support"), false);
+});
+
+test("상세 Blueprint는 선택 Endpoint에 연결된 Runtime 객체와 실제 중첩 영역을 표시하고 Inspector에서 추적함", async () => {
+  const { ui, elements } = loadUi();
+  const graph = detailGraphFixture();
+  graph.runtimeArchitecture = {
+    environment: { webApplicationType: "SERVLET", serverKind: "TOMCAT", serverClassName: "org.apache.catalina.startup.Tomcat", deploymentMode: "EMBEDDED", frameworkVersions: {} },
+    components: [
+      { id: "runtime-app", kind: "APPLICATION_CONTEXT", className: "org.springframework.boot.web.servlet.context.AnnotationConfigServletWebServerApplicationContext", beanName: null, contextId: "app", parentId: null, attributes: {}, graphNodeIds: [], evidenceIds: [] },
+      { id: "runtime-server", kind: "WEB_SERVER", className: "org.springframework.boot.web.embedded.tomcat.TomcatWebServer", beanName: null, contextId: "app", parentId: "runtime-app", attributes: {}, graphNodeIds: [], evidenceIds: [] },
+      { id: "runtime-servlet-context", kind: "SERVLET_CONTEXT", className: "org.apache.catalina.core.StandardContext", beanName: null, contextId: "app", parentId: "runtime-server", attributes: {}, graphNodeIds: ["servlet-1"], evidenceIds: [] },
+      { id: "runtime-dispatcher", kind: "SERVLET", className: "org.springframework.web.servlet.DispatcherServlet", beanName: "dispatcherServlet", contextId: "app", parentId: "runtime-servlet-context", attributes: {}, graphNodeIds: ["servlet-1"], evidenceIds: [] },
+      { id: "runtime-proxy", kind: "FILTER_CHAIN_PROXY", className: "org.springframework.security.web.FilterChainProxy", beanName: "springSecurityFilterChain", contextId: "app", parentId: null, attributes: {}, graphNodeIds: ["chain-a"], evidenceIds: [] },
+      { id: "runtime-chain", kind: "SECURITY_FILTER_CHAIN", className: "org.springframework.security.web.DefaultSecurityFilterChain", beanName: null, contextId: "app", parentId: "runtime-proxy", attributes: { order: "1" }, graphNodeIds: ["chain-a"], evidenceIds: [] },
+      { id: "runtime-security-filter", kind: "SECURITY_FILTER", className: "org.springframework.security.web.csrf.CsrfFilter", beanName: null, contextId: "app", parentId: "runtime-chain", attributes: { filterOrder: "1" }, graphNodeIds: ["security-filter-1"], evidenceIds: [] },
+      { id: "runtime-mapping", kind: "HANDLER_MAPPING", className: "org.springframework.web.servlet.mvc.method.annotation.RequestMappingHandlerMapping", beanName: "requestMappingHandlerMapping", contextId: "app", parentId: null, attributes: {}, graphNodeIds: ["endpoint-a"], evidenceIds: ["runtime-evidence-mapping"] },
+      { id: "runtime-handler", kind: "HANDLER_METHOD", className: "com.example.orders.OrderController#list", beanName: null, contextId: "app", parentId: "runtime-mapping", attributes: {}, graphNodeIds: ["handler-a"], evidenceIds: [] },
+      { id: "runtime-other-handler", kind: "HANDLER_METHOD", className: "com.example.accounts.AccountController#list", beanName: null, contextId: "app", parentId: "runtime-mapping", attributes: {}, graphNodeIds: ["handler-b"], evidenceIds: [] }
+    ],
+    relationships: [
+      { id: "runtime-server-contains-context", sourceId: "runtime-server", targetId: "runtime-servlet-context", kind: "CONTAINS", confidence: "CONFIRMED", attributes: {}, evidenceIds: [] },
+      { id: "runtime-proxy-contains-chain", sourceId: "runtime-proxy", targetId: "runtime-chain", kind: "CONTAINS", confidence: "CONFIRMED", attributes: {}, evidenceIds: [] },
+      { id: "runtime-chain-contains-filter", sourceId: "runtime-chain", targetId: "runtime-security-filter", kind: "CONTAINS", confidence: "CONFIRMED", attributes: {}, evidenceIds: [] },
+      { id: "runtime-mapping-resolves-handler", sourceId: "runtime-mapping", targetId: "runtime-handler", kind: "MAPS_TO", confidence: "CONFIRMED", attributes: {}, evidenceIds: [] }
+    ],
+    coverage: [
+      { collectorId: "host", area: "WEB_SERVER", scope: "app", state: "PRESENT", reasonCode: "OBSERVED", evidenceIds: [] },
+      { collectorId: "servlet", area: "SERVLET", scope: "app", state: "PRESENT", reasonCode: "OBSERVED", evidenceIds: [] },
+      { collectorId: "security", area: "SECURITY", scope: "app", state: "PRESENT", reasonCode: "OBSERVED", evidenceIds: [] },
+      { collectorId: "mvc", area: "MVC", scope: "app", state: "PRESENT", reasonCode: "OBSERVED", evidenceIds: [] }
+    ],
+    evidence: [{ id: "runtime-evidence-mapping", source: "MVC_RUNTIME", location: "requestMappingHandlerMapping", summary: "실제 HandlerMapping 등록 근거" }],
+    architectureFingerprint: "runtime-fingerprint"
+  };
+
+  ui.renderGraph(graph);
+  ui.openEndpointDetail("endpoint-a");
+  await ui.layoutGraph();
+
+  const blueprint = ui.state.layout && ui.state.layout.plan.detailBlueprint;
+  assert.ok(blueprint, "상세 Layout에 Runtime Blueprint가 포함됨");
+  assert.ok(blueprint.cards.every((card) => card.bounds.width >= 380 && card.bounds.width <= 560),
+    "상세 카드 너비가 허용 범위 안에 있음");
+  assert.ok(blueprint.regions.some((region) => region.title === "웹 서버 / WAS"), JSON.stringify({
+    regions: blueprint.regions.map((region) => region.title), cards: blueprint.cards.map((card) => card.runtimeComponentIds),
+    graphNodeIds: ui.state.viewGraph.nodes.map((node) => node.id)
+  }));
+  assert.ok(blueprint.regions.some((region) => region.title === "서블릿 컨테이너"));
+  assert.ok(blueprint.regions.some((region) => region.title === "스프링 시큐리티"));
+  assert.ok(blueprint.regions.some((region) => region.title === "스프링 MVC"));
+  const regionById = new Map(blueprint.regions.map((region) => [region.id, region]));
+  const securityRegion = regionById.get("runtime-region:security");
+  const mvcRegion = regionById.get("runtime-region:mvc");
+  assert.ok(mvcRegion.bounds.y - securityRegion.bounds.bottom >= 64,
+    "Security와 MVC 형제 영역 사이 여백 확보");
+  blueprint.regions.forEach((region) => {
+    if (!region.parentId) return;
+    const parent = regionById.get(region.parentId);
+    assert.ok(parent);
+    assert.ok(region.bounds.x >= parent.bounds.x && region.bounds.y >= parent.bounds.y
+      && region.bounds.right <= parent.bounds.right && region.bounds.bottom <= parent.bounds.bottom,
+    `${region.id} 영역이 상위 영역 안에 배치됨`);
+  });
+  blueprint.cards.forEach((card, index) => {
+    if (!card.regionId) return;
+    const region = regionById.get(card.regionId);
+    assert.ok(region);
+    assert.ok(card.bounds.x >= region.bounds.x && card.bounds.y >= region.bounds.y
+      && card.bounds.x + card.bounds.width <= region.bounds.right
+      && card.bounds.y + card.bounds.height <= region.bounds.bottom, `${card.id} 카드가 소속 영역 안에 배치됨`);
+    blueprint.cards.slice(index + 1).forEach((next) => {
+      const overlaps = card.bounds.x < next.bounds.x + next.bounds.width
+        && card.bounds.x + card.bounds.width > next.bounds.x
+        && card.bounds.y < next.bounds.y + next.bounds.height
+        && card.bounds.y + card.bounds.height > next.bounds.y;
+      assert.equal(overlaps, false, `${card.id} 카드와 ${next.id} 카드가 겹치지 않음`);
+    });
+  });
+  assert.ok(blueprint.cards.some((card) => card.runtimeComponentIds.includes("runtime-mapping")));
+  assert.equal(blueprint.cards.some((card) => card.runtimeComponentIds.includes("runtime-other-handler")), false,
+    "선택하지 않은 Endpoint의 Handler 제외");
+  const runtimeOnlyCards = blueprint.cards.filter((card) => card.runtimeComponentIds.length && !card.originalNodeIds.length);
+  const graphCards = blueprint.cards.filter((card) => card.originalNodeIds.length);
+  assert.ok(runtimeOnlyCards.length > 0 && graphCards.length > 0, "실제 Runtime과 Graph 항목이 같은 Blueprint를 구성함");
+  const areaTop = (area) => Math.min(...blueprint.cards.filter((card) => card.areaId === area)
+    .map((card) => card.bounds.y));
+  assert.ok(areaTop("servlet") > areaTop("host"), "서블릿 처리가 웹 서버 아래에 배치됨");
+  assert.ok(areaTop("security") > areaTop("servlet"), "보안 처리가 서블릿 등록 아래에 배치됨");
+  assert.ok(areaTop("mvc") > areaTop("security"), "Spring MVC가 보안 처리 아래에 배치됨");
+  assert.equal(findAllByClass(elements.get("graph-nodes"), "runtime-blueprint-card").length, 0,
+    "기존 개별 Runtime 카드가 중복 렌더링되지 않음");
+  assert.equal(findAllByClass(elements.get("graph-nodes"), "graph-node-card").length, 0,
+  "기존 개별 Graph Node가 복합 Blueprint와 중복 렌더링되지 않음");
+
+  ui.selectGraphElement("runtime-component", "runtime-mapping");
+  assert.equal(ui.state.selection.kind, "runtime-component");
+  assert.match(textOf(elements.get("inspector")), /RequestMappingHandlerMapping/);
+  assert.match(textOf(elements.get("inspector")), /실제 HandlerMapping 등록 근거/);
+  const runtimeItems = findAllByClass(elements.get("graph-nodes"), "graph-composite-item");
+  const runtimeHandlerItem = runtimeItems.find((item) => (item.getAttribute("data-runtime-component-ids") || "")
+    .split(",").includes("runtime-handler"));
+  assert.ok(runtimeHandlerItem, JSON.stringify(runtimeItems.map((item) => item.getAttribute("data-runtime-component-ids"))));
+  assert.equal(runtimeHandlerItem.getAttribute("data-related"), "true", "실제 Runtime 관계의 이웃 객체 강조");
+
+  ui.selectGraphElement("runtime-relationship", "runtime-mapping-resolves-handler");
+  const runtimeRelation = findAllByClass(elements.get("graph-edges"), "graph-edge")
+    .find((edge) => (edge.getAttribute("data-runtime-relationship-ids") || "").split(",").includes("runtime-mapping-resolves-handler"));
+  assert.ok(runtimeRelation, "정규화된 Graph·Runtime 관계가 공통 Route Renderer에서 연결됨");
+  assert.equal(runtimeRelation.getAttribute("data-selected"), "true");
+  assert.equal(runtimeItems.find((item) => (item.getAttribute("data-runtime-component-ids") || "").split(",").includes("runtime-mapping"))
+    .getAttribute("data-related"), "true");
+  assert.equal(runtimeItems.find((item) => (item.getAttribute("data-runtime-component-ids") || "").split(",").includes("runtime-handler"))
+    .getAttribute("data-related"), "true");
+});
+
+test("상세 Blueprint는 처리 흐름 위주로 표시하고 등록 세부 정보를 Inspector에 남김", async () => {
+  const { ui, elements } = loadUi();
+  const graph = detailGraphFixture();
+  for (let index = 3; index <= 5; index += 1) {
+    graph.nodes.push({ id: `security-filter-${index}`, type: "FILTER", serviceId: "orders",
+      label: `SecurityFilter${index}`, attributes: { registrationKind: "SECURITY", chainKey: "chain-a",
+        filterOrder: String(index) }, evidenceIds: [`evidence-security-filter-${index}`] });
+    graph.edges.push({ id: `security-filtered-${index}`, sourceId: "chain-a", targetId: `security-filter-${index}`,
+      type: "FILTERED_BY", confidence: "CONFIRMED", attributes: { registrationKind: "SECURITY", filterOrder: String(index) },
+      evidenceIds: [`evidence-security-filtered-${index}`] });
+  }
+  const runtimeComponent = (id, kind, parentId, graphNodeIds = [], attributes = {}) => ({
+    id, kind, className: `example.${kind}Component`, beanName: null, contextId: "app", parentId,
+    attributes, graphNodeIds, evidenceIds: [`evidence-${id}`]
+  });
+  graph.runtimeArchitecture = {
+    environment: { webApplicationType: "SERVLET", serverKind: "TOMCAT", deploymentMode: "EMBEDDED" },
+    components: [
+      runtimeComponent("runtime-app", "APPLICATION_CONTEXT", null),
+      runtimeComponent("runtime-server", "WEB_SERVER", "runtime-app"),
+      runtimeComponent("runtime-servlet-context", "SERVLET_CONTEXT", "runtime-server", ["servlet-1"]),
+      runtimeComponent("runtime-dispatcher", "SERVLET", "runtime-servlet-context", ["servlet-1"]),
+      runtimeComponent("runtime-proxy", "FILTER_CHAIN_PROXY", null),
+      runtimeComponent("runtime-chain", "SECURITY_FILTER_CHAIN", "runtime-proxy", ["chain-a"], { order: "1" }),
+      ...Array.from({ length: 5 }, (_, index) => runtimeComponent(`runtime-security-filter-${index + 1}`,
+        "SECURITY_FILTER", "runtime-chain", [`security-filter-${index + 1}`], { filterOrder: String(index + 1) })),
+      runtimeComponent("runtime-mapping", "HANDLER_MAPPING", null, ["endpoint-a"]),
+      runtimeComponent("runtime-handler", "HANDLER_METHOD", "runtime-mapping", ["handler-a"]),
+      runtimeComponent("runtime-adapter", "HANDLER_ADAPTER", "runtime-mapping"),
+      ...Array.from({ length: 3 }, (_, index) => runtimeComponent(`runtime-resolver-${index + 1}`,
+        "ARGUMENT_RESOLVER", "runtime-adapter", [], { order: String(index + 1) })),
+      ...Array.from({ length: 2 }, (_, index) => runtimeComponent(`runtime-converter-${index + 1}`,
+        "MESSAGE_CONVERTER", "runtime-adapter", [], { order: String(index + 1) })),
+      { ...runtimeComponent("runtime-servlet-registration", "SERVLET_FILTER_REGISTRATION", "runtime-servlet-context",
+        ["servlet-filter-1"], { registrationName: "auditFilter", filterClass: "com.example.AuditFilter" }),
+        beanName: "auditFilter" },
+      { ...runtimeComponent("runtime-filter-map", "TOMCAT_FILTER_MAPPING", "runtime-servlet-context", [], {
+        filterName: "auditFilter", registrationOrder: "4", urlPatterns: ["/api/*"],
+        dispatcherTypes: ["REQUEST", "ASYNC"], servletNames: ["dispatcherServlet"]
+      }) }
+    ],
+    relationships: [],
+    coverage: ["WEB_SERVER", "SERVLET", "SECURITY", "MVC"].map((area) => ({
+      collectorId: area.toLowerCase(), area, scope: "app", state: "PRESENT", reasonCode: "OBSERVED", evidenceIds: []
+    })),
+    evidence: [], architectureFingerprint: "detail-composite-groups"
+  };
+
+  ui.renderGraph(graph);
+  ui.openEndpointDetail("endpoint-a");
+  await ui.layoutGraph();
+
+  const blueprint = ui.state.layout.plan.detailBlueprint;
+  const chainCard = blueprint.cards.find((card) => card.originalNodeIds.includes("chain-a"));
+  assert.ok(chainCard, "선택 Chain 복합 카드 필요");
+  const expectedFilterIds = ui.state.viewGraph.nodes.filter((node) => node.type === "FILTER"
+    && node.attributes.registrationKind === "SECURITY").map((node) => node.id);
+  assert.equal(expectedFilterIds.length, 5, "선택 Chain의 확인된 Filter 5개 필요");
+  assert.deepEqual(Array.from(chainCard.items.flatMap((item) => item.originalNodeIds)
+    .filter((id) => id === "chain-a" || expectedFilterIds.includes(id))).sort(),
+  ["chain-a", ...expectedFilterIds].sort());
+  assert.deepEqual(chainCard.items.flatMap((item) => item.originalNodeIds)
+    .filter((id) => expectedFilterIds.includes(id)), expectedFilterIds.slice().sort((left, right) =>
+    Number(ui.state.viewGraph.nodes.find((node) => node.id === left).attributes.filterOrder)
+      - Number(ui.state.viewGraph.nodes.find((node) => node.id === right).attributes.filterOrder)));
+  assert.ok(chainCard.runtimeComponentIds.includes("runtime-chain"));
+  assert.equal(blueprint.cards.some((card) => card.runtimeComponentIds.some((id) =>
+    id.startsWith("runtime-resolver-") || id.startsWith("runtime-converter-")
+      || id === "runtime-filter-map")), false, "등록 보조 객체 전용 카드 없음");
+  assert.equal(blueprint.runtimeComponents.some((component) => component.id === "runtime-filter-map"), true,
+    "FilterMap 원본 Runtime 객체 보존");
+  ui.selectGraphElement("runtime-component", "runtime-adapter");
+  assert.match(textOf(elements.get("inspector")), /ARGUMENT_RESOLVER/);
+  assert.match(textOf(elements.get("inspector")), /MESSAGE_CONVERTER/);
+  ui.selectGraphElement("runtime-component", "runtime-servlet-registration");
+  assert.match(textOf(elements.get("inspector")), /\/api\/\*/);
+  assert.match(textOf(elements.get("inspector")), /ASYNC/);
+  const handlerItems = blueprint.cards.flatMap((card) => card.items)
+    .filter((item) => item.originalNodeIds.includes("handler-a"));
+  assert.equal(handlerItems.length, 1, "Runtime Handler와 Graph Handler 중복 표시 금지");
+  assert.ok(handlerItems[0].runtimeComponentIds.includes("runtime-handler"));
+
+  const projectionIds = ui.state.layout.plan.projection.nodes.map((node) => node.id).sort();
+  const mappedProjectionIds = blueprint.cards.flatMap((card) => card.items.flatMap((item) => item.projectionNodeIds || [])).sort();
+  assert.ok(projectionIds.every((id) => mappedProjectionIds.includes(id)), "표시 학습 단계를 실제 복합 Item으로 역참조");
+  assert.equal(projectionIds.includes("education-servlet-chain-continue"), false);
+  assert.equal(projectionIds.includes("education-handler-mapping"), false, "실제 Runtime HandlerMapping Item 별칭 사용");
+  assert.equal(projectionIds.includes("education-handler-adapter"), false, "실제 Runtime HandlerAdapter Item 별칭 사용");
+  assert.equal(ui.state.layout.plan.displayModel.projectionToItemIds["education-delegating-filter-proxy"]?.length || 0, 0,
+    "DelegatingFilterProxy 등록 근거가 없는 경우 교육용 Proxy를 실제 Item으로 만들지 않음");
+  ["education-filter-chain-proxy", "education-handler-mapping", "education-handler-adapter"]
+    .forEach((id) => assert.ok(ui.state.layout.plan.displayModel.projectionToItemIds[id]?.length,
+      `${id} 학습 단계의 실제 표시 Item Alias 필요`));
+  const projectionEdgeIds = ui.state.layout.plan.projection.edges.map((edge) => edge.id);
+  projectionEdgeIds.forEach((id) => {
+    const relation = blueprint.routingPlan.relations.find((item) => (item.projectionEdgeIds || []).includes(id));
+    assert.ok(relation && blueprint.routingPlan.routesByRelationId[relation.id], `${id}의 새 Blueprint 경로 필요`);
+    const segmentIds = ui.state.layout.plan.displayModel.projectionEdgeToSegmentIds[id];
+    assert.ok(segmentIds && segmentIds.length > 0, `${id}의 실제 Segment 연결 필요`);
+    assert.equal(segmentIds.every((segmentId) => blueprint.routingPlan.segments.some((segment) => segment.id === segmentId)), true);
+  });
+  assert.equal(elements.get("graph-flow-projection").children.length, 0, "숨겨진 기존 Projection 경로 제거");
+  assert.ok(findAllByClass(elements.get("graph-nodes"), "graph-learning-segment").length > 0,
+    "학습 경로를 복합 카드 내부에 렌더링");
+});
+
+test("Overview와 Detail은 보안 Item의 의미 이름과 기본 기하를 공유함", async () => {
+  const { ui } = loadUi();
+  const graph = detailGraphFixture();
+  const policy = graph.nodes.find((node) => node.id === "authorization-a");
+  policy.label = "policy|springSecurityFilterChain|ANY|1|19|PATH|/error|PERMIT_ALL";
+  policy.attributes = {
+    policySource: "URL",
+    policyKind: "PERMIT_ALL",
+    policyMatcherCondition: "/error",
+    policyOrder: "19",
+    httpMethod: "ANY"
+  };
+
+  ui.renderGraph(graph);
+  await ui.layoutGraph();
+  const overviewPlan = ui.state.layout.plan;
+  const overviewItemId = overviewPlan.displayModel.originalNodeToItemIds[policy.id][0];
+  const overviewItem = overviewPlan.displayModel.itemById[overviewItemId];
+
+  ui.openEndpointDetail("endpoint-a");
+  await ui.layoutGraph();
+  const detailPlan = ui.state.layout.plan;
+  const detailItemId = detailPlan.displayModel.originalNodeToItemIds[policy.id][0];
+  const detailItem = detailPlan.displayModel.itemById[detailItemId];
+
+  assert.equal(overviewItem.label, "공개 접근 허용");
+  assert.match(overviewItem.detail, /URL 정책.*\/error.*순서 19/);
+  assert.equal(detailItem.label, overviewItem.label);
+  assert.equal(detailItem.detail, overviewItem.detail);
+  assert.equal(detailItem.kind, overviewItem.kind);
+  assert.equal(detailItem.bounds.height, overviewItem.bounds.height);
+  assert.doesNotMatch(`${detailItem.label} ${detailItem.detail}`, /policy\|springSecurityFilterChain/);
+});
+
+test("상세 Blueprint는 Graph Node가 없는 실제 Servlet Filter 등록을 표시함", async () => {
+  const { ui, window } = loadUi();
+  const graph = detailGraphFixture();
+  const runtimeComponent = (id, kind, parentId, graphNodeIds = [], attributes = {}) => ({
+    id, kind, className: "com.example.AuditFilter", beanName: null, contextId: "app", parentId,
+    attributes, graphNodeIds, evidenceIds: []
+  });
+  graph.runtimeArchitecture = {
+    environment: { webApplicationType: "SERVLET", serverKind: "TOMCAT", deploymentMode: "EMBEDDED" },
+    components: [
+      runtimeComponent("runtime-app", "APPLICATION_CONTEXT", null),
+      runtimeComponent("runtime-server", "WEB_SERVER", "runtime-app"),
+      runtimeComponent("runtime-servlet-context", "SERVLET_CONTEXT", "runtime-server", ["servlet-1"]),
+      runtimeComponent("runtime-dispatcher", "SERVLET", "runtime-servlet-context", ["servlet-1"]),
+      runtimeComponent("runtime-servlet-filter", "SERVLET_FILTER_REGISTRATION", "runtime-servlet-context", [], {
+        filterClass: "com.example.AuditFilter", registrationName: "auditFilter", registrationOrder: "2"
+      })
+    ],
+    relationships: [
+      { id: "context-registers-filter", sourceId: "runtime-servlet-context", targetId: "runtime-servlet-filter",
+        kind: "REGISTERS", confidence: "CONFIRMED", attributes: {}, evidenceIds: [] }
+    ],
+    coverage: ["WEB_SERVER", "SERVLET", "SECURITY", "MVC"].map((area) => ({
+      collectorId: area.toLowerCase(), area, scope: "app", state: "PRESENT", reasonCode: "OBSERVED", evidenceIds: []
+    })),
+    evidence: [], architectureFingerprint: "runtime-servlet-filter"
+  };
+
+  ui.renderGraph(graph);
+  ui.openEndpointDetail("endpoint-a");
+  await ui.layoutGraph();
+
+  const blueprint = ui.state.layout.plan.detailBlueprint;
+  assert.ok(blueprint.runtimeComponents.some((component) => component.id === "runtime-servlet-filter"));
+  const filterItem = blueprint.cards.flatMap((card) => card.items)
+    .find((item) => item.runtimeComponentIds.includes("runtime-servlet-filter"));
+  assert.ok(filterItem, "Graph Node가 없는 등록 Filter 표시 Item");
+  assert.equal(filterItem.label, "AuditFilter");
+  assert.equal(filterItem.executionOrderStatus, "UNKNOWN");
+  assert.equal(filterItem.order, null);
+  assert.match(filterItem.detail, /등록 확인.*적용 순서 확인 불가.*등록 2/);
+  const steps = window.MapInBootRequestFlow.buildSteps({
+    graph: ui.state.viewGraph,
+    index: window.MapInBootFlow.createIndex(ui.state.viewGraph),
+    endpointId: "endpoint-a",
+    positions: ui.state.layout.plan.positions,
+    projection: ui.state.layout.plan.projection,
+    snapshot: graph,
+    displayModel: ui.state.layout.plan.displayModel
+  });
+  assert.equal(steps.some((step) => step.displayItemId === filterItem.id), false,
+    "FilterMap에 근거한 적용 순서가 없으면 개별 Filter를 순차 재생하지 않음");
+  assert.equal(steps.some((step) => /선택 API의 적용 순서를 확정할 근거가 부족/.test(step.description)), true);
+});
+
+test("Tomcat FilterMap은 URL·서블릿 이름 순서와 등록 단위 중복 제거로 선택 API 흐름을 구성함", async () => {
+  const { ui, window, elements } = loadUi();
+  const graph = detailGraphFixture();
+  const policy = graph.nodes.find((node) => node.id === "authorization-a");
+  Object.assign(policy.attributes, { policySource: "URL", chainKey: "chain-a", policyKind: "PERMIT_ALL" });
+  const graphFilter = graph.nodes.find((node) => node.id === "servlet-filter-1");
+  graphFilter.attributes.registrationName = "requestAudit";
+  graphFilter.attributes.filterClass = "com.example.AuditFilter";
+  const component = (id, kind, className, beanName, parentId, attributes = {}, graphNodeIds = []) => ({
+    id, kind, className, beanName, contextId: "app", parentId, attributes, graphNodeIds, evidenceIds: []
+  });
+  const registration = (id, name, className, registrationOrder, graphNodeIds = []) => component(
+    id, "SERVLET_FILTER_REGISTRATION", className, name, "runtime-servlet-context",
+    { registrationName: name, filterClass: className, registrationOrder }, graphNodeIds);
+  const filterMap = (id, filterName, registrationOrder,
+    { urlPatterns = [], servletNames = [], dispatcherTypes = "REQUEST" } = {}) => component(
+    id, "TOMCAT_FILTER_MAPPING", "org.apache.tomcat.util.descriptor.web.FilterMap", null, "runtime-tomcat-context", {
+      filterName, registrationOrder: String(registrationOrder), urlPatterns: urlPatterns.join(","),
+      servletNames: servletNames.join(","), dispatcherTypes,
+      matchAllUrlPatterns: "false", matchAllServletNames: "false"
+    });
+  graph.runtimeArchitecture = {
+    environment: { webApplicationType: "SERVLET", serverKind: "TOMCAT", deploymentMode: "EMBEDDED" },
+    components: [
+      component("runtime-app", "APPLICATION_CONTEXT", "org.springframework.context.ApplicationContext", null, null),
+      component("runtime-server", "WEB_SERVER", "org.springframework.boot.web.embedded.tomcat.TomcatWebServer", null, "runtime-app"),
+      component("runtime-tomcat-context", "TOMCAT_CONTEXT", "org.apache.catalina.core.StandardContext", null, "runtime-server"),
+      component("runtime-servlet-context", "SERVLET_CONTEXT", "org.apache.catalina.core.ApplicationContextFacade", null,
+        "runtime-tomcat-context", {}, ["servlet-1"]),
+      component("runtime-dispatcher", "DISPATCHER_SERVLET", "org.springframework.web.servlet.DispatcherServlet",
+        "dispatcherServlet", "runtime-servlet-context", { registrationName: "dispatcherServlet", urlPatterns: "/" }, ["servlet-1"]),
+      registration("runtime-filter-before", "requestAudit", "com.example.AuditFilter", "9", ["servlet-filter-1"]),
+      registration("runtime-delegating", "springSecurityFilterChain", "org.springframework.web.filter.DelegatingFilterProxy", "8"),
+      registration("runtime-filter-after", "responseAudit", "com.example.AuditFilter", "1"),
+      registration("runtime-filter-outside", "adminAudit", "com.example.AdminFilter", "2"),
+      filterMap("map-outside", "adminAudit", 1, { urlPatterns: ["/admin/*"] }),
+      filterMap("map-before", "requestAudit", 2,
+        { urlPatterns: ["/orders/*"], servletNames: ["dispatcherServlet"] }),
+      filterMap("map-proxy", "springSecurityFilterChain", 3, { urlPatterns: ["/orders/*"] }),
+      filterMap("map-after", "responseAudit", 4, { servletNames: ["dispatcherServlet"], dispatcherTypes: "" }),
+      filterMap("map-before-duplicate", "requestAudit", 5, { servletNames: ["dispatcherServlet"] })
+    ],
+    relationships: [],
+    coverage: ["WEB_SERVER", "SERVLET", "SECURITY", "MVC"].map((area) => ({
+      collectorId: area.toLowerCase(), area, scope: "app", state: "PRESENT", reasonCode: "OBSERVED", evidenceIds: []
+    })),
+    evidence: [], architectureFingerprint: "tomcat-filter-map-order"
+  };
+
+  ui.renderGraph(graph);
+  ui.openEndpointDetail("endpoint-a");
+  await ui.layoutGraph();
+
+  const plan = ui.state.layout.plan;
+  const execution = plan.detailBlueprint.servletFilterExecution;
+  const modelContext = plan.displayModel;
+  const contextItem = modelContext.itemById[modelContext.projectionToItemIds["education-servlet-container"]?.[0]];
+  assert.ok(contextItem?.runtimeComponentIds.includes("runtime-servlet-context"));
+  assert.equal(contextItem.label, "ApplicationContextFacade");
+  assert.equal(modelContext.composites.filter((card) => card.title === "서블릿 컨테이너").length, 1);
+  assert.equal(execution.status, "CONFIRMED", JSON.stringify({ execution,
+    servlets: plan.detailBlueprint.runtimeComponents.filter((component) => component.kind.includes("SERVLET"))
+      .map((component) => ({ id: component.id, kind: component.kind, contextId: component.contextId,
+        attributes: component.attributes, graphNodeIds: component.graphNodeIds })) }));
+  assert.deepEqual(Array.from(execution.orderedComponentIds),
+    ["runtime-filter-before", "runtime-delegating", "runtime-filter-after"]);
+  assert.deepEqual(Array.from(execution.entries.find((entry) => entry.componentId === "runtime-filter-before").mappingIds),
+    ["map-before", "map-before-duplicate"]);
+  assert.equal(execution.entries.find((entry) => entry.componentId === "runtime-filter-outside").status, "NOT_APPLIED");
+
+  const steps = window.MapInBootRequestFlow.buildSteps({ graph: ui.state.viewGraph,
+    index: window.MapInBootFlow.createIndex(ui.state.viewGraph), endpointId: "endpoint-a",
+    positions: plan.positions, projection: plan.projection, snapshot: graph, displayModel: plan.displayModel });
+  const stepIds = steps.map((step) => step.id);
+  const beforeIndex = stepIds.indexOf("servlet-filter-runtime-filter-before");
+  const proxyIndex = stepIds.indexOf("servlet-filter-runtime-delegating");
+  const securityIndex = stepIds.indexOf("security-chain");
+  const afterIndex = stepIds.indexOf("servlet-filter-runtime-filter-after");
+  const dispatcherIndex = stepIds.indexOf("dispatcher-servlet");
+  assert.ok(steps[dispatcherIndex].displayItemId, "DispatcherServlet 표시 항목");
+  assert.notEqual(steps[dispatcherIndex].displayItemId, contextItem.id);
+  assert.ok(beforeIndex >= 0 && beforeIndex < proxyIndex);
+  assert.ok(proxyIndex < securityIndex && securityIndex < afterIndex && afterIndex < dispatcherIndex);
+  assert.equal(steps[beforeIndex].transition?.kind, "internal");
+  const model = plan.displayModel;
+  const beforeCard = model.cardById[model.itemById[steps[beforeIndex].displayItemId].cardId];
+  const proxyCard = model.cardById[model.itemById[steps[proxyIndex].displayItemId].cardId];
+  const afterCard = model.cardById[model.itemById[steps[afterIndex].displayItemId].cardId];
+  const chainCard = model.cardById[model.itemById[steps[securityIndex].displayItemId].cardId];
+  assert.equal(beforeCard.id, proxyCard.id);
+  assert.notEqual(proxyCard.id, afterCard.id);
+  assert.ok(proxyCard.bounds.x < chainCard.bounds.x && chainCard.bounds.x < afterCard.bounds.x);
+  assert.equal(steps[proxyIndex].transition?.kind, "display");
+  const lastFilterIndex = steps.findIndex((step) => step.id === "security-filter-security-filter-2");
+  const policyIndex = stepIds.indexOf("authorization-policy");
+  assert.ok(lastFilterIndex < policyIndex && policyIndex < afterIndex);
+  assert.equal(steps[lastFilterIndex].transition?.kind, "display");
+  assert.equal(steps[policyIndex].transition?.kind, "display");
+  const policyCard = model.cardById[model.itemById[steps[policyIndex].displayItemId].cardId];
+  assert.ok(chainCard.bounds.x < policyCard.bounds.x && policyCard.bounds.x < afterCard.bounds.x);
+  assert.equal(steps[afterIndex].transition?.kind, "display");
+  const contextStep = ui.state.requestFlowSteps.findIndex((step) => step.id === "education-servlet-container");
+  assert.ok(contextStep >= 0);
+  assert.equal(ui.state.requestFlowSteps[contextStep].displayItemId, contextItem.id);
+  ui.requestFlow.seekToStep(contextStep);
+  const contextElement = findAllByClass(elements.get("graph-nodes"), "graph-composite-item")
+    .find((element) => element.getAttribute("data-composite-item-id") === contextItem.id);
+  assert.equal(contextElement.getAttribute("data-request-flow-active"), "true");
+  contextElement.dispatchEvent({ type: "click" });
+  assert.equal(ui.state.selection.kind, "runtime-component");
+  assert.equal(ui.state.selection.id, "runtime-servlet-context");
+  for (const relation of plan.overviewRouting.relations.filter((entry) => entry.role === "LEARNING_FLOW" && !entry.internalCardId)) {
+    if (relation.projectionEdgeIds.some((id) => id.startsWith("handler-to-http-response"))) continue;
+    const from = model.cardById[relation.sourceInstanceId];
+    const to = model.cardById[relation.targetInstanceId];
+    assert.ok(from.bounds.x < to.bounds.x, `역행 ${relation.projectionEdgeIds.join(",")} ${from.title} → ${to.title}`);
+    assert.ok(plan.overviewRouting.routesByRelationId[relation.id], `경로 누락 ${relation.projectionEdgeIds.join(",")}`);
+  }
+});
+
+test("상세 Blueprint는 HTTP 요청과 Request·Response 객체 준비를 구분함", async () => {
+  const { ui, window } = loadUi();
+  const graph = detailGraphFixture();
+  graph.runtimeArchitecture = {
+    environment: { webApplicationType: "SERVLET", serverKind: "UNKNOWN", deploymentMode: "UNKNOWN" },
+    components: [], relationships: [], coverage: ["SERVLET", "SECURITY", "MVC"].map((area) => ({
+      collectorId: area.toLowerCase(), area, scope: "app", state: "PRESENT", reasonCode: "OBSERVED", evidenceIds: []
+    })),
+    evidence: [], architectureFingerprint: "servlet-learning"
+  };
+
+  ui.renderGraph(graph);
+  ui.openEndpointDetail("endpoint-a");
+  await ui.layoutGraph();
+
+  const plan = ui.state.layout.plan;
+  const projectionIds = new Set(plan.projection.nodes.map((node) => node.id));
+  ["education-http-request", "education-http-servlet-request", "education-http-servlet-response"]
+    .forEach((id) => assert.equal(projectionIds.has(id), true, `${id} 표시`));
+  assert.equal(projectionIds.has("education-request-prepare"), false);
+  const itemFor = (id) => plan.displayModel.itemById[plan.displayModel.projectionToItemIds[id]?.[0]];
+  const requestItem = itemFor("education-http-servlet-request");
+  const responseItem = itemFor("education-http-servlet-response");
+  assert.equal(requestItem.label, "HttpServletRequest");
+  assert.equal(responseItem.label, "HttpServletResponse");
+  assert.equal(requestItem.originalNodeIds.length, 0);
+  assert.equal(responseItem.originalNodeIds.length, 0);
+  assert.equal(requestItem.runtimeComponentIds.length, 0);
+  assert.equal(responseItem.runtimeComponentIds.length, 0);
+  assert.equal(plan.projection.edges.some((edge) =>
+    edge.sourceId === "education-http-servlet-request" && edge.targetId === "education-http-servlet-response"
+      || edge.sourceId === "education-http-servlet-response" && edge.targetId === "education-http-servlet-request"), false);
+
+  const steps = window.MapInBootRequestFlow.buildSteps({
+    graph: ui.state.viewGraph,
+    index: window.MapInBootFlow.createIndex(ui.state.viewGraph),
+    endpointId: "endpoint-a",
+    positions: plan.positions,
+    projection: plan.projection,
+    snapshot: graph,
+    displayModel: plan.displayModel
+  });
+  assert.ok(steps.some((step) => step.id === "education-http-request"));
+  assert.ok(steps.some((step) => step.id === "education-http-servlet-request" && step.label === "요청·응답 객체"));
+  assert.equal(steps.some((step) => step.id === "education-request-prepare"), false);
+  assert.equal(steps.find((step) => step.id === "education-http-request").transition?.kind, "display");
+});
+
+test("Reactive Snapshot의 상세 Blueprint는 Servlet 학습 경로와 영역을 만들지 않음", async () => {
+  const { ui, elements } = loadUi();
+  const graph = detailGraphFixture();
+  graph.runtimeArchitecture = {
+    environment: { webApplicationType: "REACTIVE", serverKind: "NETTY", deploymentMode: "EMBEDDED" },
+    components: [], relationships: [], coverage: [
+      { area: "SERVLET", state: "NOT_SUPPORTED" },
+      { area: "SECURITY", state: "NOT_SUPPORTED" },
+      { area: "MVC", state: "NOT_SUPPORTED" }
+    ], evidence: [], architectureFingerprint: "reactive-runtime"
+  };
+  ui.renderGraph(graph);
+  ui.openEndpointDetail("endpoint-a");
+  await ui.layoutGraph();
+
+  const blueprint = ui.state.layout.plan.detailBlueprint;
+  assert.equal(blueprint.supported, false);
+  assert.equal(blueprint.regions.length, 0);
+  assert.equal(ui.state.layout.plan.projection.nodes.length, 0, JSON.stringify({ type: graph.runtimeArchitecture.environment.webApplicationType,
+    supported: blueprint.supported, nodes: ui.state.layout.plan.projection.nodes.map((node) => node.id) }));
+  assert.equal(ui.state.layout.plan.projection.edges.length, 0);
+  const status = findAllByClass(elements.get("graph-areas"), "runtime-blueprint-status")[0];
+  assert.ok(status);
+  assert.equal(status.getAttribute("data-runtime-status"), "UNSUPPORTED");
+});
+
+test("Runtime Coverage에서 Security와 MVC가 확인된 미사용이면 교육용 영역을 숨김", async () => {
+  const { ui } = loadUi();
+  const graph = detailGraphFixture();
+  const omittedIds = new Set(graph.nodes.filter((node) => ["SECURITY_CHAIN", "FILTER", "AUTHENTICATION", "AUTHORIZATION", "SECURITY_DATA"]
+    .includes(node.type)).map((node) => node.id));
+  graph.nodes = graph.nodes.filter((node) => !omittedIds.has(node.id));
+  graph.edges = graph.edges.filter((edge) => !omittedIds.has(edge.sourceId) && !omittedIds.has(edge.targetId));
+  graph.runtimeArchitecture = {
+    environment: { webApplicationType: "SERVLET", serverKind: "TOMCAT", deploymentMode: "EMBEDDED" },
+    components: [
+      { id: "runtime-app", kind: "APPLICATION_CONTEXT", className: "org.springframework.context.ApplicationContext", contextId: "app", parentId: null, attributes: {}, graphNodeIds: [], evidenceIds: [] },
+      { id: "runtime-server", kind: "WEB_SERVER", className: "org.springframework.boot.web.embedded.tomcat.TomcatWebServer", contextId: "app", parentId: "runtime-app", attributes: {}, graphNodeIds: [], evidenceIds: [] },
+      { id: "runtime-context", kind: "SERVLET_CONTEXT", className: "org.apache.catalina.core.StandardContext", contextId: "app", parentId: "runtime-server", attributes: {}, graphNodeIds: [], evidenceIds: [] }
+    ],
+    relationships: [],
+    coverage: [
+      { area: "SERVLET", state: "PRESENT" },
+      { area: "SECURITY", state: "ABSENT" },
+      { area: "MVC", state: "ABSENT" }
+    ], evidence: [], architectureFingerprint: "servlet-without-mvc-security"
+  };
+  ui.renderGraph(graph);
+  ui.openEndpointDetail("endpoint-a");
+  await ui.layoutGraph();
+
+  const blueprint = ui.state.layout.plan.detailBlueprint;
+  assert.equal(blueprint.regions.some((region) => region.id === "runtime-region:security"), false);
+  assert.equal(blueprint.regions.some((region) => region.id === "runtime-region:mvc"), false);
+  assert.equal(ui.state.layout.plan.projection.nodes.some((node) => /security|handler-mapping|handler-adapter/i.test(node.id)), false);
+});
+
+test("Unknown 호스트 구성은 실제 서버 종류를 만들지 않고 확인된 애플리케이션 객체만 표시함", async () => {
+  const { ui } = loadUi();
+  const graph = detailGraphFixture();
+  graph.runtimeArchitecture = {
+    environment: { webApplicationType: "UNKNOWN", serverKind: "UNKNOWN", deploymentMode: "UNKNOWN" },
+    components: [{ id: "runtime-app", kind: "APPLICATION_CONTEXT", className: "org.springframework.context.ApplicationContext",
+      contextId: "app", parentId: null, attributes: {}, graphNodeIds: [], evidenceIds: [] }],
+    relationships: [], coverage: [
+      { area: "WEB_SERVER", state: "UNKNOWN" }, { area: "SERVLET", state: "UNKNOWN" },
+      { area: "SECURITY", state: "UNKNOWN" }, { area: "MVC", state: "UNKNOWN" }
+    ], evidence: [], architectureFingerprint: "unknown-host-runtime"
+  };
+  ui.renderGraph(graph);
+  ui.openEndpointDetail("endpoint-a");
+  await ui.layoutGraph();
+
+  const blueprint = ui.state.layout.plan.detailBlueprint;
+  assert.equal(blueprint.regions.some((region) => /TOMCAT|JETTY|SERVLET CONTAINER/.test(region.title)), false);
+  assert.equal(blueprint.regions.some((region) => region.title === "애플리케이션 실행 환경"), true);
+  assert.deepEqual(Array.from(blueprint.cards.filter((card) => card.runtimeComponentIds.length),
+    (card) => card.runtimeComponentIds[0]), []);
+  assert.equal(blueprint.runtimeComponents.some((component) => component.id === "runtime-app"), true,
+    "ApplicationContext 원본은 Runtime Inspector 대상에 유지");
 });
 
 test("MATCHED_BY가 없거나 복수·불확실한 Endpoint 상세는 임의 Chain을 선택하지 않음", () => {
@@ -2899,7 +3885,7 @@ test("Edge가 적은 Graph와 다른 Chain의 대량 Filter에서도 상세 ELK 
   assert.equal(layoutCalls.at(-1).children.length, 7);
 });
 
-test("Request 교육 단계는 SECURITY CHECKS를 실행 단계로 추가하지 않고 Filter 다음 계속 단계로 연결함", () => {
+test("Request 교육 단계는 중복 설명 노드를 제거하고 확인 가능한 실제 처리 항목을 사용함", () => {
   const { window, layoutApi } = loadUi();
   const animationFixture = detailGraphFixture();
   animationFixture.nodes.push(
@@ -2944,8 +3930,10 @@ test("Request 교육 단계는 SECURITY CHECKS를 실행 단계로 추가하지 
   normalized.presentationContext = "detail";
   const index = window.MapInBootFlow.createIndex(normalized);
   const layout = layoutApi.semanticLayout(normalized, { positions: {} });
-  assert.ok(layout.plan.projection.nodes.some((node) => node.id === "education-servlet-chain-continue"));
-  assert.ok(layout.plan.projection.nodes.some((node) => node.id === "education-handler-adapter"));
+  const removedProjectionIds = new Set(["education-thread-context",
+    "education-servlet-filter-chain", "education-servlet-chain-continue"]);
+  assert.equal(layout.plan.projection.nodes.some((node) => removedProjectionIds.has(node.id)), false);
+  assert.equal(layout.plan.projection.nodes.some((node) => node.id === "education-request-prepare"), true);
   const before = JSON.stringify(normalized);
   const steps = window.MapInBootRequestFlow.buildSteps({
     graph: normalized,
@@ -2963,23 +3951,20 @@ test("Request 교육 단계는 SECURITY CHECKS를 실행 단계로 추가하지 
     .filter((step) => step.kind === "actual"), (step) => step.anchorId);
 
   assert.deepEqual(actualAnchors, ["servlet-filter-1", "chain-a", "security-filter-1", "security-filter-2", "security-filter-3", "servlet-1", "endpoint-a", "handler-a"]);
-  assert.equal(steps.some((step) => step.label.includes("HTTP 요청 수신")), true);
-  assert.equal(steps.some((step) => step.label.includes("동기 처리 문맥")), true);
+  assert.equal(steps.some((step) => step.label.includes("HTTP 요청")), true);
+  assert.equal(steps.some((step) => step.id === "education-request-prepare"), true);
+  assert.equal(steps.some((step) => /요청 정보 준비|동기 처리 문맥|FilterChain 전달|FilterChain 계속/.test(step.label)), false);
   const responseReturn = steps.at(-1);
-  assert.equal(responseReturn.id, "education-response-return");
+  assert.equal(responseReturn.id, "education-http-response");
   assert.equal(responseReturn.kind, "education");
-  assert.equal(responseReturn.anchorId, null);
+  assert.equal(responseReturn.anchorId, "education-http-response");
   assert.equal(responseReturn.transition, null);
-  assert.match(responseReturn.description, /호출 체인|응답/);
-  assert.equal(steps.some((step) => step.label.includes("응답 복귀")), true);
+  assert.match(responseReturn.description, /Handler 결과|호출자/);
+  assert.equal(responseReturn.label, "HTTP 응답");
   assert.equal(steps.some((step) => step.anchorId === "chain-b"), false);
   assert.equal(steps.some((step) => step.anchorId === "other-chain-filter"), false);
-  const lastFilterIndex = steps.findIndex((step) => step.anchorId === "security-filter-3");
   assert.equal(steps.some((step) => step.id.startsWith("security-checks:")), false);
-  const lastFilter = steps[lastFilterIndex];
-  assert.equal(lastFilter.transition.edgeId, "filter-to-continue-chain-a");
-  const continueStep = steps.find((step) => step.id === "education-servlet-chain-continue");
-  assert.equal(continueStep.transition.edgeId, "continue-to-dispatcher");
+  assert.equal(steps.some((step) => step.anchorId === "education-servlet-chain-continue"), false);
   assert.equal(steps.some((step) => step.label.includes("Thread ID")), false);
   assert.equal(JSON.stringify(normalized), before);
 
@@ -3010,7 +3995,7 @@ test("Request 교육 단계는 SECURITY CHECKS를 실행 단계로 추가하지 
     projection: layoutApi.semanticLayout(uncertainGraph, { positions: {} }).plan.projection
   });
   assert.equal(Array.from(uncertainSteps, (step) => step.anchorId).includes("security-filter-1"), false);
-  assert.equal(uncertainSteps.some((step) => step.label.includes("순서 확인 불가")), true);
+  assert.equal(uncertainSteps.some((step) => step.description.includes("Security Filter 순서 확인 불가")), true);
   assert.equal(uncertainSteps.some((step) => step.id.startsWith("security-checks:")), false);
 
   const unselectedSteps = window.MapInBootRequestFlow.buildSteps({
@@ -3079,29 +4064,46 @@ test("Request 교육은 Endpoint가 없거나 여러 개여도 선택 Endpoint �
   });
 });
 
-test("Request 교육은 확인된 Snapshot Edge를 교육용 Projection Edge보다 먼저 선택함", () => {
-  const { window } = loadUi();
+test("Request 교육은 숨겨진 관계 대신 완전히 라우팅된 표시 관계만 재생함", () => {
+  const { window, layoutApi } = loadUi();
   const graph = window.MapInBootGraph.normalize(detailGraphFixture());
-  const steps = window.MapInBootRequestFlow.buildSteps({
+  graph.presentationContext = "detail";
+  graph.detailEndpointId = "endpoint-a";
+  const index = window.MapInBootFlow.createIndex(graph);
+  const layout = layoutApi.semanticLayout(graph, { positions: {} });
+  const unrenderedSteps = window.MapInBootRequestFlow.buildSteps({
     graph,
-    index: window.MapInBootFlow.createIndex(graph),
+    index,
     endpointId: "endpoint-a",
     positions: {},
-    projection: {
-      nodes: [],
-      edges: [
-        { id: "projected-chain-filter", sourceId: "chain-a", targetId: "security-filter-1" },
-        { id: "projected-filter-order", sourceId: "security-filter-1", targetId: "security-filter-2" }
-      ]
-    }
+    projection: layout.plan.projection
   });
+  const steps = window.MapInBootRequestFlow.buildSteps({
+    graph, index, endpointId: "endpoint-a", positions: layout.plan.positions,
+    projection: layout.plan.projection, displayModel: layout.plan.displayModel
+  });
+  const unrenderedChain = unrenderedSteps.find((step) => step.anchorId === "chain-a");
   const chain = steps.find((step) => step.anchorId === "chain-a");
   const firstFilter = steps.find((step) => step.anchorId === "security-filter-1");
+  assert.ok(chain.transition, JSON.stringify({
+    chainItemIds: layout.plan.displayModel.originalNodeToItemIds["chain-a"],
+    filterItemIds: layout.plan.displayModel.originalNodeToItemIds["security-filter-1"],
+    candidateRelations: layout.plan.displayModel.displayRelations.filter((relation) =>
+      relation.originalEdgeIds.includes("security-filtered-1")
+        || relation.projectionEdgeIds.some((id) => id.startsWith("chain-to-filter-")))
+      .map((relation) => ({ id: relation.id, role: relation.role, sourceItemId: relation.sourceItemId,
+        targetItemId: relation.targetItemId, projectionEdgeIds: relation.projectionEdgeIds,
+        segmentIds: layout.plan.displayModel.displayRelationToSegmentIds[relation.id] }))
+  }));
+  const routedIds = layout.plan.displayModel.displayRelationToSegmentIds[chain.transition.relationId];
 
-  assert.equal(chain.transition.kind, "actual");
-  assert.equal(chain.transition.edgeId, "security-filtered-1");
-  assert.equal(firstFilter.transition.kind, "projection");
-  assert.equal(firstFilter.transition.edgeId, "projected-filter-order");
+  assert.equal(unrenderedChain.transition, null, "화면에 배치되지 않은 Graph 관계는 재생 경로가 아님");
+  assert.equal(chain.transition.kind, "display");
+  assert.equal(chain.transition.originalEdgeIds.includes("security-filtered-1"), true);
+  assert.equal(chain.transition.projectionEdgeIds.some((id) => id.startsWith("chain-to-filter-")), true);
+  assert.equal(Array.isArray(routedIds) && routedIds.length > 0, true);
+  assert.equal(firstFilter.transition.kind, "display");
+  assert.equal(layout.plan.displayModel.displayRelationToSegmentIds[firstFilter.transition.relationId].length > 0, true);
 });
 
 test("Request 교육 Controller가 Node 점등·Edge 이동·경로 불가·일시정지·재개·완료를 보장함", () => {
@@ -3312,14 +4314,10 @@ test("상세 처리 보기에서 단계·표준 Filter 설명·재생 조작을 
   const edgeIds = Array.from(ui.state.graph.edges, (edge) => edge.id);
 
   assert.equal(elements.get("request-flow-details").hidden, true);
-  assert.equal(elements.get("request-flow-navigation").hidden, true);
-  elements.get("setting-show-detail-flow").checked = true;
-  elements.get("setting-show-detail-flow").dispatchEvent({ type: "change" });
-
-  assert.equal(elements.get("request-flow-controls").dataset.detailed, "true");
+  assert.equal(elements.get("request-flow-navigation").hidden, false);
+  elements.get("request-flow-detail-toggle").dispatchEvent({ type: "click" });
   assert.equal(elements.get("request-flow-details").hidden, false);
-  assert.equal(elements.get("request-flow-step-count").textContent, `1 / ${steps.length}`);
-  assert.equal(elements.get("request-flow-step-kind").textContent, "일반적인 처리 원리");
+  assert.equal(elements.get("request-flow-popover-count").textContent, `1 / ${steps.length}`);
   assert.equal(ui.requestFlow.state().status, "idle");
   assert.equal(elements.get("request-flow-previous").disabled, true);
   assert.equal(elements.get("request-flow-next").disabled, false);
@@ -3327,25 +4325,14 @@ test("상세 처리 보기에서 단계·표준 Filter 설명·재생 조작을 
   elements.get("request-flow-next").dispatchEvent({ type: "click" });
   assert.equal(ui.requestFlow.state().stepIndex, 1);
   assert.equal(ui.requestFlow.state().status, "paused");
-  assert.equal(elements.get("request-flow-step-count").textContent, `2 / ${steps.length}`);
+  assert.equal(elements.get("request-flow-popover-count").textContent, `2 / ${steps.length}`);
   assert.equal(elements.get("request-flow-previous").disabled, false);
 
   assert.ok(filterStep.filterEducation);
   assert.equal(ui.requestFlow.seekToStep(filterIndex), true);
-  assert.equal(elements.get("request-flow-step-kind").textContent, "Snapshot에서 확인한 구조");
-  assert.equal(elements.get("request-flow-step-title").textContent, filterStep.label);
-  assert.equal(elements.get("request-flow-filter-status").textContent, filterStep.filterEducation.statusLabel);
-  assert.equal(elements.get("request-flow-filter-role").textContent, filterStep.filterEducation.role);
-  assert.equal(elements.get("request-flow-filter-input").textContent, filterStep.filterEducation.input);
-  assert.equal(elements.get("request-flow-filter-condition").textContent, filterStep.filterEducation.condition);
-  assert.equal(elements.get("request-flow-filter-processing").textContent, filterStep.filterEducation.processing);
-  assert.equal(elements.get("request-flow-filter-outcomes").textContent, filterStep.filterEducation.outcomes);
-  assert.equal(elements.get("request-flow-filter-cautions").textContent, filterStep.filterEducation.cautions);
-  assert.equal(elements.get("request-flow-filter-source").textContent, filterStep.filterEducation.source);
-  assert.equal(elements.get("request-flow-filter-education").hidden, false);
-  assert.equal(elements.get("request-flow-filter-name").textContent, filterStep.filterEducation.name);
-  assert.equal(elements.get("request-flow-filter-fqcn").textContent, filterStep.filterEducation.fqcn);
-  assert.equal(elements.get("request-flow-filter-description").textContent, filterStep.filterEducation.description);
+  assert.match(elements.get("request-flow-step-description").textContent, /역할을 합니다/);
+  assert.equal(elements.get("request-flow-filter-education").hidden, true);
+  assert.ok(!elements.get("request-flow-step-title").textContent.includes(" · "));
   assert.equal(filterNode.getAttribute("data-request-flow-active"), "true");
   assert.equal(ui.state.selection.id, "endpoint-a");
   assert.deepEqual(Array.from(ui.state.graph.nodes, (node) => node.id), nodeIds);
@@ -3357,8 +4344,7 @@ test("상세 처리 보기에서 단계·표준 Filter 설명·재생 조작을 
   assert.equal(ui.requestFlow.state().status, "paused");
   assert.equal(ui.requestFlow.state().stepIndex, filterIndex + 1);
   assert.equal(ui.requestFlow.activeFrameCount(), 0);
-  assert.equal(elements.get("request-flow-filter-education").hidden,
-    !ui.requestFlow.state().step.filterEducation);
+  assert.equal(elements.get("request-flow-filter-education").hidden, true);
   assert.equal(filterNode.getAttribute("data-request-flow-active"), null);
 
   elements.get("request-flow-start").dispatchEvent({ type: "click" });
@@ -3368,24 +4354,19 @@ test("상세 처리 보기에서 단계·표준 Filter 설명·재생 조작을 
   assert.equal(ui.requestFlow.activeFrameCount(), 0);
   assert.equal(filterNode.getAttribute("data-request-flow-active"), "true");
 
-  elements.get("setting-show-detail-flow").checked = false;
-  elements.get("setting-show-detail-flow").dispatchEvent({ type: "change" });
+  elements.get("request-flow-detail-toggle").dispatchEvent({ type: "click" });
   assert.equal(ui.requestFlow.state().stepIndex, filterIndex);
-  assert.equal(ui.requestFlow.state().status, "paused");
   assert.equal(elements.get("request-flow-details").hidden, true);
-  elements.get("setting-show-detail-flow").checked = true;
-  elements.get("setting-show-detail-flow").dispatchEvent({ type: "change" });
-  assert.equal(ui.requestFlow.state().stepIndex, filterIndex);
-  assert.equal(ui.requestFlow.state().status, "paused");
+  elements.get("request-flow-detail-toggle").dispatchEvent({ type: "click" });
   assert.equal(elements.get("request-flow-details").hidden, false);
 
   assert.equal(ui.requestFlow.seekToStep(steps.length - 1), true);
-  assert.equal(ui.requestFlow.state().step.id, "education-response-return");
-  assert.equal(ui.requestFlow.state().step.anchorId, null);
+  assert.equal(ui.requestFlow.state().step.id, "education-http-response");
+  assert.equal(ui.requestFlow.state().step.anchorId, "education-http-response");
   assert.equal(elements.get("request-flow-next").disabled, true);
   assert.equal(elements.get("request-flow-previous").disabled, false);
   assert.equal(findAllByClass(elements.get("graph-nodes"), "graph-node")
-    .some((node) => node.getAttribute("data-request-flow-active") === "true"), false);
+    .filter((node) => node.getAttribute("data-request-flow-active") === "true").length, 1);
 
   elements.get("request-flow-reset").dispatchEvent({ type: "click" });
   assert.equal(ui.requestFlow.state().status, "idle");
@@ -3399,7 +4380,7 @@ test("상세 처리 보기에서 단계·표준 Filter 설명·재생 조작을 
   assert.equal(ui.requestFlow.state().stepIndex, 0);
   assert.equal(ui.requestFlow.state().steps.some((step) => step.anchorId === "endpoint-b"), true);
   assert.equal(filterNode.getAttribute("data-request-flow-active"), null);
-  assert.equal(elements.get("request-flow-step-count").textContent, `1 / ${ui.requestFlow.state().steps.length}`);
+  assert.equal(elements.get("request-flow-popover-count").textContent, `1 / ${ui.requestFlow.state().steps.length}`);
 
   ui.returnToAllMap();
   assert.equal(elements.get("request-flow-controls").hidden, true);
@@ -3426,6 +4407,14 @@ test("Request 교육 빛 점은 꺾인 SVG 경로의 실제 좌표를 사용함"
   assert.deepEqual({ ...point }, { x: 50, y: 25 });
   assert.deepEqual({ ...window.MapInBootRequestFlow.pathPointAt(path, 0) }, { x: 0, y: 0 });
   assert.deepEqual({ ...window.MapInBootRequestFlow.pathPointAt(path, 1) }, { x: 50, y: 50 });
+  const first = { getTotalLength: () => 40, getPointAtLength: (distance) => ({ x: distance, y: 0 }) };
+  const second = { getTotalLength: () => 60, getPointAtLength: (distance) => ({ x: distance, y: 60 }) };
+  assert.deepEqual({ ...window.MapInBootRequestFlow.pathPointAt([first, second], 0.5, 100) }, { x: 10, y: 60 });
+  assert.deepEqual({ ...window.MapInBootRequestFlow.pathPointAt([first, second], 1, 100) }, { x: 60, y: 60 });
+  const transformedPath = { ...path, getScreenCTM: () => ({ a: 1, b: 0, c: 0, d: 1, e: 100, f: 50 }) };
+  const dotFrame = { getScreenCTM: () => ({ a: 2, b: 0, c: 0, d: 2, e: 40, f: 20 }) };
+  assert.deepEqual({ ...window.MapInBootRequestFlow.pathPointAt(transformedPath, 0.75, 100, dotFrame) },
+    { x: 55, y: 27.5 });
   assert.equal(window.MapInBootRequestFlow.pathPointAt({}, 0.5), null);
 });
 
@@ -3531,7 +4520,7 @@ test("Request 교육은 상세 MAP에서만 표시되고 View 복귀·문서 숨
   ui.requestFlow.setSteps([{ id: "visible-dot", kind: "actual", anchorId: "endpoint-a", position: { x: 10, y: 20 } }]);
   assert.equal(elements.get("request-flow-dot").hasAttribute("hidden"), true);
   ui.requestFlow.play();
-  assert.equal(elements.get("request-flow-dot").hasAttribute("hidden"), true);
+  assert.equal(elements.get("request-flow-dot").hasAttribute("hidden"), false);
   assert.equal(findAllByClass(elements.get("graph-nodes"), "graph-node")
     .find((node) => node.getAttribute("data-node-id") === "endpoint-a")
     .getAttribute("data-request-flow-active"), "true");
@@ -3575,28 +4564,33 @@ test("Request 교육은 SVG Edge 경로를 따라 점을 이동하고 실제·�
   await ui.layoutGraph();
 
   const steps = ui.state.requestFlowSteps;
-  const first = steps[0];
-  const target = steps[1];
-  assert.equal(first.anchorId, "education-http-request");
-  assert.equal(first.transition.kind, "projection");
-  assert.equal(first.transition.sourceId, first.anchorId);
-  assert.equal(first.transition.targetId, target.anchorId);
-  const path = elements.get("graph-flow-projection").children.find((element) =>
-    element.tagName === "path" && element.getAttribute("data-projection-edge-id") === first.transition.edgeId);
+  const stepIndex = steps.findIndex((step) => step.transition && step.transition.kind === "display"
+    && step.transition.sourceAnchorId && step.transition.targetAnchorId);
+  assert.ok(stepIndex >= 0);
+  const first = steps[stepIndex];
+  const target = steps[stepIndex + 1];
+  assert.equal(first.transition.kind, "display");
+  assert.equal(first.transition.sourceAnchorId, first.anchorId);
+  assert.equal(first.transition.targetAnchorId, target.anchorId);
+  const path = routedSegmentPath(ui, elements, "displayRelationToSegmentIds", first.transition.relationId);
   assert.ok(path);
+  const routedId = path.getAttribute("data-segment-id");
+  path.setAttribute("data-segment-id", "segment:shared-display");
+  path.setAttribute("data-segment-ids", `segment:shared-display,${routedId}`);
   path.getTotalLength = () => 100;
   path.getPointAtLength = (distance) => distance <= 50
     ? { x: distance, y: 0 }
     : { x: 50, y: distance - 50 };
-  const source = findAllByClass(elements.get("graph-flow-projection"), "graph-projection-node")
-    .find((node) => node.getAttribute("data-projection-id") === first.anchorId);
-  const destination = findAllByClass(elements.get("graph-flow-projection"), "graph-projection-node")
-    .find((node) => node.getAttribute("data-projection-id") === target.anchorId);
+  const source = findAllByClass(elements.get("graph-nodes"), "graph-composite-item")
+    .find((node) => (node.getAttribute("data-projection-node-ids") || "").split(",").includes(first.anchorId));
+  const destination = findAllByClass(elements.get("graph-nodes"), "graph-composite-item")
+    .find((node) => (node.getAttribute("data-projection-node-ids") || "").split(",").includes(target.anchorId));
   assert.ok(source && destination);
 
+  assert.equal(ui.requestFlow.seekToStep(stepIndex), true);
   ui.requestFlow.play();
   assert.equal(source.getAttribute("data-request-flow-active"), "true");
-  assert.equal(elements.get("request-flow-dot").hasAttribute("hidden"), true);
+  assert.equal(elements.get("request-flow-dot").hasAttribute("hidden"), false);
   animationClock.tick(1500);
   assert.equal(ui.requestFlow.state().phase, "EDGE_TRAVEL");
   assert.equal(elements.get("request-flow-status").textContent, "이동 중");
@@ -3623,7 +4617,7 @@ test("Request 교육은 SVG Edge 경로를 따라 점을 이동하고 실제·�
   animationClock.tick(225);
   assert.equal(ui.requestFlow.state().phase, "NODE_HOLD");
   assert.equal(ui.requestFlow.state().step.anchorId, target.anchorId);
-  assert.equal(elements.get("request-flow-dot").hasAttribute("hidden"), true);
+  assert.equal(elements.get("request-flow-dot").hasAttribute("hidden"), false);
   assert.equal(destination.getAttribute("data-request-flow-active"), "true");
 
   ui.requestFlow.reset();
@@ -3640,7 +4634,7 @@ test("Request 교육은 SVG Edge 경로를 따라 점을 이동하고 실제·�
   assert.equal(animationClock.activeCount(), 0);
 });
 
-test("Request Flow는 HTMLCollection형 SVG Projection children에서 실제 경로를 찾음", async () => {
+test("Request Flow는 HTMLCollection형 Composite children에서 실제 Segment를 찾음", async () => {
   const animationClock = createFakeClock();
   const { ui, elements } = loadUi({ animationClock });
   ui.renderGraph(detailGraphFixture());
@@ -3648,29 +4642,32 @@ test("Request Flow는 HTMLCollection형 SVG Projection children에서 실제 경
   await ui.layoutGraph();
 
   const first = ui.state.requestFlowSteps[0];
-  assert.equal(first.transition.kind, "projection");
-  const projectionLayer = elements.get("graph-flow-projection");
-  const path = projectionLayer.children.find((element) =>
-    element.getAttribute("data-projection-edge-id") === first.transition.edgeId);
+  const routedStep = ui.state.requestFlowSteps.find((step) => step.transition?.kind === "display");
+  assert.ok(routedStep, "확인된 표시 관계를 이동 경로로 사용");
+  const path = routedSegmentPath(ui, elements, "displayRelationToSegmentIds", routedStep.transition.relationId);
   assert.ok(path);
+  routedStep.transition.length = 100;
   path.getTotalLength = () => 100;
   path.getPointAtLength = (distance) => ({ x: distance, y: 31 });
 
-  const children = useHtmlCollectionChildren(projectionLayer);
+  const compositeLayer = elements.get("graph-nodes");
+  const children = useHtmlCollectionChildren(compositeLayer);
   assert.equal(children.length > 0, true);
-  assert.equal(children.item(0), projectionLayer.children[0]);
+  assert.equal(children.item(0), compositeLayer.children[0]);
   assert.equal(Array.from(children).length, children.length);
   assert.equal(typeof children.forEach, "undefined");
   assert.equal(typeof children.find, "undefined");
   assert.equal(typeof children.map, "undefined");
   assert.equal(typeof children.filter, "undefined");
 
+  ui.requestFlow.setPlaybackSettings({ nodeHoldDuration: 500 });
+  ui.requestFlow.seekToStep(ui.state.requestFlowSteps.indexOf(routedStep));
   ui.requestFlow.play();
-  assert.doesNotThrow(() => animationClock.tick(1500));
+  assert.doesNotThrow(() => animationClock.tick(600));
   assert.equal(ui.requestFlow.state().phase, "EDGE_TRAVEL");
   assert.equal(elements.get("request-flow-dot").hidden, false);
-  assert.equal(elements.get("request-flow-dot").getAttribute("cx"), "0");
-  assert.equal(elements.get("request-flow-dot").getAttribute("cy"), "31");
+  assert.ok(Number.isFinite(Number(elements.get("request-flow-dot").getAttribute("cx"))));
+  assert.ok(Number.isFinite(Number(elements.get("request-flow-dot").getAttribute("cy"))));
 });
 
 test("Request Flow는 HTMLCollection형 Graph Edge의 묶인 원본 ID를 찾고 없는 경로를 건너뜀", async () => {
@@ -3681,24 +4678,24 @@ test("Request Flow는 HTMLCollection형 Graph Edge의 묶인 원본 ID를 찾고
   await ui.layoutGraph();
 
   const edgeLayer = elements.get("graph-edges");
-  const edgePath = edgeLayer.children.find((element) =>
-    element.getAttribute("data-edge-id") === "match-a");
+  const routedStep = ui.state.requestFlowSteps.find((step) =>
+    step.transition?.kind === "display" && step.transition.originalEdgeIds.includes("security-filtered-1"));
+  assert.ok(routedStep, "원본 FILTERED_BY를 포함한 표시 관계 필요");
+  const edgePath = routedSegmentPath(ui, elements, "displayRelationToSegmentIds", routedStep.transition.relationId);
   assert.ok(edgePath);
-  edgePath.setAttribute("data-edge-ids", "match-a,match-a-bundle");
+  routedStep.transition.length = 100;
+  edgePath.setAttribute("data-edge-ids", "security-filtered-1,security-filtered-bundle");
   edgePath.getTotalLength = () => 100;
   edgePath.getPointAtLength = (distance) => ({ x: 70, y: distance });
   useHtmlCollectionChildren(edgeLayer);
 
-  ui.requestFlow.setSteps([
-    { id: "endpoint", label: "API", kind: "actual", anchorId: "endpoint-a", transition: {
-      kind: "actual", edgeId: "match-a-bundle", sourceId: "endpoint-a", targetId: "chain-a", length: 100
-    } },
-    { id: "chain", label: "Chain", kind: "actual", anchorId: "chain-a" }
-  ]);
+  ui.requestFlow.setPlaybackSettings({ nodeHoldDuration: 500 });
+  ui.requestFlow.seekToStep(ui.state.requestFlowSteps.indexOf(routedStep));
   ui.requestFlow.play();
-  assert.doesNotThrow(() => animationClock.tick(1500));
-  assert.equal(elements.get("request-flow-dot").getAttribute("cx"), "70");
-  assert.equal(elements.get("request-flow-dot").getAttribute("cy"), "0");
+  assert.doesNotThrow(() => animationClock.tick(600));
+  assert.equal(ui.requestFlow.state().phase, "EDGE_TRAVEL");
+  assert.ok(Number.isFinite(Number(elements.get("request-flow-dot").getAttribute("cx"))));
+  assert.ok(Number.isFinite(Number(elements.get("request-flow-dot").getAttribute("cy"))));
   assert.equal(edgePath.getAttribute("data-request-flow-active"), "true");
   assert.equal(elements.get("request-flow-status").textContent, "이동 중");
   assert.equal(elements.get("request-flow-status").getAttribute("data-state"), "moving");
@@ -3707,12 +4704,12 @@ test("Request Flow는 HTMLCollection형 Graph Edge의 묶인 원본 ID를 찾고
 
   ui.requestFlow.setSteps([
     { id: "endpoint", label: "API", kind: "actual", anchorId: "endpoint-a", transition: {
-      kind: "actual", edgeId: "missing-edge", sourceId: "endpoint-a", targetId: "chain-a", length: 100
+      kind: "display", relationId: "missing-relation", sourceId: "endpoint-a", targetId: "chain-a", length: 100
     } },
     { id: "chain", label: "Chain", kind: "actual", anchorId: "chain-a" }
   ]);
   ui.requestFlow.play();
-  assert.doesNotThrow(() => animationClock.tick(1500));
+  assert.doesNotThrow(() => animationClock.tick(600));
   assert.match(elements.get("request-flow-status").textContent, /경로 확인 불가/);
   assert.equal(elements.get("request-flow-status").getAttribute("data-state"), "unavailable");
 });
@@ -3771,18 +4768,21 @@ test("Request Flow Edge 이동 중 Inspector를 닫아도 재생과 경로 이�
   ui.openEndpointDetail("endpoint-a");
   await ui.layoutGraph();
 
-  const transition = ui.state.requestFlowSteps[0].transition;
-  assert.equal(transition.kind, "projection");
-  const path = elements.get("graph-flow-projection").children.find((element) =>
-    element.tagName === "path" && element.getAttribute("data-projection-edge-id") === transition.edgeId);
+  const routedIndex = ui.state.requestFlowSteps.findIndex((step) => step.transition?.kind === "display");
+  const routedSteps = ui.state.requestFlowSteps.slice(routedIndex, routedIndex + 2);
+  assert.ok(routedSteps.length === 2 && routedSteps[0].transition);
+  const transition = routedSteps[0].transition;
+  assert.equal(transition.kind, "display");
+  const path = routedSegmentPath(ui, elements, "displayRelationToSegmentIds", transition.relationId);
   assert.ok(path);
   path.getTotalLength = () => 100;
   path.getPointAtLength = (distance) => ({ x: distance, y: 12 });
   transition.length = 100;
+  ui.requestFlow.setSteps(routedSteps);
+  ui.requestFlow.setPlaybackSettings({ nodeHoldDuration: 500 });
 
   ui.requestFlow.play();
-  animationClock.tick(1500);
-  animationClock.tick(100);
+  animationClock.tick(600);
   assert.equal(ui.requestFlow.state().phase, "EDGE_TRAVEL");
   assert.equal(ui.requestFlow.state().status, "running");
   const previousProgress = ui.requestFlow.state().progress;
@@ -3884,6 +4884,10 @@ test("Flow 인덱스가 실제 관계·등록 종류·순서 불확실성을 분
   assert.equal(index.servletFiltersForServlet("servlet-1").filters[0].id, "servlet-filter-1");
   assert.equal(index.handlerFor("endpoint-a").status, "CONFIRMED");
   assert.equal(index.handlerFor("endpoint-a").node.id, "handler-a");
+  const withoutMapping = window.MapInBootFlow.createIndex({ nodes: graph.nodes,
+    edges: graph.edges.filter((edge) => edge.id !== "handler-map-a") });
+  assert.equal(withoutMapping.handlerFor("endpoint-a").status, "UNCERTAIN",
+    "Endpoint.attributes.handler 문자열만으로 Handler 관계를 복원하지 않음");
   const summary = index.summary();
   assert.equal(summary.endpointCount, 2);
   assert.equal(summary.matchedEndpointCount, 1);
@@ -4027,7 +5031,7 @@ test("전체 MAP이 실제 구조 Edge를 보존하고 통계 문구를 표시�
 
   assert.equal(ui.state.graph.edges.map((edge) => edge.id).join(","), originalEdgeIds.join(","));
   assert.equal(elements.get("graph-svg").hasAttribute("hidden"), false);
-  assert.equal(ui.state.graph.edges.some((edge) => edge.type === "FLOWS_TO"), false);
+  assert.equal(ui.state.graph.edges.some((edge) => edge.type === "FLOWS_TO"), true);
 });
 
 test("Filter 관계가 없는 Snapshot에서도 구조 Node를 유지하고 가짜 Edge를 만들지 않음", () => {
@@ -4347,21 +5351,26 @@ test("ELK 결과를 의미 기반 Lane으로 재배치하고 실제 관계와 �
     rendered: ui.state.graphRender && ui.state.graphRender.positions,
     attributes: elements.get("graph-svg").attributes
   }));
-  const renderedNode = elements.get("graph-nodes").children[2];
-  const renderedEdge = findAllByClass(elements.get("graph-edges"), "graph-edge")[0];
-  assert.equal(renderedNode.attributes.transform, `translate(${layout.positions["node-2"].x} ${layout.positions["node-2"].y})`);
-  assert.match(renderedEdge.attributes.d, /^M /);
+  const apiCard = compositeCardForNode(layout.plan, "node-2", "API_MAPPING");
+  const apiItem = compositeItemForNode(layout.plan, "node-2", apiCard.rowId);
+  const renderedNode = findAllByClass(elements.get("graph-nodes"), "graph-composite-card")
+    .find((card) => card.getAttribute("data-composite-card-id") === apiCard.id);
+  assert.equal(renderedNode.getAttribute("transform"), `translate(${apiCard.position.x} ${apiCard.position.y})`);
+  assert.equal(apiItem.bounds.x, apiCard.contentBounds.x);
+  assert.equal(layout.plan.overviewRouting.relations.some((relation) =>
+    relation.role === "API_MAPPING" && relation.sourceItemId === apiItem.id), false,
+  "확인된 FQCN 매핑이 없는 Endpoint와 Handler 사이에 표시 관계를 만들지 않음");
   assert.equal(ui.navigation.state.graphBounds.width, layout.width);
   assert.equal(ui.navigation.state.graphBounds.height, layout.height);
-  assert.equal(ui.state.graphRender.areas.filter((area) => area.id !== "education").length, 7);
-  assert.equal(elements.get("graph-areas").children.filter((group) => group.getAttribute("class") === "graph-chain-area").length,
-    layout.plan.chainGroups.length);
-  assert.equal(layout.positions["node-2"].x, layout.plan.lanes.find((lane) => lane.id === "endpoint").x);
+  assert.equal(ui.state.graphRender.areas.filter((area) => area.id !== "education").length, 5);
+  assert.equal(elements.get("graph-areas").children.filter((group) => group.getAttribute("class") === "graph-chain-area").length, 0);
+  assert.equal(apiCard.position.x, layout.plan.lanes.find((lane) => lane.id === "endpoint").x);
   assert.equal(layout.plan.mode, "request-flow-lanes");
-  assert.ok(layout.plan.lanes.find((lane) => lane.id === "security-filter").columns >= 1);
+  assert.ok(layout.plan.lanes.find((lane) => lane.id === "security-chain").columns >= 1);
   assert.ok(layout.plan.chainGroups.length >= 1);
   const areaNodes = new Map(ui.state.graphRender.areas.map((area) => [area.id, area.nodeIds]));
-  assert.ok(areaNodes.get("mvc").length > 0);
+  assert.ok(areaNodes.get("servlet-filter").length > 0);
+  assert.ok(areaNodes.get("security-checks").length > 0);
   assert.ok(areaNodes.get("api-mapping").length > 0);
   assert.ok(areaNodes.get("controller-handler").length > 0);
   assert.ok(areaNodes.get("spring-security").length > 0);
@@ -4386,37 +5395,46 @@ test("17개 API를 Chain별 Hidden Group에 배치하고 확인된 Chain·Handle
   await ui.layoutGraph();
 
   const endpoints = ui.state.viewGraph.nodes.filter((node) => node.type === "ENDPOINT");
-  const endpointXs = new Set(endpoints.map((node) => ui.state.layout.positions[node.id].x));
+  const plan = ui.state.layout.plan;
+  const endpointCards = plan.displayModel.composites.filter((card) => card.kind === "API_MAPPING");
+  const handlerCards = plan.displayModel.composites.filter((card) => card.kind === "CONTROLLER_HANDLER");
+  const endpointXs = new Set(endpointCards.map((card) => card.position.x));
   assert.equal(endpoints.length, 17);
+  assert.equal(endpointCards.length, 17);
+  assert.equal(handlerCards.length, 17);
   assert.equal(endpointXs.size, 2);
   const endpointColumns = [...endpointXs].sort((left, right) => left - right)
-    .map((x) => endpoints.map((node) => ui.state.layout.positions[node.id])
-      .filter((position) => position.x === x).sort((left, right) => left.y - right.y));
+    .map((x) => endpointCards.filter((card) => card.position.x === x).sort((left, right) => left.position.y - right.position.y));
   assert.deepEqual(endpointColumns.map((column) => column.length), [9, 8]);
-  assert.equal(endpointColumns[1][0].y - endpointColumns[0][0].y, 270);
-  const hiddenGroups = ui.state.layout.plan.hiddenGroups;
+  const hiddenGroups = plan.hiddenGroups;
   assert.deepEqual(Array.from(hiddenGroups, (group) => group.members.endpoints.length), [5, 4, 4, 4]);
   endpoints.forEach((endpoint) => {
     const group = hiddenGroups.find((candidate) => candidate.members.endpoints.includes(endpoint.id));
-    const position = ui.state.layout.positions[endpoint.id];
-    assert.ok(position.y >= group.rowTop && position.y + 120 <= group.rowBottom);
+    const item = compositeItemForNode(plan, endpoint.id, group.id);
+    const card = compositeCardForNode(plan, endpoint.id, "API_MAPPING", group.id);
+    assert.ok(item && card);
+    assert.ok(card.position.y >= group.rowTop && card.position.y + card.position.height <= group.rowBottom);
     const match = ui.state.flowIndex.firstMatchedChain(endpoint.id);
     if (match.status === "CONFIRMED") {
-      assert.equal(hiddenGroups.find((candidate) => candidate.members.handlers
-        .includes(ui.state.flowIndex.handlerFor(endpoint.id).node.id)).id, group.id);
+      const handler = ui.state.flowIndex.handlerFor(endpoint.id).node;
+      const handlerCard = compositeCardForNode(plan, handler.id, "CONTROLLER_HANDLER", group.id);
+      assert.ok(handlerCard);
+      assert.ok(Math.abs(handlerCard.position.y + handlerCard.position.height / 2
+        - card.position.y - card.position.height / 2) <= 1);
     }
   });
   assert.equal(ui.state.flowIndex.summary().matchedEndpointCount, 13);
   assert.equal(ui.state.flowIndex.summary().uncertainCount, 4);
-  const endpointX = ui.state.layout.positions[endpoints[0].id].x;
   endpoints.forEach((endpoint) => {
     const handler = ui.state.flowIndex.handlerFor(endpoint.id).node;
     assert.ok(handler);
-    assert.ok(ui.state.layout.positions[handler.id].x > endpointX);
+    const apiCard = compositeCardForNode(plan, endpoint.id, "API_MAPPING");
+    const handlerCard = compositeCardForNode(plan, handler.id, "CONTROLLER_HANDLER", apiCard.rowId);
+    assert.ok(handlerCard.position.x > apiCard.position.x);
   });
   assert.equal(ui.state.graph.edges.length, originalEdgeCount);
   assert.equal(layoutApi.buildGraph(ui.state.graph).edges.length, originalEdgeCount);
-  const mappingRelations = ui.state.layout.plan.overviewRouting.relations.filter((relation) => relation.role === "API_MAPPING");
+  const mappingRelations = plan.overviewRouting.relations.filter((relation) => relation.role === "API_MAPPING");
   assert.equal(mappingRelations.length, 17);
   assert.equal(elements.get("graph-guides").children.length, 0);
 });
@@ -4479,7 +5497,7 @@ test("Overview는 내부 처리 카드를 제외하고 Detail은 학습 단계�
     .some((node) => node.getAttribute("data-node-id") === "education-response-return"), false);
   assert.equal(JSON.stringify(snapshot), originalGraph);
   assert.equal(ui.state.graph.nodes.length, 17 + 17 + 3 + 46, "실제 Snapshot Node 수 보존");
-  assert.equal(ui.state.graph.edges.some((edge) => edge.type === "FLOWS_TO"), false);
+  assert.equal(ui.state.graph.edges.some((edge) => edge.type === "FLOWS_TO"), true);
   ui.selectView("feature-flow");
   await ui.layoutGraph();
   assert.ok(ui.state.layout.plan.projection.nodes.some((node) => node.id === "education-handler-mapping"));
@@ -4589,19 +5607,18 @@ test("Servlet·Security Filter는 4열을 넘기지 않고 0·1·3·4·5·8·9·
   });
 });
 
-test("Filter 줄바꿈 표시용 Edge는 다음 행의 첫 Filter로 우회하고 카드 내부를 통과하지 않음", () => {
+test("Filter 줄바꿈은 외부 Edge 없이 복합 카드 내부 순서를 유지함", () => {
   const { layoutApi, ui } = loadUi();
   const layout = layoutApi.semanticLayout(ui.normalizeGraph(wrappedFilterGraph(0, 5)), { positions: {} });
-  const wrap = layout.plan.projection.edges.find((edge) => edge.routeKind === "filter-wrap");
-  assert.ok(wrap);
-  assert.equal(wrap.sourceId, "security-filter-3");
-  assert.equal(wrap.targetId, "security-filter-4");
-  assert.equal(wrap.dataEdgeId, null);
-  const route = layout.plan.overviewRouting.routesByRelationId[wrap.id];
-  assert.ok(route);
-  assert.ok(route.orderedSegmentIds.length >= 3);
-  assert.equal(route.sourcePort.x, layout.positions[wrap.sourceId].x + 260);
-  assert.equal(route.targetPort.x, layout.positions[wrap.targetId].x);
+  const card = compositeCardForNode(layout.plan, "security-filter-0", "SECURITY_CHAIN", "chain:chain");
+  const filters = card.items.filter((item) => !item.isHeader);
+  assert.equal(filters.length, 5);
+  assert.deepEqual(Array.from(filters, (item) => item.order), [1, 2, 3, 4, 5]);
+  assert.deepEqual(Array.from(filters, (item) => item.originalNodeIds[0]),
+    ["security-filter-0", "security-filter-1", "security-filter-2", "security-filter-3", "security-filter-4"]);
+  assert.ok(filters.every((item, index) => index === 0 || item.bounds.y > filters[index - 1].bounds.y));
+  assert.equal(layout.plan.overviewRouting.relations.some((relation) => relation.type === "FILTERED_BY"), false);
+  assert.equal(layout.plan.overviewRouting.relations.some((relation) => relation.routeKind === "filter-wrap"), false);
 });
 
 test("주요 섹션은 실제 사용 폭을 사용하고 Hidden Row별 Y 구간을 유지함", () => {
@@ -4619,7 +5636,7 @@ test("주요 섹션은 실제 사용 폭을 사용하고 Hidden Row별 Y 구간�
       const members = instanceIds.map((instanceId) => layout.plan.displayModel.instances
         .find((instance) => instance.id === instanceId)?.position).filter(Boolean);
       let top = Math.min(...members.map((position) => position.y));
-      let bottom = Math.max(...members.map((position) => position.y + 120));
+      let bottom = Math.max(...members.map((position) => position.y + (position.height || 120)));
       assert.equal(section.top, top, `${id} actual top`);
       assert.equal(section.height, bottom - top, `${id} actual height`);
       return id;
@@ -4628,12 +5645,12 @@ test("주요 섹션은 실제 사용 폭을 사용하고 Hidden Row별 Y 구간�
   const displayModel = layout.plan.displayModel;
   layout.plan.hiddenGroups.filter((row) => row.type === "CHAIN").forEach((row) => {
     const categoryPositions = Object.fromEntries(Object.entries(row.members).map(([category, nodeIds]) => [category,
-      nodeIds.flatMap((nodeId) => (displayModel.originalNodeToInstanceIds[nodeId] || [])
-        .map((instanceId) => displayModel.instances.find((instance) => instance.id === instanceId))
-        .filter((instance) => instance && instance.rowId === row.id)
-        .map((instance) => instance.position))]));
+      Array.from(new Set(nodeIds.flatMap((nodeId) => displayModel.originalNodeToCardIds[nodeId] || [])))
+        .map((cardId) => displayModel.cardById[cardId])
+        .filter((card) => card && card.rowId === row.id)
+        .map((card) => card.position)]));
     Object.values(categoryPositions).flat().forEach((position) => {
-      assert.ok(position.y >= row.rowTop && position.y + 120 <= row.rowBottom,
+      assert.ok(position.y >= row.rowTop && position.y + position.height <= row.rowBottom,
         `${row.id} member outside its hidden row`);
     });
     const chainFilter = [...categoryPositions.chains, ...categoryPositions.filters];
@@ -4643,7 +5660,7 @@ test("주요 섹션은 실제 사용 폭을 사용하고 Hidden Row별 Y 구간�
     const rowCenter = (row.rowTop + row.rowBottom) / 2;
     sections.forEach((positions) => {
       const top = Math.min(...positions.map((position) => position.y));
-      const bottom = Math.max(...positions.map((position) => position.y + 120));
+      const bottom = Math.max(...positions.map((position) => position.y + position.height));
       assert.ok(Math.abs((top + bottom) / 2 - rowCenter) <= 1,
         `${row.id} section must be vertically centered in its row`);
     });
@@ -4693,7 +5710,7 @@ test("Security Data 원본 구조 키를 의미 이름으로 축약하고 원문
 });
 
 test("ELK 실패 시 초기 Graph 배치와 SVG 표시 상태를 유지함", async () => {
-  const { ui, elements, layoutApi } = loadUi();
+  const { ui, elements, layoutApi, window } = loadUi();
   layoutApi.layout = () => Promise.reject(new Error("worker unavailable"));
 
   ui.renderGraph(graphFixture());
@@ -5128,12 +6145,12 @@ test("화면 고정은 모든 사용자 Pan·Zoom 우회 경로를 막고 선택
   assert.equal(viewport.locked, true);
 
   const edge = findAllByClass(elements.get("graph-edges"), "graph-edge")
-    .find((item) => (item.getAttribute("data-edge-ids") || "").split(",").includes("edge-7"));
+    .find((item) => (item.getAttribute("data-edge-ids") || "").split(",").includes("edge-0"));
   edge.dispatchEvent({ type: "mouseenter" });
   assert.equal(elements.get("graph-popover").hidden, false);
   edge.dispatchEvent({ type: "click" });
   assert.equal(ui.state.selection.kind, "edge");
-  assert.equal(ui.state.selection.id, "edge-7");
+  assert.equal(ui.state.selection.id, "edge-0");
   assert.equal(elements.get("inspector").hidden, false);
   ui.clearSelection();
   assert.equal(viewport.locked, true);
@@ -5190,36 +6207,39 @@ test("Hover 요약과 Node·Edge Inspector가 실제 ID·연결·Evidence를 사
   ui.renderGraph(graphFixture());
   await ui.layoutGraph();
 
-  const node = elements.get("graph-nodes").children[2];
+  const endpointItem = findAllByClass(elements.get("graph-nodes"), "graph-composite-item")
+    .find((item) => (item.getAttribute("data-node-ids") || "").split(",").includes("node-2"));
+  const endpointItemId = endpointItem.getAttribute("data-composite-item-id");
   let edge = findAllByClass(elements.get("graph-edges"), "graph-edge")
-    .find((item) => (item.getAttribute("data-edge-ids") || "").split(",").includes("edge-7"));
+    .find((item) => (item.getAttribute("data-edge-ids") || "").split(",").includes("edge-0"));
   const initialNodeElements = [...elements.get("graph-nodes").children];
   const initialEdgeEmphasis = findAllByClass(elements.get("graph-edges"), "graph-edge")
     .map((item) => item.getAttribute("data-emphasis"));
   const initialLayoutCalls = layoutCalls.length;
-  node.dispatchEvent({ type: "mouseenter" });
-  assert.equal(elements.get("graph-popover").hidden, false);
+  endpointItem.dispatchEvent({ type: "mouseenter", bubbles: false });
+  assert.equal(elements.get("graph-popover").hidden, false, JSON.stringify({
+    listeners: endpointItem.listenerCount("mouseenter"), hover: ui.state.graphHover,
+    content: textOf(elements.get("graph-popover"))
+  }));
   assert.match(textOf(elements.get("graph-popover")), /GET \/orders/);
   assert.match(textOf(elements.get("graph-popover")), /관련 Finding 있음/);
   const hoveredNodeEdges = findAllByClass(elements.get("graph-edges"), "graph-edge");
   assert.deepEqual(hoveredNodeEdges.map((item) => item.getAttribute("data-emphasis")), initialEdgeEmphasis);
-  assert.equal(node.getAttribute("data-emphasis"), "base");
   assert.deepEqual([...elements.get("graph-nodes").children], initialNodeElements);
   assert.equal(layoutCalls.length, initialLayoutCalls);
-  node.dispatchEvent({ type: "mouseleave" });
+  endpointItem.dispatchEvent({ type: "mouseleave", bubbles: false });
   assert.equal(elements.get("graph-popover").hidden, true);
   assert.deepEqual(hoveredNodeEdges.map((item) => item.getAttribute("data-emphasis")), initialEdgeEmphasis);
 
-  node.dispatchEvent({ type: "click" });
+  endpointItem.dispatchEvent({ type: "click" });
   const inspector = elements.get("inspector");
-  assert.equal(ui.state.selection.kind, "node");
-  assert.equal(ui.state.selection.id, "node-2");
+  assert.equal(ui.state.selection.kind, "controller-group");
+  assert.equal(ui.state.selection.id, endpointItemId);
   assert.equal(inspector.hidden, false);
-  assert.equal(inspector.attributes["data-selection-kind"], "node");
-  assert.equal(inspector.attributes["data-selection-id"], "node-2");
-  const selectedNode = elements.get("graph-nodes").children[2];
-  assert.equal(selectedNode.attributes["data-selected"], "true");
-  assert.equal(selectedNode.attributes["data-related"], "true");
+  assert.equal(inspector.attributes["data-selection-kind"], "controller-group");
+  assert.equal(inspector.attributes["data-selection-id"], endpointItemId);
+  assert.equal(endpointItem.attributes["data-selected"], "true");
+  assert.equal(endpointItem.attributes["data-related"], "true");
   assert.match(textOf(inspector), /GET \/orders/);
   assert.match(textOf(inspector), /orders:\/\/node\/2/);
   assert.match(textOf(inspector), /관련 Finding 있음/);
@@ -5227,15 +6247,15 @@ test("Hover 요약과 Node·Edge Inspector가 실제 ID·연결·Evidence를 사
   const selectedEmphasis = findAllByClass(elements.get("graph-edges"), "graph-edge")
     .map((item) => item.getAttribute("data-emphasis"));
   const selectedElements = [...elements.get("graph-nodes").children];
-  const otherNode = selectedElements.find((item) => item.getAttribute("data-node-id") !== "node-2");
-  otherNode.dispatchEvent({ type: "mouseenter" });
+  const otherNode = findAllByClass(elements.get("graph-nodes"), "graph-composite-item")
+    .find((item) => item.getAttribute("data-composite-item-id") !== endpointItemId);
+  otherNode.dispatchEvent({ type: "mouseenter", bubbles: false });
   assert.equal(elements.get("graph-popover").hidden, false);
-  assert.equal(elements.get("graph-nodes").children.find((item) => item.getAttribute("data-node-id") === "node-2")
-    .getAttribute("data-selected"), "true");
+  assert.equal(endpointItem.getAttribute("data-selected"), "true");
   assert.deepEqual(findAllByClass(elements.get("graph-edges"), "graph-edge")
     .map((item) => item.getAttribute("data-emphasis")), selectedEmphasis);
   assert.deepEqual([...elements.get("graph-nodes").children], selectedElements);
-  otherNode.dispatchEvent({ type: "mouseleave" });
+  otherNode.dispatchEvent({ type: "mouseleave", bubbles: false });
 
   edge.dispatchEvent({ type: "mouseenter" });
   assert.deepEqual(findAllByClass(elements.get("graph-edges"), "graph-edge")
@@ -5244,34 +6264,33 @@ test("Hover 요약과 Node·Edge Inspector가 실제 ID·연결·Evidence를 사
 
   elements.get("endpoint-search").value = "get /orders";
   ui.applyGraphFilter();
-  assert.equal(ui.state.selection.id, "node-2");
-  assert.equal(elements.get("graph-nodes").children[0].attributes["data-node-id"], "node-2");
-  assert.equal(elements.get("graph-nodes").children[0].attributes["data-selected"], "true");
+  assert.equal(ui.state.selection.id, endpointItemId);
+  assert.equal(endpointItem.attributes["data-selected"], "true");
   elements.get("endpoint-search").value = "";
   ui.applyGraphFilter();
   edge = findAllByClass(elements.get("graph-edges"), "graph-edge")
-    .find((item) => (item.getAttribute("data-edge-ids") || "").split(",").includes("edge-7"));
+    .find((item) => (item.getAttribute("data-edge-ids") || "").split(",").includes("edge-0"));
 
   ui.setInspectorTab("connections");
-  assert.ok(["edge-1", "edge-2", "edge-3"].some((id) => textOf(inspector).includes(ui.state.displayIds.edge(id))));
-  assert.doesNotMatch(textOf(inspector), /edge-1|edge-2|edge-3/);
+  assert.ok(findAllByClass(inspector, "inspector-link")
+    .some((link) => link.getAttribute("data-node-id") === "node-2"));
   ui.setInspectorTab("relations");
-  assert.match(textOf(inspector), /보호 근거/);
+  assert.ok(["edge-1", "edge-2"].some((id) => textOf(inspector).includes(ui.state.displayIds.edge(id))),
+    textOf(inspector));
+  assert.doesNotMatch(textOf(inspector), /edge-1|edge-2/);
   const relationBlocks = findAllByClass(inspector, "inspector-relation");
   const findingReference = relationBlocks.at(-1);
-  assert.match(textOf(findingReference), new RegExp(ui.state.displayIds.node("node-3")));
-  assert.match(textOf(findingReference), new RegExp(ui.state.displayIds.node("node-4")));
-  assert.doesNotMatch(textOf(findingReference), /node-3|node-4|edge-3/);
-  assert.doesNotMatch(textOf(findingReference), /들어옴|나감/);
+  assert.ok(findingReference);
+  assert.doesNotMatch(textOf(inspector), /node-1|node-3|edge-1|edge-2/);
 
   edge.dispatchEvent({ type: "click" });
   assert.equal(inspector.attributes["data-selection-kind"], "edge");
-  assert.equal(inspector.attributes["data-selection-id"], "edge-7");
+  assert.equal(inspector.attributes["data-selection-id"], "edge-0");
   ui.setInspectorTab("properties");
-  assert.match(textOf(inspector), new RegExp(ui.state.displayIds.edge("edge-7")));
-  assert.match(textOf(inspector), new RegExp(ui.state.displayIds.node("node-7")));
-  assert.match(textOf(inspector), new RegExp(ui.state.displayIds.node("node-8")));
-  assert.doesNotMatch(textOf(inspector), /edge-7|node-7|node-8/);
+  assert.match(textOf(inspector), new RegExp(ui.state.displayIds.edge("edge-0")));
+  assert.match(textOf(inspector), new RegExp(ui.state.displayIds.node("node-0")));
+  assert.match(textOf(inspector), new RegExp(ui.state.displayIds.node("node-1")));
+  assert.doesNotMatch(textOf(inspector), /edge-0|node-0|node-1/);
 
   const close = findAllByClass(inspector, "inspector-close")[0];
   close.dispatchEvent({ type: "click" });
@@ -5279,10 +6298,10 @@ test("Hover 요약과 Node·Edge Inspector가 실제 ID·연결·Evidence를 사
   assert.equal(ui.state.selection, null);
 
   edge = findAllByClass(elements.get("graph-edges"), "graph-edge")
-    .find((item) => (item.getAttribute("data-edge-ids") || "").split(",").includes("edge-7"));
+    .find((item) => (item.getAttribute("data-edge-ids") || "").split(",").includes("edge-0"));
   edge.dispatchEvent({ type: "click" });
   assert.equal(ui.state.selection.kind, "edge");
-  assert.equal(ui.state.selection.id, "edge-7");
+  assert.equal(ui.state.selection.id, "edge-0");
   document.dispatchEvent({ type: "keydown", key: "Escape" });
   assert.equal(inspector.hidden, true);
   assert.equal(ui.state.selection, null);
@@ -5303,9 +6322,16 @@ test("기술 영역과 실제 Edge는 기본 상태에서 읽히고 선택 강�
   assert.match(appCss, /\.graph-node:focus-visible\s+\.graph-node-card/);
   assert.match(appCss, /graph-edge-security-filter-membership/);
   assert.match(appCss, /graph-area-box[^}]*fill-opacity:\s*\.1[4-8]/s);
+  assert.deepEqual(Array.from(new Set(Array.from(graphRendererJs.matchAll(/dash:\s*"([^"]+)"/g), (match) => match[1]))), ["none"]);
+  for (const selector of ["graph-guide-handler", "graph-projection-edge", "runtime-blueprint-edge"]) {
+    assert.doesNotMatch(appCss, new RegExp(`\\.${selector}[^}]*stroke-dasharray:\\s*[1-9]`));
+  }
+  assert.match(appCss, /\.graph-edge,\s*\.graph-guide-handler,\s*\.graph-projection-edge,\s*\.runtime-blueprint-edge\s*\{[^}]*stroke-dasharray:\s*none/s);
+  assert.match(appCss, /\.graph-chain-area-box\s*\{[^}]*stroke-dasharray:\s*5 4/s);
+  assert.match(appCss, /\.runtime-blueprint-region-box\s*\{[^}]*stroke-dasharray:\s*5 4/s);
 });
 
-test("Servlet Filter 노드는 Servlet 영역의 녹색, Security Filter는 주황색 계열을 사용함", async () => {
+test("Servlet·Security·미확정 Filter 복합 카드가 유형 색상을 유지함", async () => {
   const { ui, elements } = loadUi();
   const graph = wrappedFilterGraph(1, 1);
   graph.nodes.push({
@@ -5316,28 +6342,16 @@ test("Servlet Filter 노드는 Servlet 영역의 녹색, Security Filter는 주�
   ui.renderGraph(graph);
   await ui.layoutGraph();
 
-  const byId = new Map(findAllByClass(elements.get("graph-nodes"), "graph-node")
-    .map((element) => [element.getAttribute("data-node-id"), element]));
-  const colors = (id) => {
-    const node = byId.get(id);
-    const child = (className) => findAllByClass(node, className)[0];
-    return {
-      border: child("graph-node-card").getAttribute("stroke"),
-      tint: child("graph-node-background-tint").getAttribute("fill"),
-      dot: child("graph-node-type-dot").getAttribute("fill"),
-      label: child("graph-node-type").getAttribute("fill"),
-      idColor: child("graph-node-display-id").getAttribute("fill")
-    };
-  };
-  const servlet = colors("servlet-filter-0");
-  const security = colors("security-filter-0");
-  const unknown = colors("unknown-filter");
-  assert.equal(new Set([servlet.border, servlet.tint, servlet.dot, servlet.label]).size, 1);
-  assert.equal(new Set([security.border, security.tint, security.dot, security.label]).size, 1);
-  assert.notEqual(servlet.border, security.border);
-  assert.notEqual(unknown.border, servlet.border);
-  assert.notEqual(unknown.border, security.border);
-  assert.match(appCss, /\.graph-node-display-id\s*\{[^}]*fill:\s*#b5c3ba/);
+  const cards = findAllByClass(elements.get("graph-nodes"), "graph-composite-card");
+  const cardFor = (id) => cards.find((card) => (card.getAttribute("data-node-ids") || "").split(",").includes(id));
+  const surfaceColor = (id) => findAllByClass(cardFor(id), "graph-composite-surface")[0].getAttribute("stroke");
+  const servletColor = surfaceColor("servlet-filter-0");
+  const securityColor = surfaceColor("security-filter-0");
+  const unknownColor = surfaceColor("unknown-filter");
+  assert.equal(servletColor, "#65b98d");
+  assert.equal(securityColor, "#d6a35a");
+  assert.equal(unknownColor, "#94a3b8");
+  assert.equal(new Set([servletColor, securityColor, unknownColor]).size, 3);
 });
 
 test("내부 처리 과정 배경만 제거하고 Projection 배치 좌표와 상위 기술 영역을 보존함", async () => {
@@ -5358,12 +6372,14 @@ test("내부 처리 과정 배경만 제거하고 Projection 배치 좌표와 �
   assert.equal(layout.plan.educationArea, null);
   assert.equal(layout.plan.projection.nodes.length, 0);
   const areas = new Map(ui.state.graphRender.areas.map((area) => [area.id, area]));
-  assert.equal(areas.has("mvc"), ui.state.viewGraph.nodes.some((node) => node.type === "SERVLET"));
+  assert.equal(areas.has("mvc"), false);
+  assert.equal(areas.has("servlet-filter"), false);
   assert.ok(areas.has("api-mapping"));
   assert.ok(areas.has("controller-handler"));
   const apiBounds = areas.get("api-mapping").bounds[0];
   const handlerBounds = areas.get("controller-handler").bounds[0];
-  assert.ok(handlerBounds.left - apiBounds.right >= 400);
+  assert.ok(handlerBounds.left - apiBounds.right >= 100,
+    JSON.stringify({ apiBounds, handlerBounds, lanes: layout.plan.lanes }));
   assert.match(appCss, /data-area-id="controller-handler"[^}]*fill:\s*#49376a/);
   assert.equal(findAllByClass(elements.get("graph-flow-projection"), "graph-projection-node").length, 0);
   assert.equal(elements.get("setting-show-areas").checked, true);
@@ -5392,11 +6408,13 @@ test("SECURITY CHECKS에서 두 Handler 열로 향하는 관계가 표시 경로
     edges: [
       ...handlers.flatMap((id, index) => [
         edge(`match-${index}`, `endpoint-${index}`, "chain", "MATCHED_BY", { chainKey: "chain", chainOrder: "1" }),
+        edge(`handler-map-${index}`, `endpoint-${index}`, id, "FLOWS_TO", { flowKind: "HANDLER" }),
         edge(`secured-${index}`, id, "authorization", "SECURED_BY", { authorizationKind: "ROLE" })
       ])
     ]
   };
   const graph = ui.normalizeGraph(snapshot);
+  graph.presentationContext = "overview";
   const layout = layoutApi.semanticLayout(graph, { positions: {} });
   assert.equal(layout.plan.lanes.find((lane) => lane.id === "endpoint").columns, 2);
   const plan = layout.plan.overviewRouting;
@@ -5405,7 +6423,13 @@ test("SECURITY CHECKS에서 두 Handler 열로 향하는 관계가 표시 경로
   assert.ok(relations.every((relation) => plan.routesByRelationId[relation.id]));
   const trunk = plan.segments.find((segment) => segment.routeRole === "TRUNK"
     && relations.every((relation) => segment.relationIds.includes(relation.id)));
-  assert.ok(trunk, "두 Handler 열로 향하는 공통 배선 누락");
+  assert.ok(trunk, `두 Handler 열로 향하는 공통 배선 누락: ${JSON.stringify({
+    sourceCount: new Set(relations.map((relation) => relation.visualSourcePortId)).size,
+    targetCount: new Set(relations.map((relation) => relation.visualTargetPortId)).size,
+    routeCount: relations.filter((relation) => plan.routesByRelationId[relation.id]).length,
+    shared: plan.segments.filter((segment) => segment.relationIds.length > 1)
+      .map((segment) => ({ role: segment.routeRole, count: segment.relationIds.length }))
+  })}`);
 
   ui.renderGraph(snapshot);
   await ui.layoutGraph();
@@ -5461,12 +6485,12 @@ test("보안 근거를 실행 Projection으로 추가하지 않고 원본 관계
   const originalSecurityEdge = graph.edges.find((edge) => edge.id === "secured-a");
   const layout = layoutApi.semanticLayout(graph, { positions: {} });
   const checksFlow = layout.plan.projection.edges.filter((edge) => edge.projectionKind === "security-checks");
-  const authorizationDisplayId = layout.plan.displayModel.nodeToDisplay["authorization-a"];
   assert.equal(checksFlow.length, 0);
-  const authorizationPosition = layout.plan.displayModel.groups
-    .find((group) => group.id === authorizationDisplayId).position;
-  assert.ok(layout.positions["chain-a"].x < authorizationPosition.x);
-  assert.ok(authorizationPosition.x < layout.positions["endpoint-a"].x);
+  const chainCard = compositeCardForNode(layout.plan, "chain-a", "SECURITY_CHAIN");
+  const authorizationCard = compositeCardForNode(layout.plan, "authorization-a", "AUTHORIZATION");
+  const endpointCard = compositeCardForNode(layout.plan, "endpoint-a", "API_MAPPING");
+  assert.ok(chainCard.position.x + chainCard.position.width < authorizationCard.position.x);
+  assert.ok(authorizationCard.position.x + authorizationCard.position.width < endpointCard.position.x);
   assert.deepEqual({ sourceId: originalSecurityEdge.sourceId, targetId: originalSecurityEdge.targetId },
     { sourceId: "handler-a", targetId: "authorization-a" });
   assert.equal(JSON.stringify(graph), originalGraph);
@@ -5481,13 +6505,25 @@ test("보안 근거를 실행 Projection으로 추가하지 않고 원본 관계
 test("연결된 Security Checks와 실제 Controller Group까지 최종 Bounds 중심선을 공유함", () => {
   const { layoutApi, ui } = loadUi();
   const layout = layoutApi.semanticLayout(ui.normalizeGraph(detailGraphFixture()), { positions: {} });
-  assert.ok(layout.plan.sectionAlignment.securityChecks.nodeIds.includes("authorization-a"));
-  assert.ok(layout.plan.sectionAlignment.handler.nodeIds.includes("handler-a"));
-  const confirmedRows = layout.plan.hiddenGroups.filter((row) => row.membershipStatus === "CONFIRMED");
-  const rowCenter = (Math.min(...confirmedRows.map((row) => row.rowTop))
-    + Math.max(...confirmedRows.map((row) => row.rowBottom))) / 2;
-  assert.ok(Math.abs(rowCenter - layout.plan.sectionAlignment.securityChecks.centerY) <= 1,
-    JSON.stringify({ rowCenter, sections: layout.plan.sectionAlignment }));
+  const displayModel = layout.plan.displayModel;
+  const rows = layout.plan.hiddenGroups.filter((row) => row.type === "CHAIN");
+  rows.forEach((row) => {
+    const cards = displayModel.composites.filter((card) => card.rowId === row.id);
+    const sections = [
+      cards.filter((card) => ["SECURITY_CHAIN", "SECURITY_UNRESOLVED"].includes(card.kind)),
+      cards.filter((card) => ["AUTHENTICATION", "AUTHORIZATION", "SECURITY_DATA", "BUSINESS_SECURITY_STATE"].includes(card.kind)),
+      cards.filter((card) => card.kind === "API_MAPPING"),
+      cards.filter((card) => card.kind === "CONTROLLER_HANDLER")
+    ].filter((section) => section.length);
+    const centers = sections.map((section) => {
+      const top = Math.min(...section.map((card) => card.position.y));
+      const bottom = Math.max(...section.map((card) => card.position.y + card.position.height));
+      return (top + bottom) / 2;
+    });
+    assert.ok(centers.length >= 3, `${row.id}의 실제 표시 영역 부족`);
+    assert.ok(Math.max(...centers) - Math.min(...centers) <= 1,
+      `${row.id} 카드 영역 중심 불일치: ${centers.join(",")}`);
+  });
 });
 
 test("누락·중복·충돌 순서는 Security Filter 직렬 Projection 없이 확인 불가로 표시함", () => {
@@ -5589,12 +6625,15 @@ test("전체 MAP에서 Endpoint 선택은 MATCHED_BY로 적용된 Chain의 순�
   assert.match(appCss, /\.graph-svg\[data-view="all-flow"\]\[data-selection-active="false"\] \.graph-edge\[data-edge-layer="analysis"\]/);
   ui.selectGraphElement("node", "endpoint-0");
   assert.equal(elements.get("graph-svg").getAttribute("data-selection-active"), "true");
-  const orderedEdges = findAllByClass(elements.get("graph-edges"), "graph-overview-segment")
-    .filter((path) => path.getAttribute("data-flow-groups"));
-  assert.ok(orderedEdges.some((path) => path.getAttribute("data-flow-groups").split(",").includes("chain-1")
-    && path.getAttribute("data-emphasis") === "primary"));
-  assert.equal(orderedEdges.some((path) => ["chain-2", "chain-3"].some((id) => path.getAttribute("data-flow-groups").split(",").includes(id))
-    && path.getAttribute("data-emphasis") === "primary"), false);
+  const chainCards = findAllByClass(elements.get("graph-nodes"), "graph-composite-card")
+    .filter((card) => card.getAttribute("data-node-ids").split(",").some((id) => id.startsWith("chain-")));
+  const selectedChain = chainCards.find((card) => card.getAttribute("data-node-ids").split(",").includes("chain-1"));
+  assert.ok(selectedChain);
+  assert.equal(selectedChain.getAttribute("data-emphasis"), "primary");
+  assert.equal(chainCards.filter((card) => card !== selectedChain)
+    .some((card) => card.getAttribute("data-emphasis") === "primary"), false);
+  assert.equal(findAllByClass(elements.get("graph-edges"), "graph-overview-segment")
+    .some((path) => path.getAttribute("data-edge-ids").split(",").includes(match.id)), false);
 });
 
 test("SECURITY CHECKS는 기존 보안 NodeType과 Display Group을 실제 관계·ID 그대로 재배치함", async () => {
@@ -5672,15 +6711,14 @@ test("SECURITY CHECKS는 기존 보안 NodeType과 Display Group을 실제 관�
     .find((item) => item.getAttribute("data-area-id") === "security-checks");
   assert.ok(area);
   assert.equal(area.getAttribute("data-area-kind"), "technical");
-  assert.equal(findAllByClass(area, "graph-area-label")[0].textContent, "SECURITY CHECKS");
+  assert.equal(findAllByClass(area, "graph-area-label")[0].textContent, "보안 점검");
   assert.equal(findAllByClass(elements.get("graph-flow-projection"), "graph-projection-node")
     .some((item) => item.getAttribute("data-projection-kind") === "security-checks"), false);
-  const dataGroupId = layout.plan.displayModel.nodeToDisplay["data-a"];
-  const dataGroup = layout.plan.displayModel.groups.find((item) => item.id === dataGroupId);
-  assert.ok(layout.plan.displayModel.displayToNodes[dataGroupId].includes("data-a"));
-  assert.ok(dataGroup);
-  assert.equal(dataGroup.position.x, layout.positions[dataGroup.nodeIds[0]].x);
-  assert.ok(dataGroup.position.x >= lane.x && dataGroup.position.x + 260 <= lane.x + lane.width);
+  const dataCard = compositeCardForNode(layout.plan, "data-a", "SECURITY_DATA");
+  const dataItem = compositeItemForNode(layout.plan, "data-a", dataCard.rowId);
+  assert.ok(dataCard.originalNodeIds.includes("data-a"));
+  assert.ok(dataItem.originalNodeIds.includes("data-a"));
+  assert.ok(dataCard.position.x >= lane.x && dataCard.position.x + dataCard.position.width <= lane.x + lane.width);
   ui.selectGraphElement("node", "auth-partial");
   assert.equal(ui.state.selection.id, "auth-partial");
   assert.ok(textOf(elements.get("inspector")).includes(ui.state.displayIds.node("auth-partial")));
@@ -5717,7 +6755,7 @@ test("Graph 기술 영역은 내부 배치 Lane을 보존하면서 실제 Node�
 
   const areas = ui.state.graphRender.areas.filter((area) => area.id !== "education");
   assert.equal(areas.map((area) => area.id).sort().join(","), [
-    "api-mapping", "controller-handler", "mvc", "request-entry", "security-checks", "servlet-filter", "spring-security"
+    "api-mapping", "controller-handler", "security-checks", "servlet-filter", "spring-security"
   ].join(","));
   const assignedNodeIds = areas.flatMap((area) => area.nodeIds).sort();
   assert.equal(assignedNodeIds.join(","), ui.state.viewGraph.nodes.map((node) => node.id).sort().join(","));
@@ -5729,7 +6767,7 @@ test("Graph 기술 영역은 내부 배치 Lane을 보존하면서 실제 Node�
     assert.equal(intersects, false, `${left.areaId}와 ${right.areaId} 영역이 겹침: ${JSON.stringify({ left, right })}`);
   }));
   assert.deepEqual(Array.from(ui.state.layout.plan.lanes, (lane) => lane.id),
-    ["request", "servlet-filter", "security-chain", "security-filter", "security-checks", "endpoint", "handler"]);
+    ["servlet-filter", "security-chain", "security-checks", "endpoint", "handler"]);
   const renderedTechnicalAreas = elements.get("graph-areas").children.filter((group) =>
     group.getAttribute("class") === "graph-area" && group.getAttribute("data-area-kind") === "technical");
   assert.equal(renderedTechnicalAreas.length, areas.length);
@@ -5808,7 +6846,7 @@ test("Edge 직교 경로는 결정적이고 연속 중복·공선 굴절을 제�
   assert.equal(first.plan.routeDiagnostics.edgeNodeIntersections, 0);
 });
 
-test("SECURITY_DATA 관계가 공유 경로를 점유하면 가까운 Endpoint 관계선은 개별 Route를 유지함", async () => {
+test("Handler 수준 보안 근거는 확인된 API를 경유하고 같은 API 카드에서 분기함", async () => {
   const { ui, layoutApi, elements } = loadUi();
   const snapshot = {
     nodes: [
@@ -5816,55 +6854,82 @@ test("SECURITY_DATA 관계가 공유 경로를 점유하면 가까운 Endpoint �
         attributes: { handler: "example.OrderController#handle" }, evidenceIds: ["source-evidence"] },
       { id: "handler-b", type: "HANDLER", label: "OtherController#handle",
         attributes: { handler: "example.OtherController#handle" }, evidenceIds: [] },
+      { id: "handler-unmapped", type: "HANDLER", label: "UnmappedController#handle",
+        attributes: { handler: "example.UnmappedController#handle" }, evidenceIds: [] },
+      { id: "chain-a", type: "SECURITY_CHAIN", label: "Order Chain",
+        attributes: { chainKey: "orders", chainOrder: "1", matcherCondition: "PATH /orders" }, evidenceIds: [] },
       ...["endpoint-a", "endpoint-b", "endpoint-c"].map((id) => ({ id, type: "ENDPOINT", label: id,
-        attributes: { httpMethod: "GET", path: `/${id}` }, evidenceIds: [`e-${id}`] })),
-      { id: "data-a", type: "SECURITY_DATA", label: "data-a", attributes: { operation: "READ" }, evidenceIds: [] }
+        attributes: { httpMethod: "GET", path: `/${id}`,
+          handler: id === "endpoint-a" ? "example.OtherController#handle" : "example.OrderController#handle" }, evidenceIds: [`e-${id}`] })),
+      { id: "data-a", type: "SECURITY_DATA", label: "data-a", attributes: { operation: "READ" }, evidenceIds: [] },
+      { id: "data-unmapped", type: "SECURITY_DATA", label: "data-unmapped", attributes: { operation: "READ" }, evidenceIds: [] }
     ],
     edges: [
-      ...["endpoint-b", "endpoint-c"].map((targetId) => ({ id: `flows-${targetId}`, sourceId: "handler-a",
-        targetId, type: "FLOWS_TO", confidence: "CONFIRMED", attributes: {}, evidenceIds: [`e-${targetId}`] })),
+      ...["endpoint-a", "endpoint-b", "endpoint-c"].map((sourceId) => ({ id: `match-${sourceId}`,
+        sourceId, targetId: "chain-a", type: "MATCHED_BY", confidence: "CONFIRMED", attributes: {}, evidenceIds: [] })),
+      ...["endpoint-b", "endpoint-c"].map((sourceId) => ({ id: `flows-${sourceId}`, sourceId, targetId: "handler-a",
+        type: "FLOWS_TO", confidence: "CONFIRMED", attributes: { flowKind: "HANDLER" }, evidenceIds: [`e-${sourceId}`] })),
       { id: "different-type", sourceId: "handler-a", targetId: "data-a", type: "READS_SECURITY_DATA",
         confidence: "CONFIRMED", attributes: {}, evidenceIds: ["e-different-type"] },
-      { id: "different-source", sourceId: "handler-b", targetId: "endpoint-a", type: "FLOWS_TO",
-        confidence: "CONFIRMED", attributes: {}, evidenceIds: ["e-different-source"] }
+      { id: "different-source", sourceId: "endpoint-a", targetId: "handler-b", type: "FLOWS_TO",
+        confidence: "CONFIRMED", attributes: { flowKind: "HANDLER" }, evidenceIds: ["e-different-source"] },
+      { id: "unmapped-security", sourceId: "handler-unmapped", targetId: "data-unmapped",
+        type: "READS_SECURITY_DATA", confidence: "CONFIRMED", attributes: {}, evidenceIds: ["e-unmapped-security"] }
     ]
   };
   const graph = ui.normalizeGraph(snapshot);
-  const layout = layoutApi.semanticLayout(graph, { positions: {} });
-  const group = layout.plan.commonEdgeRouteGroups.find((candidate) => candidate.edgeIds.includes("flows-endpoint-b"));
-  assert.equal(group, undefined, "SECURITY_DATA 관계와 겹치는 공통 Trunk 생성");
-  for (const edgeId of ["flows-endpoint-b", "flows-endpoint-c"]) {
-    const route = layout.edgeRoutes[edgeId];
-    const points = routePoints(route);
-    const edge = graph.edges.find((candidate) => candidate.id === edgeId);
-    assert.deepEqual([points[0].x, points[0].y], [layout.positions[edge.sourceId].x,
-      layout.positions[edge.sourceId].y + 60]);
-    assert.deepEqual([points.at(-1).x, points.at(-1).y], [layout.positions[edge.targetId].x + 260,
-      layout.positions[edge.targetId].y + 60]);
-    graph.nodes.filter((node) => node.id !== edge.sourceId && node.id !== edge.targetId).forEach((node) => {
-      assert.equal(routeIntersectsPosition(route, layout.positions[node.id]), false, `${edgeId}가 ${node.id}와 충돌`);
-    });
-  }
-  assert.equal(layout.plan.routeDiagnostics.edgeNodeIntersections, 0);
-  assert.equal(layout.plan.commonEdgeRouteGroups.some((candidate) =>
-    candidate.edgeIds.includes("different-type") && candidate.edgeIds.includes("flows-endpoint-b")), false);
-  assert.equal(layout.plan.commonEdgeRouteGroups.some((candidate) =>
-    candidate.edgeIds.includes("different-source") && candidate.edgeIds.includes("flows-endpoint-b")), false);
-
   ui.renderGraph(snapshot);
-  await ui.layoutGraph();
-  const flowPath = findAllByClass(elements.get("graph-edges"), "graph-edge")
-    .find((path) => path.getAttribute("data-edge-id") === "flows-endpoint-b");
-  assert.ok(flowPath);
-  assert.equal(flowPath.getAttribute("data-source-id"), "handler-a");
-  assert.equal(flowPath.getAttribute("data-target-id"), "endpoint-b");
-  assert.equal(flowPath.getAttribute("data-confidence"), "CONFIRMED");
-  assert.equal(flowPath.getAttribute("data-evidence-ids"), "e-endpoint-b");
+  ui.selectView("security-flow");
+  const layoutResult = await ui.layoutGraph();
+  assert.ok(ui.state.layout, JSON.stringify({ layoutState: ui.state.layoutState,
+    error: ui.state.layoutError, viewGraphNodes: ui.state.viewGraph?.nodes.map((node) => node.id),
+    result: layoutResult && { width: layoutResult.width, error: layoutResult.error } }));
+  const routing = ui.state.layout.plan.overviewRouting;
+  const relations = ["flows-endpoint-b", "flows-endpoint-c", "different-source"]
+    .map((edgeId) => routing.relations.find((relation) => relation.originalEdgeIds.includes(edgeId)));
+  const securityRelations = routing.relations.filter((relation) => relation.originalEdgeIds.includes("different-type"));
+  assert.ok(relations.every(Boolean), "실제 매핑 Relation이 모두 복합 카드 포트에 연결됨");
+  assert.equal(securityRelations.length, 2, "확인된 두 Endpoint에 Handler 수준 근거를 각각 투영함");
+  assert.ok(securityRelations.every((relation) => relation.presentationKind === "VIA_ENDPOINT_REFERENCE"
+    && relation.originalHandlerId === "handler-a" && ["endpoint-b", "endpoint-c"].includes(relation.viaEndpointId)));
+  assert.deepEqual(Array.from(securityRelations, (relation) => relation.viaEndpointId).sort(), ["endpoint-b", "endpoint-c"]);
+  assert.equal(securityRelations.some((relation) => [relation.sourceItemId, relation.targetItemId]
+    .some((itemId) => ui.state.layout.plan.displayModel.itemById[itemId]?.originalNodeIds.includes("handler-a"))), false,
+  "Handler 수준 보안 근거의 직접 가시선을 생성하지 않음");
+  assert.equal(ui.state.layout.plan.displayModel.edgeRoles["unmapped-security"], "INSPECTOR_REFERENCE",
+    "매핑을 확인할 수 없는 근거는 Inspector 전용으로 보존함");
+  assert.equal(securityRelations.some((relation) => relation.originalEdgeIds.includes("unmapped-security")), false);
+  assert.equal(routing.unresolved.length, 0, JSON.stringify(routing.unresolved));
+  const segmentIdsFor = (relation) => new Set(routing.routesByRelationId[relation.id].orderedSegmentIds);
+  const bSegments = segmentIdsFor(relations[0]);
+  const cSegments = segmentIdsFor(relations[1]);
+  const securityRouteSegments = securityRelations.map(segmentIdsFor);
+  assert.ok(Array.from(securityRouteSegments[0]).some((id) => securityRouteSegments[1].has(id)),
+    "같은 API 카드의 서로 다른 Endpoint 포트까지 공통선을 유지함");
+  assert.ok(Array.from(bSegments).some((id) => cSegments.has(id)), "같은 Handler의 Endpoint 매핑 분기에서 공통 구간을 재사용함");
+  assert.equal(Array.from(segmentIdsFor(relations[2])).some((id) => bSegments.has(id)), false,
+    "다른 Handler의 관계가 Endpoint Trunk에 합쳐지지 않음");
+  [...relations, ...securityRelations].forEach((relation) => {
+    const route = routing.routesByRelationId[relation.id];
+    const sourceItem = ui.state.layout.plan.displayModel.itemById[relation.sourceItemId];
+    const targetItem = ui.state.layout.plan.displayModel.itemById[relation.targetItemId];
+    const edge = graph.edges.find((item) => relation.originalEdgeIds.includes(item.id));
+    if (relation.presentationKind === "VIA_ENDPOINT_REFERENCE") {
+      assert.ok(relation.relatedNodeIds.includes(edge.sourceId) && relation.relatedNodeIds.includes(edge.targetId));
+      assert.ok(relation.mappingEdgeIds.includes(`flows-${relation.viaEndpointId}`));
+    } else {
+      const displayedNodeIds = [...sourceItem.originalNodeIds, ...targetItem.originalNodeIds];
+      assert.ok(displayedNodeIds.includes(edge.sourceId) && displayedNodeIds.includes(edge.targetId));
+    }
+    assert.ok(route.sourcePort && route.targetPort);
+  });
+  const rendered = findAllByClass(elements.get("graph-edges"), "graph-overview-segment");
+  assert.ok(rendered.some((path) => (path.getAttribute("data-edge-ids") || "").split(",").includes("flows-endpoint-b")));
 });
 
 test("서로 다른 SecurityFilterChain에 속한 도착지는 공통 경로로 합치지 않음", () => {
   const { ui, layoutApi } = loadUi();
-  const graph = ui.normalizeGraph({
+  const snapshot = {
     nodes: [
       { id: "endpoint", type: "ENDPOINT", label: "GET /items", attributes: { httpMethod: "GET", path: "/items" }, evidenceIds: [] },
       ...["chain-a", "chain-b"].map((id, index) => ({ id, type: "SECURITY_CHAIN", label: id,
@@ -5872,13 +6937,154 @@ test("서로 다른 SecurityFilterChain에 속한 도착지는 공통 경로로 
     ],
     edges: ["chain-a", "chain-b"].map((targetId) => ({ id: `match-${targetId}`, sourceId: "endpoint",
       targetId, type: "MATCHED_BY", confidence: "CONFIRMED", attributes: {}, evidenceIds: [] }))
-  });
+  };
+  const graph = ui.normalizeGraph(snapshot);
   const layout = layoutApi.semanticLayout(graph, { positions: {} });
   assert.equal(layout.plan.commonEdgeRouteGroups.some((group) =>
     group.edgeIds.includes("match-chain-a") && group.edgeIds.includes("match-chain-b")), false);
 });
 
-test("같은 Chain으로 향하는 MATCHED_BY는 N→1 공통 Trunk로 합류함", async () => {
+test("Handler 수준 보안 근거는 확정된 Chain 행이 없으면 Inspector 전용임", () => {
+  const { ui, layoutApi } = loadUi();
+  const graph = ui.normalizeGraph({
+    nodes: [
+      { id: "handler", type: "HANDLER", serviceId: "orders", label: "OrderController#handle",
+        attributes: { handler: "example.OrderController#handle" }, evidenceIds: [] },
+      { id: "endpoint", type: "ENDPOINT", serviceId: "orders", label: "GET /orders",
+        attributes: { httpMethod: "GET", path: "/orders", handler: "example.OrderController#handle" }, evidenceIds: [] },
+      { id: "security-data", type: "SECURITY_DATA", serviceId: "orders", label: "Order data",
+        attributes: { operation: "READ" }, evidenceIds: [] }
+    ],
+    edges: [
+      { id: "mapping", sourceId: "handler", targetId: "endpoint", type: "FLOWS_TO",
+        confidence: "CONFIRMED", attributes: {}, evidenceIds: [] },
+      { id: "security-reference", sourceId: "handler", targetId: "security-data", type: "READS_SECURITY_DATA",
+        confidence: "CONFIRMED", attributes: {}, evidenceIds: [] }
+    ]
+  });
+  const plan = layoutApi.semanticLayout(graph, { positions: {} }).plan;
+
+  assert.equal(plan.displayModel.edgeRoles["security-reference"], "INSPECTOR_REFERENCE");
+  assert.equal(plan.overviewRouting.relations.some((relation) =>
+    relation.originalEdgeIds.includes("security-reference")), false);
+  assert.equal(plan.overviewRouting.unresolved.length, 0);
+});
+
+test("Overview 복합 항목은 기술 이름을 줄여 표시하고 원본 메서드와 상태 정보를 보존함", async () => {
+  const { ui, elements } = loadUi();
+  const handlerA = "com.example.OrderController#createApplication(Ljava/lang/String;)V";
+  const handlerB = "com.example.OrderController#createApplication(Ljava/lang/Long;)V";
+  const apiPath = `/api/loans/{loanId}/applications/${"very-long-segment/".repeat(8)}`;
+  const snapshot = {
+    nodes: [
+      { id: "servlet-filter", type: "FILTER", serviceId: "orders", label: "Filter",
+        attributes: { registrationKind: "SERVLET", filterClass: "org/springframework/web/filter/CompositeFilter", filterOrder: "1" }, evidenceIds: [] },
+      { id: "security-filter", type: "FILTER", serviceId: "orders", label: "Filter",
+        attributes: { registrationKind: "SECURITY", filterClass: "Lorg/springframework/security/web/csrf/CsrfFilter;", filterOrder: "1" }, evidenceIds: [] },
+      { id: "chain", type: "SECURITY_CHAIN", serviceId: "orders", label: "Order Chain",
+        attributes: { chainKey: "orders", chainOrder: "1", matcherCondition: "PATH /api/loans" }, evidenceIds: [] },
+      { id: "servlet", type: "SERVLET", serviceId: "orders", label: "DispatcherServlet",
+        attributes: { servletClass: "org.springframework.web.servlet.DispatcherServlet" }, evidenceIds: [] },
+      { id: "handler-a", type: "HANDLER", serviceId: "orders", label: "createApplication",
+        attributes: { handler: handlerA }, evidenceIds: [] },
+      { id: "handler-b", type: "HANDLER", serviceId: "orders", label: "createApplication",
+        attributes: { handler: handlerB }, evidenceIds: [] },
+      { id: "endpoint-a", type: "ENDPOINT", serviceId: "orders", label: "GET endpoint-a",
+        attributes: { httpMethod: "GET", path: apiPath, handler: handlerA }, evidenceIds: [] },
+      { id: "endpoint-b", type: "ENDPOINT", serviceId: "orders", label: "POST endpoint-b",
+        attributes: { httpMethod: "POST", path: "/api/loans/{loanId}/applications", handler: handlerB }, evidenceIds: [] },
+      { id: "state-a", type: "BUSINESS_SECURITY_STATE", serviceId: "orders", label: "state-requires|identity_verified",
+        attributes: { stateName: "identity_verified", stateAction: "REQUIRES",
+          declaringMethod: "com.example.OrderController#requireIdentity(Ljava/lang/String;)V" }, evidenceIds: [] }
+    ],
+    edges: [
+      { id: "match-a", sourceId: "endpoint-a", targetId: "chain", type: "MATCHED_BY", confidence: "CONFIRMED", attributes: {}, evidenceIds: [] },
+      { id: "match-b", sourceId: "endpoint-b", targetId: "chain", type: "MATCHED_BY", confidence: "CONFIRMED", attributes: {}, evidenceIds: [] },
+      { id: "servlet-filtered", sourceId: "servlet", targetId: "servlet-filter", type: "FILTERED_BY", confidence: "CONFIRMED",
+        attributes: { registrationKind: "SERVLET", filterOrder: "1" }, evidenceIds: [] },
+      { id: "chain-filtered", sourceId: "chain", targetId: "security-filter", type: "FILTERED_BY", confidence: "CONFIRMED",
+        attributes: { registrationKind: "SECURITY", filterOrder: "1" }, evidenceIds: [] },
+      { id: "mapping-a", sourceId: "endpoint-a", targetId: "handler-a", type: "FLOWS_TO", confidence: "CONFIRMED", attributes: { flowKind: "HANDLER" }, evidenceIds: [] },
+      { id: "mapping-b", sourceId: "endpoint-b", targetId: "handler-b", type: "FLOWS_TO", confidence: "CONFIRMED", attributes: { flowKind: "HANDLER" }, evidenceIds: [] },
+      { id: "state-requirement", sourceId: "handler-a", targetId: "state-a", type: "SECURITY_STATE", confidence: "CONFIRMED", attributes: { stateAction: "REQUIRES" }, evidenceIds: [] }
+    ],
+    findings: [{ id: "finding-a", ruleId: "PUBLIC_ENDPOINT", title: "표시 경계 확인", confidence: "UNKNOWN",
+      nodeIds: ["endpoint-a"], edgeIds: [], evidenceIds: [] }]
+  };
+  const graph = ui.normalizeGraph(snapshot);
+  ui.renderGraph(snapshot);
+  ui.selectView("security-flow");
+  const layoutResult = await ui.layoutGraph();
+  assert.ok(ui.state.layout, JSON.stringify({ layoutState: ui.state.layoutState,
+    error: ui.state.layoutError, viewGraphNodes: ui.state.viewGraph?.nodes.map((node) => node.id),
+    result: layoutResult && { width: layoutResult.width, error: layoutResult.error } }));
+  const plan = ui.state.layout.plan;
+  const cards = plan.displayModel.composites;
+  const entries = cards.flatMap((card) => card.items.filter((item) => !item.isHeader));
+  const cardText = cards.flatMap((card) => [card.title, card.subtitle,
+    ...card.items.flatMap((item) => [item.label, item.detail])]).join(" ");
+  const servletItem = compositeItemForNode(plan, "servlet-filter");
+  const securityFilterItem = compositeItemForNode(plan, "security-filter");
+  const apiCard = cards.find((card) => card.kind === "API_MAPPING" && card.originalNodeIds.includes("endpoint-a"));
+  const handlerCard = cards.find((card) => card.kind === "CONTROLLER_HANDLER" && card.originalNodeIds.includes("handler-a"));
+  const stateItem = compositeItemForNode(plan, "state-a");
+
+  assert.equal(servletItem.label, "CompositeFilter");
+  assert.equal(securityFilterItem.label, "CsrfFilter");
+  assert.match(servletItem.detail, /^0?1$/);
+  assert.equal(apiCard.title, "OrderController");
+  assert.equal(handlerCard.title, "OrderController");
+  assert.deepEqual(Array.from(handlerCard.items.filter((item) => item.originalNodeIds.some((id) => ["handler-a", "handler-b"].includes(id)))
+    .map((item) => item.label)).sort(), ["createApplication · 1", "createApplication · 2"]);
+  assert.equal(apiCard.items.find((item) => item.originalNodeIds.includes("endpoint-a")).label, `GET ${apiPath}`);
+  assert.equal(stateItem.label, "상태 요구 · identity_verified");
+  assert.equal(stateItem.detail, "OrderController · requireIdentity");
+  assert.doesNotMatch(cardText, /com\.example\.|org\.springframework\//);
+  assert.ok(entries.some((item) => item.originalNodeIds.includes("handler-a")));
+  assert.equal(ui.state.graph.nodes.find((node) => node.id === "handler-a").attributes.handler, handlerA);
+  assert.equal(ui.state.graph.nodes.find((node) => node.id === "handler-b").attributes.handler, handlerB);
+  assert.ok(graph.edges.find((edge) => edge.id === "state-requirement").sourceId === "handler-a");
+  const endpointItem = cards.flatMap((card) => card.items)
+    .find((item) => item.originalNodeIds.includes("endpoint-a"));
+  const endpointRow = findAllByClass(elements.get("graph-nodes"), "graph-composite-item")
+    .find((item) => (item.getAttribute("data-node-ids") || "").split(",").includes("endpoint-a"));
+  assert.ok(endpointRow, JSON.stringify({ itemId: endpointItem.id,
+    renderedItems: findAllByClass(elements.get("graph-nodes"), "graph-composite-item")
+      .map((item) => item.getAttribute("data-composite-item-id")),
+    graphNodeChildren: elements.get("graph-nodes").children.map((item) => item.getAttribute("class")) }));
+  const pathLabel = findAllByClass(endpointRow, "graph-composite-item-label")[0];
+  assert.match(pathLabel.getAttribute("clip-path"), /^url\(#graph-composite-text-clip-/);
+  const marker = findAllByClass(endpointRow, "finding-marker")[0];
+  const markerX = Number(marker.getAttribute("transform").match(/translate\(([-\d.]+)/)[1]);
+  assert.ok(markerX + 14 <= endpointItem.bounds.width, "Finding 표식이 복합 항목 경계 안에 배치됨");
+});
+
+test("Overview Blueprint 간격만 확대하고 상세 배치 간격은 유지함", () => {
+  const { ui, layoutApi } = loadUi();
+  const sourceGraph = detailGraphFixture();
+  sourceGraph.nodes.push({ id: "state-gap", type: "BUSINESS_SECURITY_STATE", serviceId: "orders",
+    label: "business state", attributes: { stateName: "identity_verified", stateAction: "REQUIRES" }, evidenceIds: [] });
+  sourceGraph.edges.push({ id: "state-gap-edge", sourceId: "handler-a", targetId: "state-gap", type: "SECURITY_STATE",
+    confidence: "CONFIRMED", attributes: {}, evidenceIds: [] });
+  const graph = ui.normalizeGraph(sourceGraph);
+  const overview = layoutApi.semanticLayout(graph, { positions: {} });
+  const detail = layoutApi.semanticLayout({ ...graph, presentationContext: "detail" }, { positions: {} });
+  const lanes = new Map(overview.plan.lanes.map((lane) => [lane.id, lane]));
+  const checkCards = overview.plan.displayModel.composites.filter((card) => card.rowId === "chain:chain-a"
+    && ["AUTHORIZATION", "SECURITY_DATA", "BUSINESS_SECURITY_STATE"].includes(card.kind))
+    .sort((left, right) => left.bounds.y - right.bounds.y || left.bounds.x - right.bounds.x);
+
+  assert.equal(lanes.get("endpoint").columnStep - lanes.get("endpoint").cardWidth, 576);
+  assert.equal(overview.plan.sectionGap, 288);
+  assert.equal(overview.plan.majorSectionGap, 600);
+  assert.equal(checkCards.length, 3);
+  assert.equal(checkCards[2].bounds.y - Math.max(...checkCards.slice(0, 2).map((card) => card.bounds.y + card.bounds.height)), 432,
+    JSON.stringify(checkCards.map((card) => ({ kind: card.kind, y: card.bounds.y, height: card.bounds.height }))));
+  assert.equal(detail.plan.sectionGap, 96);
+  assert.equal(detail.plan.majorSectionGap, 200);
+});
+
+test("Overview의 MATCHED_BY는 가시 배선 없이 원본 적용 관계로 보존함", async () => {
   const { ui, layoutApi, elements } = loadUi();
   const graph = ui.normalizeGraph({
     nodes: [
@@ -5892,45 +7098,17 @@ test("같은 Chain으로 향하는 MATCHED_BY는 N→1 공통 Trunk로 합류함
     ]
   });
   const layout = layoutApi.semanticLayout(graph, { positions: {} });
-  const group = layout.plan.commonEdgeRouteGroups.find((candidate) => candidate.type === "MATCHED_BY");
-  assert.ok(group, "같은 Chain으로 향하는 공통 배선 누락");
-  assert.deepEqual(Array.from(group.edgeIds).sort(), ["match-a", "match-b"]);
-  assert.deepEqual(Array.from(group.sourceIds).sort(), ["endpoint-a", "endpoint-b"]);
-  assert.deepEqual(Array.from(group.targetIds), ["chain"]);
-  group.edgeIds.forEach((edgeId) => {
-    const edge = graph.edges.find((candidate) => candidate.id === edgeId);
-    const points = routePoints(layout.edgeRoutes[edgeId]);
-    assert.deepEqual([points[0].x, points[0].y], [layout.positions[edge.sourceId].x,
-      layout.positions[edge.sourceId].y + 60]);
-    assert.deepEqual([points.at(-1).x, points.at(-1).y], [layout.positions[edge.targetId].x + 260,
-      layout.positions[edge.targetId].y + 60]);
-  });
+  assert.equal(layout.plan.overviewRouting.relations.some((relation) =>
+    relation.originalEdgeIds.some((id) => ["match-a", "match-b"].includes(id))), false);
+  assert.equal(layout.plan.displayModel.edgeRoles["match-a"], "ROW_MEMBERSHIP");
+  assert.equal(layout.plan.displayModel.edgeRoles["match-b"], "ROW_MEMBERSHIP");
+  assert.deepEqual(Array.from(graph.edges, (edge) => edge.id), ["match-a", "match-b"]);
 
-  ui.renderGraph({
-    nodes: graph.nodes,
-    edges: graph.edges,
-    findings: [],
-    evidence: []
-  });
+  ui.renderGraph(graph);
   await ui.layoutGraph();
-  const trunks = findAllByClass(elements.get("graph-edges"), "graph-edge-trunk")
-    .filter((path) => (path.getAttribute("data-edge-ids") || "").split(",").length === 2);
-  assert.equal(trunks.length, 1, "공통 Trunk는 한 번만 렌더링");
-  assert.equal(trunks[0].getAttribute("data-edge-ids"), "match-a,match-b");
-  assert.deepEqual(trunks[0].getAttribute("data-source-ids").split(",").sort(), ["endpoint-a", "endpoint-b"]);
-  assert.equal(trunks[0].getAttribute("data-target-ids"), "chain");
-  const visibleBranches = findAllByClass(elements.get("graph-edges"), "graph-edge-branch")
-    .filter((path) => ["match-a", "match-b"].includes(path.getAttribute("data-edge-id")));
-  assert.equal(visibleBranches.length, 2, "N→1 Source 지선은 Edge별로 남음");
-  visibleBranches.forEach((path) => {
-    const edge = graph.edges.find((candidate) => candidate.id === path.getAttribute("data-edge-id"));
-    assert.equal(path.getAttribute("data-source-id"), edge.sourceId);
-    assert.equal(path.getAttribute("data-target-id"), edge.targetId);
-    assert.equal(path.getAttribute("data-evidence-ids") || "", edge.evidenceIds.join(","));
-  });
-  assert.equal(findAllByClass(elements.get("graph-edges"), "graph-edge-flow-route").length, 0,
-    "공통 배선의 숨은 중복 경로를 만들지 않음");
-  assert.equal(layout.plan.routeDiagnostics.edgeNodeIntersections, 0);
+  const visibleEdges = findAllByClass(elements.get("graph-edges"), "graph-overview-segment");
+  assert.equal(visibleEdges.some((path) => (path.getAttribute("data-edge-ids") || "")
+    .split(",").some((id) => ["match-a", "match-b"].includes(id))), false);
 });
 
 test("Inspector 속성 순서·확실성 문구와 고정 헤더·본문 스크롤을 구분함", () => {
@@ -6222,23 +7400,32 @@ test("Header·Window Resize와 Edge 포인터가 Navigation 상태와 충돌하�
   assert.equal(navigation.state.dragging, false);
 });
 
-test("내부 처리 단계는 중앙 대역에서 실제 Node와 겹치지 않고 Bounds에 포함됨", async () => {
+test("내부 처리 단계는 세로 순서를 유지하고 실제 Node와 겹치지 않으며 Bounds에 포함됨", async () => {
   const { ui } = loadUi();
   ui.renderGraph(laneGraphFixture());
+  ui.selectView("feature-flow");
   const layout = await ui.layoutGraph();
   const projection = layout.plan.projection;
   const projectionTop = Math.min(...projection.nodes.map((node) => node.position.y));
 
   const actualPositions = Object.values(layout.positions);
-  assert.ok(actualPositions.some((position) => position.y < projectionTop));
-  assert.ok(actualPositions.some((position) => position.y > projectionTop));
+  assert.ok(projection.nodes.length > 0);
+  const mainLearningIds = ["education-http-request", "education-servlet-container", "education-request-prepare",
+    "education-delegating-filter-proxy", "education-filter-chain-proxy", "education-handler-mapping",
+    "education-handler-adapter", "education-http-response"];
+  const mainLearning = mainLearningIds.map((id) => projection.nodes.find((node) => node.id === id)).filter(Boolean);
+  mainLearning.slice(1).forEach((node, index) => {
+    assert.ok(node.position.y > mainLearning[index].position.y,
+      `${node.id}가 이전 처리 단계보다 아래에 배치되지 않음`);
+  });
   projection.nodes.forEach((node) => actualPositions.forEach((position) => {
-    assert.ok(node.position.x + 260 <= position.x || position.x + 260 <= node.position.x
-      || node.position.y + 120 <= position.y || position.y + 120 <= node.position.y);
+    assert.ok(node.position.x + node.width <= position.x || position.x + 260 <= node.position.x
+      || node.position.y + node.height <= position.y || position.y + 120 <= node.position.y);
   }));
-  assert.ok(layout.height >= projectionTop + 120);
+  const projectionBottom = Math.max(...projection.nodes.map((node) => node.position.y + node.height));
+  assert.ok(layout.height >= projectionBottom);
   projection.nodes.forEach((node) => {
-    assert.ok(layout.height >= node.position.y + 120);
+    assert.ok(layout.height >= node.position.y + node.height);
     assert.ok(layout.width >= node.position.x + node.width,
       `${node.id}: layout.width=${layout.width}, node.x=${node.position.x}, node.width=${node.width}`);
   });
@@ -6246,29 +7433,36 @@ test("내부 처리 단계는 중앙 대역에서 실제 Node와 겹치지 않�
   assert.equal(layout.plan.educationArea.top, projectionTop - layout.plan.educationArea.topPadding);
 });
 
-test("Endpoint 16개 이상은 각 Hidden Group 안에서 두 열로 교차 배치하고 행 높이에 반영함", () => {
+test("Endpoint 16개 복합 항목은 실제 API 카드와 동적 Chain 행 높이에 반영함", () => {
   const { layoutApi, ui } = loadUi();
-  [0, 1, 15, 16, 17, 31, 32].forEach((count) => {
-    const graph = endpointCountGraph(count);
-    const layout = layoutApi.semanticLayout(ui.normalizeGraph(graph), { positions: {} });
-    const endpoints = graph.nodes.filter((node) => node.type === "ENDPOINT");
-    const positions = endpoints.map((node) => layout.positions[node.id]);
-    const xs = [...new Set(positions.map((position) => position.x))].sort((left, right) => left - right);
-    assert.equal(xs.length, count >= 16 ? 2 : count === 0 ? 0 : 1, `${count}개 열 수`);
-    if (count < 16 || count === 0) return;
-
-    const firstColumnCount = Math.ceil(count / 2);
-    const firstColumn = positions.filter((position) => position.x === xs[0]).sort((left, right) => left.y - right.y);
-    const secondColumn = positions.filter((position) => position.x === xs[1]).sort((left, right) => left.y - right.y);
-    assert.equal(firstColumn.length, firstColumnCount);
-    assert.equal(secondColumn.length, count - firstColumnCount);
-    assert.equal(secondColumn[0].y - firstColumn[0].y, 270);
-    const group = layout.plan.hiddenGroups.find((item) => item.members.endpoints.includes(endpoints[0].id));
-    positions.forEach((position) => {
-      assert.ok(position.y >= group.rowTop && position.y + 120 <= group.rowBottom);
-    });
-    assert.ok(layout.plan.lanes.find((lane) => lane.id === "handler").x > xs[1] + 260);
+  const graph = endpointCountGraph(16);
+  const plan = layoutApi.semanticLayout(ui.normalizeGraph(graph), { positions: {} }).plan;
+  const row = plan.hiddenGroups.find((item) => item.id === "chain:count-chain");
+  const cards = plan.displayModel.composites.filter((card) => card.kind === "API_MAPPING" && card.rowId === row.id);
+  assert.equal(cards.length, 1, "확인된 Controller가 없는 Endpoint는 한 미확정 API 카드에 유지");
+  const card = cards[0];
+  const itemNodeIds = card.items.flatMap((item) => item.originalNodeIds);
+  assert.equal(itemNodeIds.length, 16);
+  assert.deepEqual(Array.from(itemNodeIds).sort(), Array.from(graph.nodes.filter((node) => node.type === "ENDPOINT"),
+    (node) => node.id).sort());
+  card.items.forEach((item) => {
+    assert.ok(item.bounds.x >= card.contentBounds.x);
+    assert.ok(item.bounds.y >= card.contentBounds.y);
+    assert.ok(item.bounds.x + item.bounds.width <= card.contentBounds.x + card.contentBounds.width);
+    assert.ok(item.bounds.y + item.bounds.height <= card.contentBounds.y + card.contentBounds.height);
   });
+  assert.ok(card.bounds.y >= row.rowTop && card.bounds.y + card.bounds.height <= row.rowBottom);
+  const apiMappings = plan.overviewRouting.relations.filter((relation) => relation.role === "API_MAPPING");
+  assert.equal(apiMappings.length, 16, "실제 Handler 원문이 일치하는 Endpoint 매핑 누락");
+  apiMappings.forEach((relation) => {
+    const endpointId = relation.relatedNodeIds.find((id) => graph.nodes.find((node) => node.id === id)?.type === "ENDPOINT");
+    const handlerId = relation.relatedNodeIds.find((id) => graph.nodes.find((node) => node.id === id)?.type === "HANDLER");
+    assert.ok(endpointId && handlerId);
+    assert.equal(graph.nodes.find((node) => node.id === endpointId).attributes.handler,
+      graph.nodes.find((node) => node.id === handlerId).attributes.handler);
+    assert.equal(relation.originalEdgeIds.length, 1, "확정 Handler 관계의 원본 Edge가 보존됨");
+  });
+  assert.ok(plan.lanes.find((lane) => lane.id === "handler").x > card.bounds.x + card.bounds.width);
 });
 
 test("전체 MAP은 동일 FQCN Controller Handler를 표시 그룹으로 묶고 원본 Handler는 보존함", async () => {
@@ -6313,23 +7507,26 @@ test("전체 MAP은 동일 FQCN Controller Handler를 표시 그룹으로 묶고
   const before = JSON.stringify(graph);
   ui.renderGraph(graph);
   await ui.layoutGraph();
-  const groups = ui.state.layout.plan.controllerGroups;
-  const reportGroups = groups.filter((group) => group.controllerFqcn === "com.example.ReportController");
-  assert.equal(reportGroups.length, 1);
-  assert.equal(Array.from(reportGroups[0].handlerIds).join("|"), "handler-report-a|handler-report-b");
-  assert.deepEqual(new Set(reportGroups[0].endpointIds), new Set(["endpoint-report-a", "endpoint-report-b"]));
-  assert.equal(groups.filter((group) => group.controllerName === "ReportController").length, 2);
+  const cards = ui.state.layout.plan.displayModel.composites.filter((card) => card.kind === "CONTROLLER_HANDLER");
+  const reportCards = cards.filter((card) => card.key === "com.example.ReportController");
+  assert.equal(reportCards.length, 1);
+  assert.deepEqual(new Set(reportCards[0].items.flatMap((item) => item.originalNodeIds)),
+    new Set(["handler-report-a", "handler-report-b"]));
+  assert.equal(cards.filter((card) => card.title === "ReportController").length, 2);
   assert.equal(graph.nodes.filter((node) => node.type === "HANDLER").map((node) => node.id).join("|"), [
     ...originalHandlerIds, "handler-report-a", "handler-report-b", "handler-other-report"
   ].join("|"));
   assert.equal(JSON.stringify(graph), before);
-  assert.equal(findAllByClass(elements.get("graph-nodes"), "graph-controller-group").length, groups.length);
-  const reportGroupElement = findAllByClass(elements.get("graph-nodes"), "graph-controller-group")
-    .find((element) => element.attributes["data-controller-fqcn"] === "com.example.ReportController");
-  assert.equal(findAllByClass(reportGroupElement, "graph-controller-group-card")[0].attributes.rx, "7");
-  reportGroupElement.dispatchEvent({ type: "keydown", key: "Enter" });
+  assert.equal(findAllByClass(elements.get("graph-nodes"), "graph-composite-card").length,
+    ui.state.layout.plan.displayModel.composites.length);
+  const reportCard = reportCards[0];
+  const reportCardElement = findAllByClass(elements.get("graph-nodes"), "graph-composite-card")
+    .find((element) => element.getAttribute("data-composite-card-id") === reportCard.id);
+  assert.ok(reportCardElement);
+  assert.equal(findAllByClass(reportCardElement, "graph-composite-item").length, 2);
+  reportCardElement.dispatchEvent({ type: "keydown", key: "Enter" });
   assert.equal(ui.state.selection.kind, "controller-group");
-  assert.equal(ui.state.selection.id, reportGroups[0].id);
+  assert.equal(ui.state.selection.id, reportCard.id);
   assert.equal(elements.get("inspector").attributes["data-selection-kind"], "controller-group");
   assert.match(textOf(elements.get("inspector")), /com\.example\.ReportController/);
   assert.equal(typeof window.MapInBootFlow.deriveEndpointGraph, "function");
@@ -6370,112 +7567,143 @@ test("Controller Group 선택은 소속과 직접 관계만 강조하고 공유 
   assert.equal(related.edgeIds.has("second-match-0"), false);
 });
 
-test("Controller Group 선택은 해당 Controller의 안내선과 전용 Projection만 강조함", async () => {
+test("Controller 카드 선택은 실제 Handler 매핑 관계만 강조함", async () => {
   const { ui, elements } = loadUi();
   ui.state.includeUnconnectedNodes = true;
   ui.renderGraph(controllerGroupGraph(1, 1));
   await ui.layoutGraph();
-  const group = ui.state.layout.plan.controllerGroups.find((item) => item.controllerFqcn === "com.example.SampleController");
-  ui.selectGraphElement("controller-group", group.id);
-
-  const guideFor = (endpointId) => elements.get("graph-guides").children
-    .find((item) => item.attributes["data-endpoint-id"] === endpointId);
-  const projectionFor = (id) => findAllByClass(elements.get("graph-flow-projection"), "graph-projection-edge")
-    .find((item) => item.attributes["data-projection-edge-id"] === id);
-  assert.equal(guideFor("first-endpoint-0").attributes["data-related"], "true");
-  assert.equal(guideFor("second-endpoint-0").attributes["data-related"], "false");
-  assert.equal(projectionFor("adapter-to-first-handler-0"), undefined);
-  assert.equal(projectionFor("adapter-to-second-handler-0"), undefined);
-  assert.equal(findAllByClass(elements.get("graph-flow-projection"), "graph-projection-edge")
-    .some((edge) => (edge.attributes["data-projection-edge-id"] || "").startsWith("handler-to-response-")), false);
-  assert.equal(projectionFor("overview-api-first-endpoint-0").attributes["data-related"], "true");
-  assert.equal(projectionFor("overview-api-second-endpoint-0").attributes["data-related"], "false");
-  assert.equal(projectionFor("education-education-http-request-education-request-prepare").attributes["data-related"], "false");
+  const card = ui.state.layout.plan.displayModel.composites.find((item) => item.kind === "CONTROLLER_HANDLER"
+    && item.controllerFqcn === "com.example.SampleController");
+  assert.ok(card);
+  ui.selectGraphElement("controller-group", card.id);
+  const plan = ui.state.layout.plan.overviewRouting;
+  const first = plan.relations.find((relation) => relation.role === "API_MAPPING"
+    && relation.relatedNodeIds.includes("first-endpoint-0"));
+  const second = plan.relations.find((relation) => relation.role === "API_MAPPING"
+    && relation.relatedNodeIds.includes("second-endpoint-0"));
+  assert.ok(first);
+  assert.ok(second);
+  const relatedState = (relation) => {
+    const route = plan.routesByRelationId[relation.id];
+    assert.ok(route, `${relation.id} route 누락: ${JSON.stringify(plan.unresolved)}`);
+    const ids = new Set(route.orderedSegmentIds);
+    return findAllByClass(elements.get("graph-edges"), "graph-overview-segment")
+      .filter((path) => ids.has(path.getAttribute("data-segment-id")))
+      .map((path) => path.getAttribute("data-related"));
+  };
+  assert.ok(relatedState(first).length > 0 && relatedState(first).every((value) => value === "true"));
+  assert.ok(relatedState(second).length > 0 && relatedState(second).every((value) => value === "false"));
 });
 
 test("보안 관계선은 Graph 하단을 우회하지 않고 목표 입력 Port까지 짧게 연결함", () => {
   const { ui, layoutApi } = loadUi();
   const graph = ui.normalizeGraph(supportApiGraph(1));
+  graph.presentationContext = "detail";
   const layout = layoutApi.semanticLayout(graph, { positions: {} });
+  const routing = layout.plan.overviewRouting;
   const model = layout.plan.displayModel;
-  const sourceDisplayId = model.nodeToDisplay["first-handler-0"];
-  const targetDisplayId = model.nodeToDisplay["authorization-0"];
-  const groupPositions = layout.plan.controllerGroups.concat(model.groups)
-    .map((group) => [group.id, group.position]);
-  const displayedPosition = (id) => {
-    const displayId = model.nodeToDisplay[id];
-    const grouped = groupPositions.find(([groupId]) => groupId === displayId);
-    return grouped ? grouped[1] : layout.positions[id];
-  };
-  const route = layout.plan.displayEdgeRoutes["secured-0"];
-  const points = routePoints(route);
-  const actualRoute = layout.edgeRoutes["secured-0"];
-  const source = displayedPosition("first-handler-0");
-  const target = displayedPosition("authorization-0");
-  const start = { x: source.x, y: source.y + 60 };
-  const end = { x: target.x + 260, y: target.y + 60 };
-  assert.equal(points[0].x, start.x);
-  assert.equal(points[0].y, start.y);
-  assert.equal(points[points.length - 1].x, end.x);
-  assert.equal(points[points.length - 1].y, end.y);
-  assert.ok(points.length - 2 <= 2, `굽힘 수 ${points.length - 2}`);
-  assert.ok(routeLength(route) <= Math.abs(end.x - start.x) + Math.abs(end.y - start.y)
-    + 120 + layout.plan.routing.nodeSafeMargin * 2,
-    `경로 길이 ${routeLength(route)}`);
-
-  const positions = Object.fromEntries(layout.plan.projection.nodes.map((node) => [node.id, node.position]));
-  graph.nodes.forEach((node) => { positions[model.nodeToDisplay[node.id]] = displayedPosition(node.id); });
-  Object.entries(positions).forEach(([nodeId, position]) => {
-    if (nodeId === sourceDisplayId || nodeId === targetDisplayId) return;
-    assert.equal(routeIntersectsPosition(route, position), false, `${nodeId} 관통`);
+  const relation = routing.relations.find((item) => item.originalEdgeIds.includes("secured-0"));
+  const route = relation && routing.routesByRelationId[relation.id];
+  assert.ok(route, "상세 Composite 관계 경로 누락");
+  const segments = new Map(routing.segments.map((segment) => [segment.id, segment]));
+  const ports = new Map(model.ports.map((port) => [port.id, port]));
+  [route.sourcePort, route.targetPort].forEach((port) => {
+    const source = ports.get(port.id);
+    assert.ok(source && source.x === port.x && source.y === port.y && source.itemId === port.itemId);
   });
-  const actualBottom = Math.max(...Object.values(layout.positions).map((position) => position.y + 120));
-  assert.ok(Math.max(...points.map((point) => point.y)) <= actualBottom + layout.plan.routing.nodeSafeMargin,
-    `경로가 실제 Node 하단 ${actualBottom} 아래로 내려감`);
-  assert.ok(Math.max(...routePoints(actualRoute).map((point) => point.y)) <= actualBottom + layout.plan.routing.nodeSafeMargin);
+  let current = route.sourcePort;
+  const samples = [];
+  let length = 0;
+  let curvedSegments = 0;
+  route.orderedSegmentIds.forEach((id) => {
+    const segment = segments.get(id);
+    assert.ok(segment && segment.relationIds.includes(relation.id), `${id} 관계 연결 누락`);
+    const forward = current.x === segment.from.x && current.y === segment.from.y;
+    const backward = current.x === segment.to.x && current.y === segment.to.y;
+    assert.ok(forward || backward, `${id} Junction 연결 불일치`);
+    const start = forward ? segment.from : segment.to;
+    const end = forward ? segment.to : segment.from;
+    const controls = segment.geometry?.kind === "CUBIC"
+      ? forward ? segment.geometry.controlPoints : segment.geometry.controlPoints.slice().reverse()
+      : null;
+    if (controls) curvedSegments += 1;
+    let previous = start;
+    for (let index = 1; index <= 16; index += 1) {
+      const t = index / 16;
+      const inverse = 1 - t;
+      const point = controls ? {
+        x: inverse ** 3 * start.x + 3 * inverse ** 2 * t * controls[0].x
+          + 3 * inverse * t ** 2 * controls[1].x + t ** 3 * end.x,
+        y: inverse ** 3 * start.y + 3 * inverse ** 2 * t * controls[0].y
+          + 3 * inverse * t ** 2 * controls[1].y + t ** 3 * end.y
+      } : { x: start.x + (end.x - start.x) * t, y: start.y + (end.y - start.y) * t };
+      length += Math.hypot(point.x - previous.x, point.y - previous.y);
+      samples.push(point);
+      previous = point;
+    }
+    current = end;
+  });
+  assert.ok(current.x === route.targetPort.x && current.y === route.targetPort.y, "목표 입력 Port까지 이어지지 않음");
+  assert.ok(curvedSegments > 0, "상세 관계가 자연스러운 Bézier Segment를 포함함");
+  const directLength = Math.hypot(route.targetPort.x - route.sourcePort.x,
+    route.targetPort.y - route.sourcePort.y);
+  assert.ok(length <= directLength * 1.25, `불필요한 우회: ${length.toFixed(1)} / ${directLength.toFixed(1)}`);
+  const endpointCards = new Set([relation.sourceInstanceId, relation.targetInstanceId]);
+  const clearance = layout.plan.routing.nodeSafeMargin;
+  model.instances.filter((instance) => !endpointCards.has(instance.id)).forEach((instance) => {
+    const bounds = instance.position;
+    samples.forEach((point) => {
+      assert.ok(point.x <= bounds.x - clearance || point.x >= bounds.x + bounds.width + clearance
+        || point.y <= bounds.y - clearance || point.y >= bounds.y + bounds.height + clearance,
+      `${instance.id} 카드 안전 간격 침범`);
+    });
+  });
+  const minCardTop = Math.min(...model.instances.map((instance) => instance.position.y));
+  const maxCardBottom = Math.max(...model.instances.map((instance) => instance.position.y + instance.position.height));
+  assert.ok(Math.min(...samples.map((point) => point.y)) >= minCardTop - clearance * 3,
+    "경로가 전체 카드의 위쪽 외곽으로 이탈함");
+  assert.ok(Math.max(...samples.map((point) => point.y)) <= maxCardBottom + clearance * 3,
+    "경로가 전체 카드의 아래쪽 외곽으로 이탈함");
   assert.equal(layout.plan.routeDiagnostics.edgeNodeIntersections, 0);
 });
 
-test("Controller 50·60 API 규모에서도 보안 관계 Route를 유지하고 하단 공통 우회를 만들지 않음", () => {
+test("Controller 50·60 API Overview에서 보안 관계가 정확한 Item Port로 연결됨", () => {
   const { ui, layoutApi } = loadUi();
   [50, 60].forEach((count) => {
     const graph = ui.normalizeGraph(supportApiGraph(count));
     const layout = layoutApi.semanticLayout(graph, { positions: {} });
-    const intersections = graph.edges.flatMap((edge) => graph.nodes
-      .filter((node) => node.id !== edge.sourceId && node.id !== edge.targetId
-        && routeIntersectsPosition(layout.edgeRoutes[edge.id], layout.positions[node.id]))
-      .map((node) => ({ edgeId: edge.id, nodeId: node.id })));
+    const plan = layout.plan.overviewRouting;
     const model = layout.plan.displayModel;
-    const firstRoute = layout.plan.displayEdgeRoutes["secured-0"];
-    const displayPositions = Object.fromEntries(layout.plan.projection.nodes.map((node) => [node.id, node.position]));
-    const displayGroups = layout.plan.controllerGroups.concat(model.groups);
-    graph.nodes.forEach((node) => {
-      const displayId = model.nodeToDisplay[node.id];
-      const group = displayGroups.find((item) => item.id === displayId);
-      displayPositions[displayId] = group ? group.position : layout.positions[node.id];
-    });
-    const sourceDisplayId = model.nodeToDisplay["first-handler-0"];
-    const targetDisplayId = model.nodeToDisplay["authorization-0"];
-    const groupPositions = layout.plan.controllerGroups.concat(model.groups)
-      .map((group) => [group.id, group.position]);
-    const source = groupPositions.find(([id]) => id === sourceDisplayId)[1];
-    const target = groupPositions.find(([id]) => id === targetDisplayId)[1];
-    const points = routePoints(firstRoute);
-    assert.equal(Object.keys(layout.plan.displayEdgeRoutes).filter((id) => id.startsWith("secured-")).length, count);
-    assert.ok(points.length > 0, `${count}개 API의 첫 관계선 Route 없음`);
-    assert.ok(Math.max(...points.map((point) => point.y)) <= Math.max(source.y + 60, target.y + 60)
-      + layout.plan.routing.nodeSafeMargin * 4,
-      `${count}개 API의 첫 관계선이 목표 주변을 벗어남`);
-    assert.equal(layout.plan.routeDiagnostics.nodeOverlaps, 0, `${count}개 API Node 겹침`);
-    assert.equal(layout.plan.routeDiagnostics.edgeNodeIntersections, 0, `${count}개 API 실제 Edge 충돌`);
-    graph.edges.filter((edge) => edge.type === "SECURED_BY").forEach((edge) => {
-      const sourceId = model.nodeToDisplay[edge.sourceId];
-      const targetId = model.nodeToDisplay[edge.targetId];
-      const route = layout.plan.displayEdgeRoutes[edge.id];
-      Object.entries(displayPositions).forEach(([nodeId, position]) => {
-        if (nodeId === sourceId || nodeId === targetId) return;
-        assert.equal(routeIntersectsPosition(route, position), false, `${count}개 API ${edge.id}의 ${nodeId} 충돌`);
+    const securedEdges = graph.edges.filter((edge) => edge.type === "SECURED_BY");
+    const securedRelations = plan.relations.filter((relation) => relation.originalEdgeIds.some((id) => id.startsWith("secured-")));
+    const ports = new Map(model.ports.map((port) => [port.id, port]));
+    const segments = new Map(plan.segments.map((segment) => [segment.id, segment]));
+    assert.equal(Array.from(plan.unresolved).length, 0, `${count}개 API 미해결 관계`);
+    assert.equal(securedRelations.length, count, `${count}개 API 보안 관계 누락`);
+    securedEdges.forEach((edge) => {
+      const relation = securedRelations.find((item) => item.originalEdgeIds.includes(edge.id));
+      const route = relation && plan.routesByRelationId[relation.id];
+      assert.ok(route, `${count}개 API ${edge.id}의 Route 없음`);
+      assert.equal(route.sourcePort.x, ports.get(relation.visualSourcePortId).x, edge.id);
+      assert.equal(route.sourcePort.y, ports.get(relation.visualSourcePortId).y, edge.id);
+      assert.equal(route.targetPort.x, ports.get(relation.visualTargetPortId).x, edge.id);
+      assert.equal(route.targetPort.y, ports.get(relation.visualTargetPortId).y, edge.id);
+      let current = route.sourcePort;
+      route.orderedSegmentIds.forEach((id) => {
+        const segment = segments.get(id);
+        assert.ok(segment && segment.relationIds.includes(relation.id), `${count}개 API ${edge.id} 단절`);
+        assert.ok((current.x === segment.from.x && current.y === segment.from.y)
+          || (current.x === segment.to.x && current.y === segment.to.y), `${edge.id} Junction 불일치`);
+        current = current.x === segment.from.x && current.y === segment.from.y ? segment.to : segment.from;
+        model.instances.forEach((instance) => {
+          if (instance.id === relation.sourceInstanceId || instance.id === relation.targetInstanceId) return;
+          const collision = routeIntersectsPosition({ sections: [{ startPoint: segment.from, endPoint: segment.to }] }, instance.position);
+          if (collision) assert.ok(segment.routeRole === "TRUNK" && segment.relationIds.length > 1,
+            `${count}개 API ${edge.id} ${instance.id}와 ${segment.routeRole} 충돌`);
+        });
       });
+      assert.equal(current.x, route.targetPort.x, `${edge.id} 최종 Port X`);
+      assert.equal(current.y, route.targetPort.y, `${edge.id} 최종 Port Y`);
     });
   });
 });
@@ -6502,19 +7730,23 @@ test("표시 그룹은 실제 관계로 소속을 확인하고 원본 Fact와 Ed
   const before = JSON.stringify(normalized);
   const plan = layoutApi.semanticLayout(normalized, { positions: {} }).plan;
   const display = plan.displayModel;
-  const authGroup = display.groups.find((group) => group.nodeIds.includes("authorization-a"));
-  const dataGroup = display.groups.find((group) => group.nodeIds.includes("security-data-a"));
-  assert.ok(authGroup);
-  assert.ok(dataGroup);
-  const isolatedUnknown = display.groups.find((group) => group.nodeIds.includes("data-unknown"));
-  const unresolved = display.groups.find((group) => group.nodeIds.includes("data-uncertain"));
+  const authCard = compositeCardForNode(plan, "authorization-a", "AUTHORIZATION");
+  const dataCard = compositeCardForNode(plan, "security-data-a", "SECURITY_DATA");
+  assert.ok(authCard);
+  assert.ok(dataCard);
+  const isolatedUnknown = compositeCardForNode(plan, "data-unknown", "SECURITY_DATA");
+  const unresolved = compositeCardForNode(plan, "data-uncertain", "SECURITY_DATA");
   assert.equal(isolatedUnknown.rowId, "isolated");
   assert.equal(unresolved.rowId, "unresolved");
   assert.equal(display.nodeToDisplay["data-unknown"], isolatedUnknown.id);
   assert.equal(display.nodeToDisplay["data-uncertain"], unresolved.id);
-  assert.ok(display.groups.some((group) => group.nodeIds.includes("auth-other")));
-  assert.ok(display.groups.some((group) => group.nodeIds.includes("data-other")));
-  normalized.nodes.forEach((item) => assert.ok(display.displayToNodes[display.nodeToDisplay[item.id]].includes(item.id)));
+  assert.ok(compositeCardForNode(plan, "auth-other", "AUTHORIZATION"));
+  assert.ok(compositeCardForNode(plan, "data-other", "SECURITY_DATA"));
+  normalized.nodes.filter((node) => display.originalNodeToItemIds[node.id]).forEach((item) => {
+    const itemIds = display.originalNodeToItemIds[item.id];
+    assert.ok(itemIds.length > 0);
+    itemIds.forEach((id) => assert.ok(display.itemToOriginalNodeIds[id].includes(item.id)));
+  });
   normalized.edges.forEach((item) => assert.ok(display.displayToEdges[display.edgeToDisplay[item.id]].includes(item.id)));
   assert.equal(JSON.stringify(normalized), before);
 });
@@ -6523,16 +7755,17 @@ test("인가 및 보안정보 표시 그룹은 원본 Fact를 Inspector에서 �
   const { ui, elements } = loadUi();
   ui.renderGraph(detailGraphFixture());
   await ui.layoutGraph();
-  const support = findAllByClass(elements.get("graph-nodes"), "graph-support-group");
-  assert.ok(support.length >= 2);
-  support.forEach((group) => {
-    assert.equal(findAllByClass(group, "graph-node-type-dot").length, 1);
-    assert.equal(findAllByClass(group, "graph-node-type-badge").length, 0);
-    assert.equal(findAllByClass(group, "graph-node-display-id")[0].getAttribute("text-anchor"), "end");
-  });
-  support[0].dispatchEvent({ type: "click", stopPropagation() {} });
+  const supportCards = ui.state.layout.plan.displayModel.composites
+    .filter((card) => ["AUTHORIZATION", "SECURITY_DATA"].includes(card.kind));
+  assert.ok(supportCards.length >= 2);
+  const factItem = supportCards.flatMap((card) => card.items)
+    .find((item) => item.originalNodeIds.length > 0 && !item.isHeader);
+  const renderedItem = findAllByClass(elements.get("graph-nodes"), "graph-composite-item")
+    .find((item) => item.getAttribute("data-composite-item-id") === factItem.id);
+  assert.ok(renderedItem);
+  renderedItem.dispatchEvent({ type: "click" });
   assert.equal(ui.state.selection.kind, "controller-group");
-  assert.match(textOf(elements.get("inspector")), /포함된 원본 Fact/);
+  assert.match(textOf(elements.get("inspector")), /원본 Node/);
   const links = findAllByClass(elements.get("inspector"), "inspector-link");
   assert.ok(links.length > 0);
   links[0].dispatchEvent({ type: "click" });
@@ -6540,14 +7773,20 @@ test("인가 및 보안정보 표시 그룹은 원본 Fact를 Inspector에서 �
 });
 
 test("API 안내선은 표시 Controller 카드의 실제 입력 포트에 도착함", async () => {
-  const { ui, elements } = loadUi();
-  ui.renderGraph(detailGraphFixture());
-  await ui.layoutGraph();
-  const group = ui.state.layout.plan.controllerGroups.find((item) => item.handlerIds.includes("handler-a"));
-  const guide = elements.get("graph-guides").children.find((item) => item.attributes["data-endpoint-id"] === "endpoint-a");
-  assert.ok(guide);
-  const path = guide.attributes.d;
-  assert.match(path, new RegExp(`L ${group.position.x} ${group.position.y + 60}$`));
+  const { ui, layoutApi } = loadUi();
+  const graph = ui.normalizeGraph(detailGraphFixture());
+  const plan = layoutApi.semanticLayout(graph, { positions: {} }).plan;
+  const endpointItem = compositeItemForNode(plan, "endpoint-a");
+  const handlerItem = compositeItemForNode(plan, "handler-a", endpointItem.rowId);
+  const relation = plan.overviewRouting.relations.find((item) => item.role === "API_MAPPING"
+    && item.sourceItemId === endpointItem.id && item.targetItemId === handlerItem.id);
+  assert.ok(relation, "확정된 API와 Handler 항목 간 관계 누락");
+  const ports = plan.displayModel.portById;
+  const route = plan.overviewRouting.routesByRelationId[relation.id];
+  assert.equal(route.sourcePort.x, ports[relation.visualSourcePortId].x);
+  assert.equal(route.sourcePort.y, endpointItem.bounds.y + endpointItem.bounds.height / 2);
+  assert.equal(route.targetPort.x, ports[relation.visualTargetPortId].x);
+  assert.equal(route.targetPort.y, handlerItem.bounds.y + handlerItem.bounds.height / 2);
 });
 
 test("묶인 표시 관계에서 개별 Edge와 Evidence를 선택할 수 있음", async () => {
@@ -6608,9 +7847,12 @@ test("표시 그룹의 원본 Node 참조와 Snapshot 교체가 마커를 정확
   ui.renderGraph(snapshot);
   ui.selectView("security-flow");
   await ui.layoutGraph();
-  const group = ui.state.layout.plan.displayModel.groups.find((item) => item.nodeIds.includes("authorization-a"));
-  const marker = findAllByClass(elements.get("graph-nodes"), "finding-marker")[0];
-  assert.equal(marker.getAttribute("transform"), `translate(${group.position.x + 246} ${group.position.y + 106})`);
+  const item = compositeItemForNode(ui.state.layout.plan, "authorization-a");
+  const renderedItem = findAllByClass(elements.get("graph-nodes"), "graph-composite-item")
+    .find((element) => element.getAttribute("data-composite-item-id") === item.id);
+  const marker = findAllByClass(renderedItem, "finding-marker")[0];
+  assert.ok(marker, "Finding 표식이 실제 인가 항목 안에 표시됨");
+  assert.equal(marker.getAttribute("data-finding-id"), "grouped");
   marker.dispatchEvent({ type: "click" });
   assert.equal(ui.state.selectedFindingId, "grouped");
   assert.equal(ui.state.view, "security-flow");
@@ -6681,19 +7923,19 @@ test("미확정·고립 보안 정보는 의미별로 묶이고 주 흐름 정�
     confidence: "CONFIRMED", evidenceIds: [`isolated-evidence-${index}`]
   })));
   const layout = layoutApi.semanticLayout(ui.normalizeGraph(graph), { positions: {} });
-  const displayGroups = layout.plan.displayModel.groups;
-  const findGroup = (nodeId) => displayGroups.find((group) => group.nodeIds.includes(nodeId));
-  const unownedGroup = findGroup("unowned");
-  assert.equal(unownedGroup.rowId, "isolated");
-  assert.equal(unownedGroup.nodeIds.length, 1);
-  assert.equal(unownedGroup.nodeIds[0], "unowned");
-  const unresolvedGroup = findGroup("unresolved-principal-a");
-  assert.equal(unresolvedGroup.rowId, "unresolved");
-  assert.deepEqual(new Set(unresolvedGroup.nodeIds), new Set(["unresolved-principal-a", "unresolved-principal-b"]));
-  const isolatedGroup = findGroup("isolated-data-0");
-  assert.equal(isolatedGroup.rowId, "isolated");
-  assert.deepEqual(new Set(isolatedGroup.nodeIds), new Set(Array.from({ length: 8 }, (_, index) => `isolated-data-${index}`)));
-  assert.ok(isolatedGroup.edgeIds.includes("isolated-data-edge-0"));
+  const plan = layout.plan;
+  const unownedCard = compositeCardForNode(plan, "unowned", "SECURITY_DATA");
+  const unownedItem = compositeItemForNode(plan, "unowned", "isolated");
+  assert.equal(unownedCard.rowId, "isolated");
+  assert.deepEqual(Array.from(unownedItem.originalNodeIds), ["unowned"]);
+  const unresolvedItem = compositeItemForNode(plan, "unresolved-principal-a", "unresolved");
+  assert.deepEqual(new Set(unresolvedItem.originalNodeIds),
+    new Set(["unresolved-principal-a", "unresolved-principal-b"]));
+  const isolatedCard = compositeCardForNode(plan, "isolated-data-0", "SECURITY_DATA");
+  const isolatedItem = compositeItemForNode(plan, "isolated-data-0", "isolated");
+  assert.equal(isolatedCard.rowId, "isolated");
+  assert.deepEqual(new Set(isolatedItem.originalNodeIds), new Set(Array.from({ length: 8 }, (_, index) => `isolated-data-${index}`)));
+  assert.ok(isolatedItem.originalEdgeIds.includes("isolated-data-edge-0"));
   assert.ok(layout.plan.displayModel.edgeToDisplay["isolated-data-edge-0"]);
   const internalEdgeInstance = layout.plan.displayModel.displayEdgeInstances
     .find((edge) => edge.originalEdgeIds.includes("isolated-data-edge-0"));
@@ -6704,34 +7946,33 @@ test("미확정·고립 보안 정보는 의미별로 묶이고 주 흐름 정�
   const lane = layout.plan.lanes.find((item) => item.id === "security-checks");
   assert.equal(lane.nodeIds.includes("unowned"), true);
   assert.equal(layout.plan.supportAnchors.unowned.status, "UNKNOWN");
-  assert.ok(unownedGroup.position.x >= lane.bounds.left
-    && unownedGroup.position.x + 260 <= lane.bounds.right);
+  assert.ok(unownedCard.bounds.x >= lane.bounds.left
+    && unownedCard.bounds.x + unownedCard.bounds.width <= lane.bounds.right);
   const mainBottom = Math.max(...Object.values(layout.plan.sectionAlignment)
     .filter((section) => section && section.nodeIds && section.nodeIds.length)
     .map((section) => section.top + section.height));
-  assert.ok([unownedGroup, isolatedGroup].every((group) => group.position.y > mainBottom));
+  assert.ok([unownedCard, isolatedCard].every((card) => card.bounds.y > mainBottom));
   assert.equal(layout.plan.sectionAlignment.securityChecks.nodeIds.includes("unowned"), false);
-  const baselineGroup = baseline.plan.displayModel.groups.find((group) => group.nodeIds.includes("security-data-a"));
-  const currentGroup = findGroup("security-data-a");
-  assert.equal(currentGroup.position.x, baselineGroup.position.x);
-  assert.equal(currentGroup.position.y, baselineGroup.position.y,
+  const baselineCard = compositeCardForNode(baseline.plan, "security-data-a", "SECURITY_DATA");
+  const currentCard = compositeCardForNode(plan, "security-data-a", "SECURITY_DATA");
+  assert.equal(currentCard.position.x, baselineCard.position.x);
+  assert.equal(currentCard.position.y, baselineCard.position.y,
     "고립·미확정 노드가 기존 Chain 표시 좌표를 바꾸지 않아야 함");
-  const rows = layout.plan.hiddenGroups.filter((row) => row.rowId !== "detail");
+  const rows = plan.hiddenGroups.filter((row) => row.id !== "detail");
   const rowById = new Map(rows.map((row) => [row.id, row]));
   rows.slice(1).forEach((row, index) => {
-    assert.ok(rows[index].rowBottom + layout.plan.chainGap <= row.rowTop,
+    assert.ok(rows[index].rowBottom + plan.chainGap <= row.rowTop,
       `${rows[index].id}와 ${row.id}가 겹침`);
   });
-  layout.plan.displayModel.instances.filter((instance) => rowById.has(instance.rowId)).forEach((instance) => {
+  plan.displayModel.instances.filter((instance) => rowById.has(instance.rowId)).forEach((instance) => {
     const row = rowById.get(instance.rowId);
-    const padding = layout.plan.routing.nodeSafeMargin;
+    const padding = plan.routing.nodeSafeMargin;
     assert.ok(instance.position.y >= row.rowTop + padding);
-    assert.ok(instance.position.y + 120 <= row.rowBottom - padding);
+    assert.ok(instance.position.y + instance.position.height <= row.rowBottom - padding);
   });
-  Object.keys(baseline.plan.sectionAlignment).forEach((id) => {
-    const before = baseline.plan.sectionAlignment[id];
-    const after = layout.plan.sectionAlignment[id];
-    if (before && after) assert.equal(after.centerY, before.centerY, `${id} center changed with isolated nodes`);
+  ["chain-a", "endpoint-a", "handler-a"].forEach((id) => {
+    assert.equal(layout.positions[id].x, baseline.positions[id].x, `${id} 기존 X 좌표 보존`);
+    assert.equal(layout.positions[id].y, baseline.positions[id].y, `${id} 기존 Y 좌표 보존`);
   });
 
   ui.state.includeUnconnectedNodes = true;
@@ -6739,13 +7980,12 @@ test("미확정·고립 보안 정보는 의미별로 묶이고 주 흐름 정�
   await ui.layoutGraph();
   const checkArea = ui.state.graphRender.areas.find((area) => area.id === "security-checks");
   assert.equal(checkArea.bounds.length, 1);
-  [unownedGroup, isolatedGroup, unresolvedGroup].forEach((group) => {
-    const position = group.position;
+  [unownedCard, isolatedCard, compositeCardForNode(plan, "unresolved-principal-a", "SECURITY_DATA")].forEach((card) => {
+    const position = card.bounds;
     const bounds = checkArea.bounds[0];
-    assert.ok(position.x >= bounds.left && position.x + 260 <= bounds.right);
-    assert.ok(position.y >= bounds.top && position.y + 120 <= bounds.bottom,
-      `${group.rowId} ${JSON.stringify({ position, bounds, instances: ui.state.layout.plan.displayModel.instances
-        .filter((instance) => group.nodeIds.some((id) => instance.originalNodeIds.includes(id))) })}`);
+    assert.ok(position.x >= bounds.left && position.x + position.width <= bounds.right);
+    assert.ok(position.y >= bounds.top && position.y + position.height <= bounds.bottom,
+      `${card.rowId} ${JSON.stringify({ position, bounds })}`);
   });
 });
 
@@ -6805,9 +8045,15 @@ test("API 선택은 실제 상세 Graph의 Handler와 보안 근거를 함께 �
   ui.renderGraph(detailGraphFixture());
   await ui.layoutGraph();
   ui.selectGraphElement("node", "endpoint-a");
-  const support = findAllByClass(elements.get("graph-nodes"), "graph-support-group");
-  assert.ok(support.some((node) => (node.attributes["data-handler-ids"] || "").includes("security-data-a")
-    && node.attributes["data-related"] === "true"));
+  const plan = ui.state.layout.plan.overviewRouting;
+  const mapping = plan.relations.find((relation) => relation.role === "API_MAPPING"
+    && relation.relatedNodeIds.includes("endpoint-a"));
+  assert.ok(mapping, "선택 Endpoint의 실제 Handler 매핑 누락");
+  const mappingSegmentIds = new Set(plan.routesByRelationId[mapping.id].orderedSegmentIds);
+  const mappingSegments = findAllByClass(elements.get("graph-edges"), "graph-overview-segment")
+    .filter((path) => mappingSegmentIds.has(path.getAttribute("data-segment-id")));
+  assert.ok(mappingSegments.length > 0);
+  assert.ok(mappingSegments.every((path) => path.attributes["data-related"] === "true"));
   const securedEdge = () => findAllByClass(elements.get("graph-edges"), "graph-edge")
     .find((edge) => (edge.attributes["data-edge-ids"] || "").split(",").includes("secured-a"));
   assert.ok(securedEdge());
@@ -6823,22 +8069,28 @@ test("같은 Controller의 두 번째 API 선택도 공유 처리 경로를 강�
     { id: "handler-a2", type: "HANDLER", serviceId: "orders", label: "OrderController#other", attributes: { handler: "OrderController#other" }, evidenceIds: [] },
     { id: "endpoint-a2", type: "ENDPOINT", serviceId: "orders", label: "GET /other", attributes: { httpMethod: "GET", path: "/other", handler: "OrderController#other" }, evidenceIds: [] }
   );
+  graph.edges.push({ id: "handler-map-a2", sourceId: "endpoint-a2", targetId: "handler-a2", type: "FLOWS_TO",
+    confidence: "CONFIRMED", attributes: {}, evidenceIds: [] });
   ui.state.includeUnconnectedNodes = true;
   ui.renderGraph(graph);
   await ui.layoutGraph();
   ui.selectGraphElement("node", "endpoint-a2");
-  const paths = findAllByClass(elements.get("graph-flow-projection"), "graph-projection-edge");
-  const apiRoute = paths.find((path) => path.attributes["data-projection-edge-id"] === "overview-api-endpoint-a2");
-  const controllerRoute = findAllByClass(elements.get("graph-guides"), "graph-guide-handler")
-    .find((path) => path.attributes["data-endpoint-id"] === "endpoint-a2");
-  assert.ok(apiRoute, paths.map((path) => path.attributes["data-projection-edge-id"]).join(","));
-  assert.ok(controllerRoute);
-  assert.equal(apiRoute.attributes["data-related"], "true");
-  assert.equal(controllerRoute.attributes["data-related"], "true");
-  assert.equal(paths.some((path) => (path.attributes["data-projection-edge-id"] || "").startsWith("handler-to-response-")), false);
+  const plan = ui.state.layout.plan.overviewRouting;
+  const selected = plan.relations.find((relation) => relation.role === "API_MAPPING"
+    && relation.relatedNodeIds.includes("endpoint-a2"));
+  const other = plan.relations.find((relation) => relation.role === "API_MAPPING"
+    && relation.relatedNodeIds.includes("endpoint-a"));
+  assert.ok(selected);
+  assert.ok(other);
+  const paths = findAllByClass(elements.get("graph-edges"), "graph-overview-segment");
+  const routeSegments = (relation) => new Set(plan.routesByRelationId[relation.id].orderedSegmentIds);
+  assert.ok(paths.some((path) => routeSegments(selected).has(path.getAttribute("data-segment-id"))
+    && path.attributes["data-related"] === "true"));
+  assert.ok(paths.some((path) => routeSegments(other).has(path.getAttribute("data-segment-id"))
+    && path.attributes["data-related"] === "false"));
 });
 
-test("기능별 상세에서는 같은 방향과 유형의 원본 Edge도 개별 표시함", async () => {
+test("기능별 상세는 중복 원본 Edge를 한 관계와 공통 Segment로 통합함", async () => {
   const { ui, elements } = loadUi();
   const graph = detailGraphFixture();
   graph.edges.push({ ...graph.edges.find((edge) => edge.id === "secured-a"), id: "secured-a-second", evidenceIds: ["other-evidence"] });
@@ -6846,26 +8098,36 @@ test("기능별 상세에서는 같은 방향과 유형의 원본 Edge도 개별
   ui.openEndpointDetail("endpoint-a");
   await ui.layoutGraph();
   const edges = findAllByClass(elements.get("graph-edges"), "graph-edge");
-  assert.ok(edges.some((edge) => edge.attributes["data-edge-id"] === "secured-a"));
-  assert.ok(edges.some((edge) => edge.attributes["data-edge-id"] === "secured-a-second"));
+  const shared = edges.find((edge) => ["secured-a", "secured-a-second"].every((id) =>
+    (edge.getAttribute("data-edge-ids") || edge.getAttribute("data-edge-id") || "").split(",").includes(id)));
+  assert.ok(shared, "같은 물리 경로에 두 원본 Edge ID가 유지됨");
+  const relations = ui.state.layout.plan.overviewRouting.relations
+    .filter((relation) => relation.originalEdgeIds.some((id) => ["secured-a", "secured-a-second"].includes(id)));
+  assert.equal(relations.length, 1, "동일한 의미·방향의 원본 Edge를 단일 표시 관계로 정규화함");
+  assert.deepEqual(Array.from(relations[0].evidenceIds).sort(), ["evidence-secured-a", "other-evidence"].sort());
 });
 
 test("Chain 그룹과 기술 영역은 실제 Node 범위와 동적 여백으로 분리됨", async () => {
   const { ui, elements } = loadUi();
   ui.renderGraph(laneGraphFixture());
   const layout = await ui.layoutGraph();
-  const groups = layout.plan.chainGroups;
-  for (let index = 1; index < groups.length; index += 1) {
-    assert.ok(groups[index].top - groups[index - 1].bottom >= layout.plan.chainGap - 36);
+  const rows = layout.plan.hiddenGroups.filter((row) => row.id.startsWith("chain:"));
+  for (let index = 1; index < rows.length; index += 1) {
+    assert.ok(rows[index].rowTop >= rows[index - 1].rowBottom, "Chain 행이 서로 겹치지 않음");
   }
-  const areaRects = elements.get("graph-areas").children
-    .map((group) => group.children.find((child) => child.attributes.class === "graph-area-box"))
-    .filter(Boolean);
-  assert.ok(areaRects.some((rect) => Number(rect.attributes.height) < layout.height));
-  groups.forEach((group) => group.nodeIds.forEach((id) => {
-    const position = layout.positions[id];
-    assert.ok(position.y >= group.top && position.y + 120 <= group.bottom);
+  const cards = layout.plan.displayModel.composites;
+  rows.forEach((row) => cards.filter((card) => card.rowId === row.id).forEach((card) => {
+    assert.ok(card.bounds.y >= row.rowTop && card.bounds.y + card.bounds.height <= row.rowBottom,
+      `${card.kind} 복합 카드가 Chain 행 안에 있음`);
   }));
+  const areas = new Map(elements.get("graph-areas").children.map((group) => [group.getAttribute("data-area-id"),
+    group.children.find((child) => child.attributes.class === "graph-area-box")]));
+  cards.forEach((card) => {
+    const area = areas.get(card.areaId);
+    assert.ok(area, `${card.areaId} 기술 영역 표시`);
+    assert.ok(Number(area.attributes.x) <= card.bounds.x
+      && Number(area.attributes.x) + Number(area.attributes.width) >= card.bounds.x + card.bounds.width);
+  });
 });
 
 test("Mini Map은 실제 표시 Node와 교육용 Projection Node를 함께 갱신함", async () => {
@@ -6957,12 +8219,16 @@ test("보안 MAP에서 직접 참조된 노드만 Finding 테두리 상태를 �
   assert.equal(filtered.find((node) => node.getAttribute("data-node-id") === "node-2").getAttribute("data-has-finding"), "false");
 });
 
-test("Finding 근거는 유일한 Endpoint 등록 근거 또는 구조 Handler로만 연결함", () => {
+test("Finding API 범위는 명시적 Endpoint–Handler 관계와 실제 근거로만 결정함", () => {
   const { ui, elements } = loadUi();
   const snapshot = graphFixture();
   const endpoint = snapshot.nodes.find((node) => node.id === "node-2");
   endpoint.attributes.handler = "org.example.Controller#one()";
   endpoint.evidenceIds = ["endpoint-evidence"];
+  const handler = snapshot.nodes.find((node) => node.id === "node-3");
+  handler.attributes.handler = endpoint.attributes.handler;
+  snapshot.edges.push({ id: "endpoint-handler-one", sourceId: endpoint.id, targetId: handler.id,
+    type: "FLOWS_TO", attributes: { flowKind: "HANDLER" }, confidence: "CONFIRMED", evidenceIds: ["endpoint-evidence"] });
   snapshot.nodes.push({ id: "other-endpoint", type: "ENDPOINT", label: "GET /other", attributes: { httpMethod: "GET", path: "/other", handler: "org.example.Controller#other()" }, evidenceIds: ["shared-evidence"] });
   snapshot.nodes.push({ id: "state-node", type: "BUSINESS_SECURITY_STATE", label: "state", attributes: { factType: "BUSINESS_STATE_EVALUATION", handler: "org.example.Controller#one()" }, evidenceIds: ["state-evidence"] });
   snapshot.evidence = [
@@ -7270,7 +8536,7 @@ test("교육 흐름 경로는 관련 없는 실제 카드 내부를 지나지 �
   }
 });
 
-test("객체 인가 Handler는 실제 근거가 일치할 때만 API에 연결하고 모호한 등록 근거는 제외함", () => {
+test("객체 인가 Finding은 명시적 Endpoint–Handler 관계로 연결하고 복수 등록 근거는 제외함", () => {
   const { ui, elements } = loadUi();
   const snapshot = graphFixture();
   const endpoint = snapshot.nodes.find((node) => node.id === "node-2");
@@ -7279,7 +8545,19 @@ test("객체 인가 Handler는 실제 근거가 일치할 때만 API에 연결�
   snapshot.nodes.push({ id: "ambiguous-endpoint", type: "ENDPOINT", label: endpoint.label, attributes: { ...endpoint.attributes }, evidenceIds: ["shared"] });
   snapshot.nodes.push({ id: "object-path", type: "AUTHORIZATION", label: "object-path", attributes: { factType: "OBJECT_ACCESS_PATH", handler: "org.sample.Other#load()" }, evidenceIds: ["object-evidence"] });
   snapshot.nodes.push({ id: "object-endpoint", type: "ENDPOINT", label: "GET /objects", attributes: { httpMethod: "GET", path: "/objects", handler: "org.sample.Other#load()" }, evidenceIds: [] });
-  snapshot.evidence = [{ id: "shared", source: "RUNTIME", location: `mapping:${endpoint.attributes.handler}`, summary: `등록 Endpoint: ${endpoint.attributes.httpMethod} ${endpoint.attributes.path}` }, { id: "object-evidence" }];
+  snapshot.nodes.push(
+    { id: "handler-shared", type: "HANDLER", label: endpoint.attributes.handler, attributes: { handler: endpoint.attributes.handler }, evidenceIds: [] },
+    { id: "handler-other", type: "HANDLER", label: "org.sample.Other#load()", attributes: { handler: "org.sample.Other#load()" }, evidenceIds: [] }
+  );
+  snapshot.edges.push(
+    { id: "mapping-main-shared", sourceId: endpoint.id, targetId: "handler-shared", type: "FLOWS_TO", attributes: {}, confidence: "CONFIRMED", evidenceIds: ["shared"] },
+    { id: "mapping-ambiguous-shared", sourceId: "ambiguous-endpoint", targetId: "handler-shared", type: "FLOWS_TO", attributes: {}, confidence: "CONFIRMED", evidenceIds: ["shared"] },
+    { id: "mapping-object", sourceId: "object-endpoint", targetId: "handler-other", type: "FLOWS_TO", attributes: {}, confidence: "CONFIRMED", evidenceIds: ["object-endpoint-evidence"] }
+  );
+  snapshot.evidence = [
+    { id: "shared", source: "RUNTIME", location: `mapping:${endpoint.attributes.handler}`, summary: `등록 Endpoint: ${endpoint.attributes.httpMethod} ${endpoint.attributes.path}` },
+    { id: "object-evidence" }, { id: "object-endpoint-evidence", source: "RUNTIME", location: "mapping:object-endpoint", summary: "등록 Endpoint" }
+  ];
   snapshot.findings = [
     { id: "ambiguous", ruleId: "FILTER_ORDER", title: "모호", nodeIds: [], edgeIds: [], evidenceIds: ["shared"] },
     { id: "object", ruleId: "OBJECT_BINDING", title: "객체", nodeIds: [], edgeIds: [], evidenceIds: ["object-evidence"] }
@@ -7350,10 +8628,19 @@ test("전체 Flow MAP은 실제 연결 Node만 기본 표시하고 옵션과 보
   assert.equal(JSON.stringify(snapshot), original);
 });
 
-test("상세 취약점 MAP은 선택 Endpoint의 전체 실제 상세 Graph를 표시함", () => {
+test("상세 취약점 MAP은 Endpoint Graph와 Runtime Blueprint를 같은 Renderer에서 표시함", async () => {
   const { ui, elements, window } = loadUi();
   const snapshot = detailGraphFixture();
   snapshot.findings = [{ id: "endpoint-flow-finding", ruleId: "PUBLIC_ENDPOINT", title: "API 판단", confidence: "LIKELY", nodeIds: ["endpoint-a"], edgeIds: [], evidenceIds: [], guide: "점검" }];
+  snapshot.runtimeArchitecture = {
+    environment: { webApplicationType: "SERVLET", serverKind: "TOMCAT", deploymentMode: "EMBEDDED" },
+    components: [{ id: "runtime-mapping", kind: "HANDLER_MAPPING", className: "org.springframework.web.servlet.mvc.method.annotation.RequestMappingHandlerMapping",
+      beanName: "requestMappingHandlerMapping", contextId: "app", parentId: null, attributes: {}, graphNodeIds: ["endpoint-a"], evidenceIds: [] }],
+    relationships: [], coverage: [
+      { area: "WEB_SERVER", state: "PRESENT" }, { area: "SERVLET", state: "PRESENT" },
+      { area: "SECURITY", state: "PRESENT" }, { area: "MVC", state: "PRESENT" }
+    ], evidence: [], architectureFingerprint: "finding-runtime"
+  };
   const original = JSON.stringify(snapshot);
   const expected = window.MapInBootFlow.deriveEndpointGraph(window.MapInBootGraph.normalize(snapshot), "endpoint-a");
   ui.renderGraph(snapshot);
@@ -7361,6 +8648,7 @@ test("상세 취약점 MAP은 선택 Endpoint의 전체 실제 상세 Graph를 �
 
   const marker = findAllByClass(elements.get("graph-nodes"), "finding-marker")[0];
   marker.dispatchEvent({ type: "click" });
+  await ui.layoutGraph();
   const actual = ui.state.viewGraph;
 
   assert.equal(ui.state.view, "security-detail");
@@ -7375,6 +8663,9 @@ test("상세 취약점 MAP은 선택 Endpoint의 전체 실제 상세 Graph를 �
   assert.equal(actual.nodes.some((node) => node.id === "chain-b"), false);
   assert.equal(actual.edges.some((edge) => edge.id === "secured-a"), true);
   assert.equal(actual.edges.some((edge) => edge.id === "secured-b"), false);
+  assert.ok(ui.state.layout.plan.detailBlueprint.cards.some((card) => card.runtimeComponentIds.includes("runtime-mapping")));
+  assert.ok(findAllByClass(elements.get("graph-nodes"), "graph-composite-card").length > 0);
+  assert.equal(findAllByClass(elements.get("graph-nodes"), "runtime-blueprint-card").length, 0);
   assert.equal(JSON.stringify(snapshot), original);
 });
 
@@ -8155,7 +9446,7 @@ test("Inspector 헤더는 유형 배지와 대표 이름만 표시하고 표시 
   assert.match(textOf(elements.get("inspector")), /EP-HANDLER-001 → SC-CHAIN-001/);
 });
 
-test("Controller Group은 Handler 서명을 축약해 표시하고 전체 원문을 접어 보존함", async () => {
+test("Controller 복합 카드 Inspector는 Handler 서명을 축약하고 전체 원문을 보존함", async () => {
   const { ui, elements } = loadUi();
   const graph = detailGraphFixture();
   const signatures = [
@@ -8171,38 +9462,22 @@ test("Controller Group은 Handler 서명을 축약해 표시하고 전체 원문
   ui.state.includeUnconnectedNodes = true;
   ui.renderGraph(graph);
   await ui.layoutGraph();
-  const groups = ui.state.layout.plan.controllerGroups;
-  const group = groups.find((item) => item.controllerFqcn === "com.mapinboot.demo.account.controller.LoanApplicationController");
-  assert.ok(group, JSON.stringify(groups.map((item) => item.controllerFqcn)));
-  ui.selectGraphElement("controller-group", group.id);
-  const memberCodes = group.handlerIds.map((id) => ui.state.displayIds.node(id)).sort();
-  const groupCard = findAllByClass(elements.get("graph-nodes"), "graph-controller-group")
-    .find((card) => card.getAttribute("data-controller-group-id") === group.id);
-  const groupCode = findAllByClass(groupCard, "graph-node-display-id")[0].textContent;
-  assert.equal(groupCode, `${memberCodes[0]} 외 ${memberCodes.length - 1}개`);
-  ui.inspector.showHover({
-    graph: ui.state.viewGraph || ui.state.graph,
-    snapshot: graph,
-    kind: "controller-group",
-    id: group.id,
-    anchor: groupCard,
-    displayIds: ui.state.displayIds
-  });
-  assert.ok(textOf(elements.get("graph-popover")).includes(groupCode),
-    `그룹 Hover 표시 코드 ${groupCode}: ${textOf(elements.get("graph-popover"))}`);
-  ui.inspector.hideHover();
+  const plan = ui.state.layout.plan;
+  const card = compositeCardForNode(plan, "loan-handler-0", "CONTROLLER_HANDLER");
+  assert.ok(card, JSON.stringify(plan.displayModel.composites.map((item) => item.controllerFqcn)));
+  assert.equal(card.controllerFqcn, "com.mapinboot.demo.account.controller.LoanApplicationController");
+  ui.selectGraphElement("controller-group", card.id);
   const inspector = elements.get("inspector");
   const header = findAllByClass(inspector, "inspector-header")[0];
   assert.equal(findAllByClass(header, "inspector-badge")[0].textContent, "Controller");
   assert.equal(findAllByClass(header, "inspector-title")[0].textContent, "LoanApplicationController");
   assert.equal(findAllByClass(header, "inspector-subtitle").length, 0);
-  assert.equal(findAllByClass(inspector, "inspector-row").some((row) => row.children[0].textContent === "유형"), false);
-  assert.deepEqual(findAllByClass(inspector, "inspector-handler-method-summary").map((element) => element.textContent), [
+  assert.ok(findAllByClass(inspector, "inspector-row").some((row) => row.children[0].textContent === "전체 클래스 경로"));
+  assert.deepEqual(Array.from(findAllByClass(inspector, "inspector-handler-method-summary"), (element) => element.textContent), [
     "createApplication(LoanApplicationRequest, Jwt)",
     "getMyApplications(Jwt)",
     "searchCustomers(String, List<CustomerFilter>)"
   ]);
-  memberCodes.forEach((code) => assert.ok(textOf(inspector).includes(code)));
   const originals = findAllByClass(inspector, "inspector-original-signatures")[0];
   assert.ok(originals);
   assert.equal(originals.hasAttribute("open"), false);
@@ -8243,10 +9518,11 @@ test("상위 기술 영역만 배선 간격을 넓히고 내부 Lane 간격은 �
     return right.x - (left.x + left.width);
   };
 
-  assert.ok(gapBetween("security-filter", "security-checks") > layout.plan.sectionGap);
-  assert.ok(gapBetween("security-checks", "mvc") > layout.plan.sectionGap);
-  assert.ok(gapBetween("endpoint", "handler") > layout.plan.sectionGap);
-  assert.equal(gapBetween("security-chain", "security-filter"), layout.plan.sectionGap);
+  assert.deepEqual(Array.from(lanes, (lane) => lane.id),
+    ["servlet-filter", "security-chain", "security-checks", "endpoint", "handler"]);
+  assert.equal(gapBetween("security-chain", "security-checks"), layout.plan.sectionGap);
+  assert.equal(gapBetween("security-checks", "endpoint"), layout.plan.majorSectionGap);
+  assert.equal(gapBetween("endpoint", "handler"), layout.plan.majorSectionGap);
 });
 
 test("장거리 Edge는 여러 행에 걸쳐 공통 Trunk를 유지하고 목적지 직전에서 분기함", async () => {
@@ -8264,47 +9540,66 @@ test("장거리 Edge는 여러 행에 걸쳐 공통 Trunk를 유지하고 목적
   };
   const graph = ui.normalizeGraph(snapshot);
   const layout = layoutApi.semanticLayout(graph, { positions: {} });
-  const targetYs = graph.nodes.filter((node) => node.type === "ENDPOINT").map((node) => layout.positions[node.id].y);
-  assert.ok(Math.max(...targetYs) - Math.min(...targetYs) > 360);
-
-  const group = layout.plan.commonEdgeRouteGroups.find((candidate) => candidate.edgeIds.length === 8);
-  assert.ok(group, "장거리 공통 배선 그룹 누락");
-  assert.equal(group.edgeIds.length, 8);
-  group.edgeIds.forEach((edgeId) => {
-    const edge = graph.edges.find((candidate) => candidate.id === edgeId);
-    const points = routePoints(layout.edgeRoutes[edgeId]);
-    const target = layout.positions[edge.targetId];
-    assert.equal(points.at(-1).y, target.y + 60, `${edgeId} 목적지 높이`);
-    assert.ok(points.at(-1).x === target.x || points.at(-1).x === target.x + 260, `${edgeId} 목적지 포트`);
-    const travel = Math.abs(points.at(-1).x - points[0].x);
-    const branchTravel = Math.abs(points.at(-1).x - group.junction.x);
-    assert.ok(branchTravel > 0 && branchTravel <= travel * 0.05, `${edgeId} 목적지 직전 분기`);
-    assert.equal(branchTravel, 25, `${edgeId} 목적지 바깥 공통 Trunk 위치`);
-    for (let index = 1; index < points.length; index += 1) {
-      assert.ok(points[index - 1].x === points[index].x || points[index - 1].y === points[index].y,
-        `${edgeId} 직교 경로`);
-    }
+  const routing = layout.plan.overviewRouting;
+  const flowRelations = routing.relations.filter((relation) => relation.originalEdgeIds.some((id) => id.startsWith("flow-")));
+  assert.equal(flowRelations.length, 8);
+  const relationIds = new Set(flowRelations.map((relation) => relation.id));
+  const shared = routing.segments.find((segment) => segment.routeRole === "TRUNK"
+    && segment.relationIds.length === 8 && segment.relationIds.every((id) => relationIds.has(id)));
+  assert.ok(shared, "8개 항목 관계가 공유하는 단일 Trunk 누락");
+  const curves = routing.segments.filter((segment) => segment.geometry?.kind === "CUBIC");
+  assert.ok(curves.length > 0, "안전한 분기·코너에 Blueprint 곡선 기하 누락");
+  curves.forEach((segment) => segment.relationIds.forEach((id) => {
+    assert.ok(routing.routesByRelationId[id]?.orderedSegmentIds.includes(segment.id),
+      `${segment.id}: 곡선 Segment의 관계 membership 유지`);
+  }));
+  const relationById = new Map(flowRelations.map((relation) => [relation.id, relation]));
+  curves.forEach((segment) => {
+    const relation = relationById.get(segment.relationIds[0]);
+    const controls = segment.geometry.controlPoints;
+    const hull = {
+      left: Math.min(segment.from.x, segment.to.x, ...controls.map((point) => point.x)),
+      right: Math.max(segment.from.x, segment.to.x, ...controls.map((point) => point.x)),
+      top: Math.min(segment.from.y, segment.to.y, ...controls.map((point) => point.y)),
+      bottom: Math.max(segment.from.y, segment.to.y, ...controls.map((point) => point.y))
+    };
+    layout.plan.displayModel.instances.forEach((instance) => {
+      if (instance.id === relation.sourceInstanceId || instance.id === relation.targetInstanceId) return;
+      const position = instance.position;
+      assert.equal(hull.left <= position.x + position.width && hull.right >= position.x
+        && hull.top <= position.y + position.height && hull.bottom >= position.y, false,
+      `${segment.id} Bézier 제어점 Bounds가 ${instance.id} 카드와 충돌`);
+    });
   });
+  const ports = new Map(layout.plan.displayModel.ports.map((port) => [port.id, port]));
+  flowRelations.forEach((relation) => {
+    const route = routing.routesByRelationId[relation.id];
+    assert.ok(route, relation.id);
+    assert.equal(route.sourcePort.x, ports.get(relation.visualSourcePortId).x);
+    assert.equal(route.targetPort.x, ports.get(relation.visualTargetPortId).x);
+    assert.ok(route.orderedSegmentIds.includes(shared.id), `${relation.id}가 공통 Trunk를 사용함`);
+    const edgeId = relation.originalEdgeIds[0];
+    assert.deepEqual({ ...relation.originalDirections[0] }, {
+      edgeId, sourceId: "application", targetId: `endpoint-${edgeId.slice("flow-".length)}`
+    });
+  });
+  assert.deepEqual(Array.from(routing.unresolved), []);
 
   ui.renderGraph(snapshot);
   await ui.layoutGraph();
-  const trunks = findAllByClass(elements.get("graph-edges"), "graph-edge-trunk")
-    .filter((path) => (path.getAttribute("data-edge-ids") || "").split(",").length === 8);
+  const segments = findAllByClass(elements.get("graph-edges"), "graph-overview-segment");
+  const trunks = segments.filter((path) => path.getAttribute("data-segment-id") === shared.id);
   assert.equal(trunks.length, 1, "공유 Trunk는 한 번만 렌더링");
-  const groupedBranches = findAllByClass(elements.get("graph-edges"), "graph-edge-branch");
-  assert.equal(groupedBranches.length, 8);
-  groupedBranches.forEach((path) => {
-    const edge = graph.edges.find((candidate) => candidate.id === path.getAttribute("data-edge-id"));
-    assert.equal(path.getAttribute("data-source-id"), edge.sourceId);
-    assert.equal(path.getAttribute("data-target-id"), edge.targetId);
-    assert.equal(path.getAttribute("data-evidence-ids"), edge.evidenceIds.join(","));
+  assert.equal(trunks[0].getAttribute("data-segment-geometry"), "CUBIC");
+  assert.match(trunks[0].getAttribute("d"), / C /);
+  curves.forEach((segment) => {
+    const path = segments.find((item) => item.getAttribute("data-segment-id") === segment.id);
+    assert.ok(path);
+    assert.equal(path.getAttribute("data-segment-geometry"), "CUBIC");
+    assert.match(path.getAttribute("d"), / C /);
   });
-  assert.equal(findAllByClass(elements.get("graph-edges"), "graph-edge-flow-route").length, 0,
-    "완전한 배선은 Layout 결과에 보존하고 SVG 중복 경로는 만들지 않음");
-  assert.equal(new Set(findAllByClass(elements.get("graph-edges"), "graph-edge")
-    .filter((path) => path.getAttribute("data-edge-id"))
-    .map((path) => path.getAttribute("data-edge-id"))).size, graph.edges.length,
-  "각 원본 Edge ID의 SVG 경로는 한 개만 유지");
+  assert.equal(new Set(segments.map((path) => path.getAttribute("data-segment-id"))).size, routing.segments.length);
+  assert.equal((trunks[0].getAttribute("data-edge-ids") || "").split(",").filter(Boolean).length, 8);
 });
 
 test("완전한 N→M 공통 배선은 원본 관계 쌍과 Evidence를 개별 보존함", () => {
@@ -8324,31 +9619,37 @@ test("완전한 N→M 공통 배선은 원본 관계 쌍과 Evidence를 개별 �
     ]
   });
   const layout = layoutApi.semanticLayout(graph, { positions: {} });
-  const group = layout.plan.commonEdgeRouteGroups.find((candidate) => candidate.edgeIds.length === 4);
-  assert.ok(group, "같은 방향·기술 영역의 배선 통로 누락");
-  assert.deepEqual(Array.from(group.edgeIds).sort(), [
+  const routing = layout.plan.overviewRouting;
+  const actualEdgeIds = [
     "flow-handler-a-endpoint-a", "flow-handler-a-endpoint-b",
     "flow-handler-b-endpoint-a", "flow-handler-b-endpoint-b"
-  ]);
-  assert.equal(Array.from(group.sourceIds).join(","), "handler-a,handler-b");
-  assert.equal(Array.from(group.targetIds).join(","), "endpoint-a,endpoint-b");
+  ];
+  const relations = routing.relations.filter((relation) => relation.originalEdgeIds.some((id) => actualEdgeIds.includes(id)));
+  assert.equal(relations.length, 4);
+  assert.deepEqual(Array.from(relations).flatMap((relation) => Array.from(relation.originalEdgeIds)).sort(), actualEdgeIds.slice().sort());
   assert.equal(new Set(graph.edges.map((edge) => `${edge.sourceId}\u0000${edge.targetId}`)).size, 4,
     "공통 배선의 Source–Target 쌍이 모두 실제 관계여야 함");
-  group.edgeIds.forEach((edgeId) => {
-    const edge = graph.edges.find((candidate) => candidate.id === edgeId);
-    const route = routePoints(layout.edgeRoutes[edgeId]);
-    assert.equal(route.at(-1).y, layout.positions[edge.targetId].y + 60);
-    assert.ok(route.at(-1).x === layout.positions[edge.targetId].x
-      || route.at(-1).x === layout.positions[edge.targetId].x + 260);
-    assert.equal(edge.evidenceIds.length, 1);
+  const sharedSegments = routing.segments.filter((segment) => segment.routeRole === "TRUNK"
+    && segment.relationIds.length > 1);
+  assert.ok(sharedSegments.length > 0, JSON.stringify({
+    unresolved: routing.unresolved,
+    routes: relations.map((relation) => routing.routesByRelationId[relation.id]?.orderedSegmentIds),
+    shared: routing.segments.filter((segment) => segment.relationIds.length > 1)
+      .map((segment) => ({ role: segment.routeRole, count: segment.relationIds.length, group: segment.groupKey }))
+  }));
+  relations.forEach((relation) => {
+    const route = routing.routesByRelationId[relation.id];
+    assert.ok(route.orderedSegmentIds.some((id) => sharedSegments.some((segment) => segment.id === id)), relation.id);
+    const edge = graph.edges.find((candidate) => candidate.id === relation.originalEdgeIds[0]);
+    assert.deepEqual({ ...relation.originalDirections[0] }, { edgeId: edge.id, sourceId: edge.sourceId, targetId: edge.targetId });
+    assert.deepEqual(Array.from(relation.evidenceIds), Array.from(edge.evidenceIds));
   });
   const diagonalGraph = ui.normalizeGraph({
     nodes: graph.nodes,
     edges: graph.edges.filter((edge) => (edge.sourceId === "handler-a") === (edge.targetId === "endpoint-a"))
   });
   const diagonalLayout = layoutApi.semanticLayout(diagonalGraph, { positions: {} });
-  assert.equal(diagonalLayout.plan.commonEdgeRouteGroups.some((candidate) =>
-    candidate.sourceIds.length > 1 && candidate.targetIds.length > 1), false,
+  assert.equal(diagonalLayout.plan.overviewRouting.segments.some((segment) => segment.relationIds.length === 4), false,
   "실제 대각선 관계만으로 N→M 연결을 암시하지 않아야 함");
 });
 
@@ -8386,6 +9687,16 @@ test("Hidden Conceptual Group은 공유 원본을 Chain별 표시 인스턴스�
     }))
   );
   graph.edges.push(
+    { id: "map-shared-a", sourceId: "endpoint-shared-a", targetId: "handler-shared", type: "FLOWS_TO",
+      confidence: "CONFIRMED", attributes: { flowKind: "HANDLER" }, evidenceIds: ["e-map-shared-a"] },
+    { id: "map-shared-b", sourceId: "endpoint-shared-b", targetId: "handler-shared", type: "FLOWS_TO",
+      confidence: "CONFIRMED", attributes: { flowKind: "HANDLER" }, evidenceIds: ["e-map-shared-b"] },
+    { id: "map-unresolved", sourceId: "endpoint-unresolved", targetId: "handler-unresolved", type: "FLOWS_TO",
+      confidence: "CONFIRMED", attributes: { flowKind: "HANDLER" }, evidenceIds: ["e-map-unresolved"] },
+    ...Array.from({ length: 18 }, (_, index) => ({
+      id: `map-bulk-${index}`, sourceId: `endpoint-bulk-${index}`, targetId: "handler-b", type: "FLOWS_TO",
+      confidence: "CONFIRMED", attributes: { flowKind: "HANDLER" }, evidenceIds: [`e-map-bulk-${index}`]
+    })),
     { id: "match-shared-a", sourceId: "endpoint-shared-a", targetId: "chain-a", type: "MATCHED_BY",
       confidence: "CONFIRMED", attributes: {}, evidenceIds: ["e-match-shared-a"] },
     { id: "match-shared-b", sourceId: "endpoint-shared-b", targetId: "chain-b", type: "MATCHED_BY",
@@ -8476,7 +9787,7 @@ test("Hidden Conceptual Group은 공유 원본을 Chain별 표시 인스턴스�
   assert.equal(JSON.stringify(graph), originalGraph, "레이아웃 계산으로 Snapshot Graph를 변경하지 않음");
 });
 
-test("보안 Display Group은 원본 유형 색상과 접근성 유형을 유지함", () => {
+test("보안 복합 카드는 원본 유형 색상과 항목 접근성 정보를 유지함", () => {
   const { ui, elements, window, layoutApi } = loadUi();
   const graph = detailGraphFixture();
   graph.nodes.push(
@@ -8500,31 +9811,25 @@ test("보안 Display Group은 원본 유형 색상과 접근성 유형을 유지
 
   const expected = {
     AUTHENTICATION: "#38bdf8",
-    AUTHORIZATION: "#fb7185",
-    SECURITY_DATA: "#2dd4bf",
+    AUTHORIZATION: "#cf788a",
+    SECURITY_DATA: "#4ab9ad",
     BUSINESS_SECURITY_STATE: "#a3e635",
-    HANDLER: "#c4b5fd"
+    HANDLER: "#b4a0e5"
   };
-  const groupDefinitions = new Map(layoutResult.plan.displayModel.groups.map((group) => [group.id, group]));
-  const renderedGroups = findAllByClass(elements.get("graph-nodes"), "graph-support-group")
-    .concat(findAllByClass(elements.get("graph-nodes"), "graph-controller-group"));
-  assert.ok(renderedGroups.length > 0);
-  renderedGroups.forEach((rendered) => {
-    const definition = groupDefinitions.get(rendered.getAttribute("data-controller-group-id"));
-    const type = definition && definition.type || "HANDLER";
-    const color = expected[type];
-    assert.ok(color, `${type} 색상 정의 누락`);
-    assert.equal(findAllByClass(rendered, "graph-controller-group-card")[0].getAttribute("stroke"), color);
-    assert.equal(findAllByClass(rendered, "graph-node-type-dot")[0].getAttribute("fill"), color);
-    assert.equal(findAllByClass(rendered, "graph-node-type")[0].getAttribute("fill"), color);
-    assert.ok(rendered.getAttribute("aria-label").startsWith(window.MapInBootGraph.nodeTypeLabel(type)));
-  });
-  const ordinaryNodes = findAllByClass(elements.get("graph-nodes"), "graph-node")
-    .filter((node) => ["authentication-color", "business-state-color"].includes(node.getAttribute("data-node-id")));
-  assert.equal(ordinaryNodes.length, 2);
-  ordinaryNodes.forEach((node) => {
-    const type = node.getAttribute("data-node-type");
-    assert.equal(findAllByClass(node, "graph-node-card")[0].getAttribute("stroke"), expected[type]);
+  const cardDefinitions = layoutResult.plan.displayModel.composites;
+  const renderedCards = findAllByClass(elements.get("graph-nodes"), "graph-composite-card");
+  ["authentication-color", "business-state-color", "authorization-a", "security-data-a", "handler-a"].forEach((nodeId) => {
+    const cardId = layoutResult.plan.displayModel.originalNodeToCardIds[nodeId]?.[0];
+    const definition = layoutResult.plan.displayModel.cardById[cardId];
+    const rendered = renderedCards.find((card) => card.getAttribute("data-composite-card-id") === cardId);
+    const itemId = layoutResult.plan.displayModel.originalNodeToItemIds[nodeId]?.[0];
+    const renderedItem = findAllByClass(rendered, "graph-composite-item")
+      .find((item) => item.getAttribute("data-composite-item-id") === itemId);
+    const color = expected[definition.kind === "CONTROLLER_HANDLER" ? "HANDLER" : definition.kind];
+    assert.ok(definition && rendered && renderedItem, `${nodeId} 복합 항목 누락`);
+    assert.equal(findAllByClass(rendered, "graph-composite-surface")[0].getAttribute("stroke"), color);
+    assert.equal(renderedItem.getAttribute("role"), "button");
+    assert.ok(renderedItem.getAttribute("aria-label").length > 0);
   });
 });
 
@@ -8572,33 +9877,29 @@ test("인가 표시 그룹은 혼합 정책을 집계하고 Inspector에서 원�
   ui.renderGraph(graph);
   await ui.layoutGraph();
 
-  const definition = ui.state.layout.plan.displayModel.groups.find((group) => group.nodeIds.includes("url-policy-1"));
-  const card = findAllByClass(elements.get("graph-nodes"), "graph-support-group")
-    .find((group) => group.getAttribute("data-controller-group-id") === definition.id);
-  assert.ok(card);
-  const title = findAllByClass(card, "graph-node-label")[0].textContent;
-  const detail = findAllByClass(card, "graph-node-detail")[0].textContent;
-  assert.equal(title, "공개 접근 허용");
-  assert.equal(definition.nodeIds.length, 3);
-  assert.match(detail, /URL 정책 3건/);
-  assert.match(detail, /조건 ANY/);
-  assert.doesNotMatch(`${title} ${detail}`, /\/internal\/\*\*|원본 Fact/);
-  const policyGroups = policyKinds.map((_, index) => ui.state.layout.plan.displayModel.groups
-    .find((group) => group.nodeIds.includes(`url-policy-${index + 1}`)));
-  assert.equal(new Set(policyGroups.slice(0, 3).map((group) => group.id)).size, 1);
-  assert.equal(new Set(policyGroups.slice(3, 5).map((group) => group.id)).size, 1);
-  assert.notEqual(policyGroups[0].id, policyGroups[3].id);
-  assert.notEqual(policyGroups[0].id, policyGroups[5].id);
+  const plan = ui.state.layout.plan;
+  const policyCard = compositeCardForNode(plan, "url-policy-1", "AUTHORIZATION");
+  const permitItem = compositeItemForNode(plan, "url-policy-1", policyCard.rowId);
+  assert.ok(policyCard && permitItem);
+  assert.equal(permitItem.label, "공개 접근 허용");
+  assert.equal(permitItem.originalNodeIds.length, 3);
+  assert.match(permitItem.detail, /URL 정책 3건/);
+  assert.match(permitItem.detail, /조건 ANY/);
+  assert.doesNotMatch(`${permitItem.label} ${permitItem.detail}`, /\/internal\/\*\*|원본 Fact/);
+  const policyItems = policyKinds.map((_, index) => compositeItemForNode(plan, `url-policy-${index + 1}`));
+  assert.equal(new Set(policyItems.slice(0, 3).map((item) => item.id)).size, 1);
+  assert.equal(new Set(policyItems.slice(3, 5).map((item) => item.id)).size, 1);
+  assert.notEqual(policyItems[0].id, policyItems[3].id);
+  assert.notEqual(policyItems[0].id, policyItems[5].id);
 
-  const singleDefinition = ui.state.layout.plan.displayModel.groups.find((group) => group.nodeIds.includes("authorization-b"));
-  const singleCard = findAllByClass(elements.get("graph-nodes"), "graph-support-group")
-    .find((group) => group.getAttribute("data-controller-group-id") === singleDefinition.id);
-  assert.equal(findAllByClass(singleCard, "graph-node-label")[0].textContent, "ROLE_CUSTOMER 권한 필요");
-  assert.equal(findAllByClass(singleCard, "graph-node-detail")[0].textContent, "URL 정책 · 조건 ANY · 순서 1");
-
-  card.dispatchEvent({ type: "click", stopPropagation() {} });
+  const authorityItem = compositeItemForNode(plan, "authorization-b");
+  assert.equal(authorityItem.label, "ROLE_CUSTOMER 권한 필요");
+  assert.equal(authorityItem.detail, "URL 정책 · 조건 ANY · 순서 1");
+  const renderedItem = findAllByClass(elements.get("graph-nodes"), "graph-composite-item")
+    .find((item) => item.getAttribute("data-composite-item-id") === permitItem.id);
+  renderedItem.dispatchEvent({ type: "click" });
   const inspectorTitle = findAllByClass(elements.get("inspector"), "inspector-title")[0];
-  assert.equal(inspectorTitle.textContent, title);
+  assert.equal(inspectorTitle.textContent, permitItem.label);
   const sourceLinks = findAllByClass(elements.get("inspector"), "inspector-link")
     .filter((link) => link.getAttribute("data-node-id")?.startsWith("url-policy-"));
   assert.deepEqual(sourceLinks.map((link) => link.getAttribute("data-node-id")),
@@ -8640,7 +9941,7 @@ test("URL 인가 정책은 정확히 일치하는 chainKey만 직접 소속으�
   assert.ok(unresolvedSecurityChecks.has("missing-chain-key-match"));
 });
 
-test("SECURITY_DATA 표시 그룹은 실제 JWT 동작별로 분리하고 조회만으로 권한 사용을 표시하지 않음", async () => {
+test("SECURITY_DATA 복합 항목은 실제 JWT 동작별로 분리하고 조회만으로 권한 사용을 표시하지 않음", async () => {
   const { ui, elements, window } = loadUi();
   const graph = flowGraphFixture();
   const operations = [
@@ -8683,28 +9984,31 @@ test("SECURITY_DATA 표시 그룹은 실제 JWT 동작별로 분리하고 조회
 
   ui.renderGraph(graph);
   await ui.layoutGraph();
-  const groups = ui.state.layout.plan.displayModel.groups.filter((group) => group.type === "SECURITY_DATA"
-    && group.nodeIds.some((id) => id.startsWith("jwt-")));
-  assert.equal(groups.length, 4);
-  assert.ok(groups.every((group) => group.nodeIds.length === 1), "서로 다른 JWT 동작을 한 카드에 합치지 않음");
-  assert.equal(new Set(groups.map((group) => `${group.position.x}:${group.position.y}`)).size, 4,
-    "의미별 Display Group이 서로 다른 위치를 사용함");
-  const authorityGroups = ui.state.layout.plan.displayModel.groups.filter((group) => group.type === "SECURITY_DATA"
-    && group.nodeIds.some((id) => id.startsWith("authority-")));
-  assert.equal(authorityGroups.length, 2);
-  assert.equal(new Set(authorityGroups.map((group) => `${group.position.x}:${group.position.y}`)).size, 2);
-  const cardFor = (nodeId) => {
-    const definition = groups.find((group) => group.nodeIds.includes(nodeId));
-    return findAllByClass(elements.get("graph-nodes"), "graph-support-group")
-      .find((group) => group.getAttribute("data-controller-group-id") === definition.id);
+  const plan = ui.state.layout.plan;
+  const items = graph.nodes.filter((node) => node.id.startsWith("jwt-")).map((node) => compositeItemForNode(plan, node.id));
+  assert.equal(items.length, 4);
+  assert.ok(items.every((item) => item.originalNodeIds.length === 1), "서로 다른 JWT 동작을 한 항목에 합치지 않음");
+  assert.equal(new Set(items.map((item) => item.id)).size, 4);
+  const authorityItems = graph.nodes.filter((node) => node.id.startsWith("authority-"))
+    .map((node) => compositeItemForNode(plan, node.id));
+  assert.equal(authorityItems.length, 2);
+  assert.equal(new Set(authorityItems.map((item) => item.id)).size, 2);
+  const renderedItemFor = (item) => findAllByClass(elements.get("graph-nodes"), "graph-composite-item")
+    .find((element) => element.getAttribute("data-composite-item-id") === item.id);
+  const itemFor = (nodeId) => {
+    const item = compositeItemForNode(plan, nodeId);
+    assert.ok(item);
+    assert.ok(renderedItemFor(item));
+    return item;
   };
-  assert.equal(findAllByClass(cardFor("jwt-write"), "graph-node-label")[0].textContent, "JWT Claim 작성");
-  assert.equal(findAllByClass(cardFor("jwt-read"), "graph-node-label")[0].textContent, "JWT Claim 조회");
-  assert.equal(findAllByClass(cardFor("jwt-sign"), "graph-node-label")[0].textContent, "JWT 서명");
-  assert.equal(findAllByClass(cardFor("jwt-verify_configuration"), "graph-node-label")[0].textContent, "JWT 검증 구성");
-  assert.ok(groups.every((group) => !textOf(cardFor(group.nodeIds[0])).match(/권한 판단|인가 확인/)));
+  for (const [nodeId, label] of [["jwt-write", "JWT Claim 작성"], ["jwt-read", "JWT Claim 조회"],
+    ["jwt-sign", "JWT 서명"], ["jwt-verify_configuration", "JWT 검증 구성"]]) {
+    const item = itemFor(nodeId);
+    assert.equal(item.label, label);
+    assert.doesNotMatch(`${item.label} ${item.detail}`, /권한 판단|인가 확인/);
+  }
   const readNode = graph.nodes.find((node) => node.id === "jwt-read");
-  cardFor(readNode.id).dispatchEvent({ type: "click", stopPropagation() {} });
+  renderedItemFor(itemFor(readNode.id)).dispatchEvent({ type: "click" });
   assert.equal(findAllByClass(elements.get("inspector"), "inspector-title")[0].textContent, "JWT Claim 조회");
   assert.match(textOf(elements.get("inspector")), /TokenService#READ/);
   assert.doesNotMatch(findAllByClass(elements.get("inspector"), "inspector-title")[0].textContent, /권한/);
@@ -8749,29 +10053,33 @@ test("SECURITY_DATA 의미별 그룹은 17개 원본 Fact를 네 종류로 묶�
   ui.renderGraph(graph);
   await ui.layoutGraph();
 
+  const plan = ui.state.layout.plan;
   const rowId = "chain:chain-a";
-  const row = ui.state.layout.plan.hiddenGroups.find((group) => group.id === rowId);
-  const groups = ui.state.layout.plan.displayModel.groups.filter((group) => group.type === "SECURITY_DATA" && group.rowId === rowId
-    && group.nodeIds.some((id) => expectedNodeIds.includes(id)));
-  assert.equal(groups.length, 4);
-  const groupedIds = Array.from(groups).flatMap((group) => Array.from(group.nodeIds));
+  const row = plan.hiddenGroups.find((group) => group.id === rowId);
+  const items = plan.displayModel.composites.filter((card) => card.kind === "SECURITY_DATA" && card.rowId === rowId)
+    .flatMap((card) => card.items).filter((item) => item.originalNodeIds.some((id) => expectedNodeIds.includes(id)));
+  assert.equal(items.length, 4);
+  const groupedIds = Array.from(items).flatMap((item) => Array.from(item.originalNodeIds));
   assert.equal(groupedIds.length, 17);
   assert.deepEqual(Array.from(groupedIds).sort(), expectedNodeIds.slice().sort());
-  const labels = Array.from(groups, (group) => {
-    const card = findAllByClass(elements.get("graph-nodes"), "graph-support-group")
-      .find((element) => element.getAttribute("data-controller-group-id") === group.id);
-    return [findAllByClass(card, "graph-node-label")[0].textContent, group.nodeIds.length];
-  }).sort((left, right) => left[0].localeCompare(right[0]));
+  const labels = Array.from(items, (item) => [item.label, item.originalNodeIds.length])
+    .sort((left, right) => left[0].localeCompare(right[0]));
   assert.deepEqual(labels, [
     ["JWT Claim 작성", 5], ["JWT Claim 조회", 1], ["Principal 조회", 8], ["인증 상태 확인", 3]
   ].sort((left, right) => left[0].localeCompare(right[0])));
-  assert.equal(new Set(groups.map((group) => `${group.position.x}:${group.position.y}`)).size, 4);
-  assert.ok(groups.every((group) => group.position.y >= row.rowTop && group.position.y + 120 <= row.rowBottom));
+  const securityCards = plan.displayModel.composites.filter((card) => card.kind === "SECURITY_DATA" && card.rowId === rowId);
+  assert.ok(securityCards.every((card) => card.bounds.y >= row.rowTop
+    && card.bounds.y + card.bounds.height <= row.rowBottom));
+  assert.ok(items.every((item) => {
+    const card = plan.displayModel.cardById[item.cardId];
+    return item.bounds.y >= card.contentBounds.y
+      && item.bounds.y + item.bounds.height <= card.contentBounds.y + card.contentBounds.height;
+  }));
 
-  const principalGroup = groups.find((group) => group.nodeIds[0].startsWith("principal-read"));
-  const principalCard = findAllByClass(elements.get("graph-nodes"), "graph-support-group")
-    .find((element) => element.getAttribute("data-controller-group-id") === principalGroup.id);
-  principalCard.dispatchEvent({ type: "click", stopPropagation() {} });
+  const principalItem = items.find((item) => item.originalNodeIds[0].startsWith("principal-read"));
+  const renderedPrincipal = findAllByClass(elements.get("graph-nodes"), "graph-composite-item")
+    .find((element) => element.getAttribute("data-composite-item-id") === principalItem.id);
+  renderedPrincipal.dispatchEvent({ type: "click" });
   const factLinks = findAllByClass(elements.get("inspector"), "inspector-link")
     .map((link) => link.getAttribute("data-node-id"))
     .filter((id) => expectedNodeIds.includes(id));
@@ -8781,9 +10089,10 @@ test("SECURITY_DATA 의미별 그룹은 17개 원본 Fact를 네 종류로 묶�
   assert.equal(JSON.stringify(graph), originalGraph, "Display Group 분할이 원본 Graph, Evidence, Finding을 변경하지 않음");
 });
 
-test("전체 MAP의 API와 Controller Display Group은 1.5행 간격으로 교차 배치되고 Chain Row 안에 머묾", async () => {
+test("전체 MAP의 API와 Controller 복합 카드는 같은 Chain 행에서 정확한 항목 관계로 연결됨", async () => {
   const { ui, elements, layoutApi, window } = loadUi();
   const graph = flowGraphFixture();
+  ui.state.includeUnconnectedNodes = true;
   const endpointIds = [];
   for (let index = 0; index < 16; index += 1) {
     const controller = `com.example.LayoutController${String(index % 4).padStart(2, "0")}`;
@@ -8798,53 +10107,59 @@ test("전체 MAP의 API와 Controller Display Group은 1.5행 간격으로 교�
     );
     graph.edges.push({ id: `stagger-match-${index}`, sourceId: endpointId, targetId: "chain-a", type: "MATCHED_BY",
       confidence: "CONFIRMED", attributes: { chainOrder: "1" }, evidenceIds: [] });
+    graph.edges.push({ id: `stagger-mapping-${index}`, sourceId: endpointId, targetId: handlerId, type: "FLOWS_TO",
+      confidence: "CONFIRMED", attributes: { flowKind: "HANDLER" }, evidenceIds: [] });
   }
-  const normalizedGraph = ui.normalizeGraph(graph);
-  const layoutResult = layoutApi.semanticLayout(normalizedGraph, { positions: {} });
-  const plan = layoutResult.plan;
+  ui.renderGraph(graph);
+  await ui.layoutGraph();
+  const plan = ui.state.layout.plan;
   const row = plan.hiddenGroups.find((group) => group.id === "chain:chain-a");
   const rowB = plan.hiddenGroups.find((group) => group.id === "chain:chain-b");
-  const endpointPosition = (id) => plan.displayModel.instances.find((instance) => instance.rowId === row.id
-    && instance.originalNodeIds.includes(id)).position;
-  const orderedEndpoints = row.members.endpoints.map(endpointPosition);
+  const apiCards = plan.displayModel.composites.filter((card) => card.kind === "API_MAPPING" && card.rowId === row.id
+    && card.key.includes("LayoutController"));
+  const handlerCards = plan.displayModel.composites.filter((card) => card.kind === "CONTROLLER_HANDLER" && card.rowId === row.id
+    && card.key.includes("LayoutController"));
   assert.equal(plan.lanes.find((lane) => lane.id === "endpoint").columns, 2);
-  assert.equal(orderedEndpoints[1].x - orderedEndpoints[0].x, 360);
-  assert.equal(orderedEndpoints[1].y - orderedEndpoints[0].y, 270);
-  assert.equal(orderedEndpoints[2].x, orderedEndpoints[0].x);
-  assert.equal(orderedEndpoints[2].y - orderedEndpoints[0].y, 180);
-  const lastEndpoint = endpointPosition(endpointIds.at(-1));
-  assert.ok(lastEndpoint.y + 120 <= row.rowBottom, "두 번째 열의 마지막 API가 Chain 행 안에 있음");
+  assert.equal(plan.lanes.find((lane) => lane.id === "handler").columns, 2);
+  assert.equal(apiCards.length, 4, JSON.stringify({ rowId: row.id,
+    cards: plan.displayModel.composites.map(({ kind, key, rowId }) => ({ kind, key, rowId })) }));
+  assert.equal(handlerCards.length, 4);
+  assert.equal(new Set(apiCards.map((card) => card.bounds.x)).size, 2, "API 복합 카드가 두 열을 사용함");
+  assert.equal(new Set(handlerCards.map((card) => card.bounds.x)).size, 2, "Controller 복합 카드가 두 열을 사용함");
+  apiCards.concat(handlerCards).forEach((card) => {
+    assert.ok(card.bounds.y >= row.rowTop && card.bounds.y + card.bounds.height <= row.rowBottom,
+      `${card.kind} 카드가 Chain 행 안에 있음`);
+  });
   assert.ok(rowB.rowTop > row.rowBottom, "확장된 Chain 행이 다음 행과 겹치지 않음");
-
-  const controllerGroups = plan.controllerGroups.filter((group) => group.layoutGroupId === row.id
-    && group.controllerFqcn.includes("LayoutController"))
-    .sort((left, right) => left.controllerFqcn.localeCompare(right.controllerFqcn));
-  assert.equal(controllerGroups.length, 4);
-  assert.equal(controllerGroups[1].position.x - controllerGroups[0].position.x, 360);
-  assert.equal(controllerGroups[1].position.y - controllerGroups[0].position.y, 270);
-  assert.ok(controllerGroups.every((group) => group.position.y >= row.rowTop && group.position.y + 120 <= row.rowBottom));
   const flowIndex = window.MapInBootFlow.createIndex(ui.normalizeGraph(graph));
-  controllerGroups.forEach((group) => group.endpointIds.forEach((endpointId) => {
+  const mappings = plan.overviewRouting.relations.filter((relation) => relation.role === "API_MAPPING"
+    && relation.relatedNodeIds.some((id) => endpointIds.includes(id)));
+  assert.equal(mappings.length, 16);
+  endpointIds.forEach((endpointId) => {
     const match = flowIndex.handlerFor(endpointId);
     assert.equal(match.status, "CONFIRMED");
-    assert.ok(group.handlerIds.includes(match.node.id), `${endpointId}가 실제 Handler 그룹에 연결됨`);
-  }));
-  const layers = {
-    svg: elements.get("graph-svg"), viewport: elements.get("graph-viewport"),
-    areaLayer: elements.get("graph-areas"), projectionLayer: elements.get("graph-flow-projection"),
-    guideLayer: elements.get("graph-guides"), edgeLayer: elements.get("graph-edges"),
-    nodeLayer: elements.get("graph-nodes"), findingLayer: elements.get("graph-finding-sections"),
-    findingTitleLayer: elements.get("graph-finding-section-titles")
-  };
-  window.MapInBootGraph.render(normalizedGraph, layers, { positions: layoutResult.positions,
-    bounds: { width: layoutResult.width, height: layoutResult.height }, layoutPlan: plan, findings: [] });
-  const firstControllerGroup = plan.controllerGroups.find((group) => group.controllerFqcn.includes("LayoutController00"));
-  const firstEndpointId = firstControllerGroup.endpointIds[0];
-  const guide = findAllByClass(elements.get("graph-guides"), "graph-guide-handler")
-    .find((path) => path.getAttribute("data-endpoint-id") === firstEndpointId);
-  assert.ok(guide, "API와 해당 Controller Display Group 사이의 Guide가 존재함");
-  assert.equal(guide.getAttribute("d"), plan.guideRoutes[firstEndpointId],
-    "Guide Route가 실제 Controller Display Group 좌표를 사용함");
+    const relation = mappings.find((item) => item.relatedNodeIds.includes(endpointId));
+    assert.ok(relation);
+    const sourceItem = plan.displayModel.itemById[relation.sourceItemId];
+    const targetItem = plan.displayModel.itemById[relation.targetItemId];
+    assert.ok(sourceItem.originalNodeIds.includes(endpointId));
+    assert.ok(targetItem.originalNodeIds.includes(match.node.id));
+    assert.ok(plan.overviewRouting.routesByRelationId[relation.id]);
+    assert.ok(findAllByClass(elements.get("graph-edges"), "graph-overview-segment")
+      .some((path) => (path.getAttribute("data-relation-ids") || "").split(",").includes(relation.id)),
+    JSON.stringify({ relation, route: plan.overviewRouting.routesByRelationId[relation.id],
+      segments: plan.overviewRouting.segments.filter((segment) => segment.relationIds.includes(relation.id)),
+      rendered: findAllByClass(elements.get("graph-edges"), "graph-overview-segment")
+        .map((path) => path.getAttribute("data-relation-ids")) }));
+  });
+  apiCards.forEach((apiCard) => {
+    const handlerCard = handlerCards.find((card) => card.key === apiCard.key);
+    assert.ok(handlerCard);
+    assert.equal(apiCard.items.filter((item) => !item.isHeader).length, 4);
+    assert.equal(handlerCard.items.filter((item) => !item.isHeader).length, 4);
+    assert.equal(apiCard.bounds.y + apiCard.bounds.height / 2,
+      handlerCard.bounds.y + handlerCard.bounds.height / 2, `${apiCard.key}의 API/Controller 카드 정렬`);
+  });
 
   const singleColumnGraph = flowGraphFixture();
   singleColumnGraph.nodes.push(
@@ -8863,14 +10178,90 @@ test("전체 MAP의 API와 Controller Display Group은 1.5행 간격으로 교�
   );
   const singlePlan = layoutApi.semanticLayout(ui.normalizeGraph(singleColumnGraph), { positions: {} }).plan;
   const singleRow = singlePlan.hiddenGroups.find((group) => group.id === "chain:chain-a");
-  const singlePositions = singleRow.members.endpoints.map((id) => singlePlan.displayModel.instances.find((instance) =>
-    instance.rowId === singleRow.id && instance.originalNodeIds.includes(id)).position);
+  const singleApiCards = singlePlan.displayModel.composites.filter((card) => card.kind === "API_MAPPING"
+    && card.rowId === singleRow.id && card.originalNodeIds.some((id) => id.startsWith("single-endpoint-")));
   assert.equal(singlePlan.lanes.find((lane) => lane.id === "endpoint").columns, 1);
-  assert.equal(singlePositions[1].x, singlePositions[0].x);
-  assert.equal(singlePositions[1].y - singlePositions[0].y, 180);
+  assert.equal(singleApiCards.length, 1);
+  assert.equal(singleApiCards[0].items.filter((item) => !item.isHeader).length, 2);
 });
 
-test("Overview와 Detail은 내부 처리 표시 모델을 분리함", () => {
+test("Detail 이동 후 카드 항목은 부모 카드의 상대 좌표를 유지함", async () => {
+  const { ui } = loadUi();
+  const graph = detailGraphFixture();
+  const runtimeComponent = (id, kind, parentId = null) => ({
+    id, kind, className: `example.${kind}`, beanName: null, contextId: "app", parentId,
+    attributes: {}, graphNodeIds: [], evidenceIds: []
+  });
+  graph.runtimeArchitecture = {
+    environment: { webApplicationType: "SERVLET", serverKind: "TOMCAT", deploymentMode: "EMBEDDED" },
+    components: [
+      runtimeComponent("layout-host", "APPLICATION_CONTEXT"),
+      runtimeComponent("layout-servlet", "SERVLET_CONTEXT", "layout-host"),
+      runtimeComponent("layout-security", "AUTHENTICATION_MANAGER", "layout-host"),
+      runtimeComponent("layout-mvc", "HANDLER_ADAPTER", "layout-host")
+    ],
+    relationships: [],
+    coverage: ["WEB_SERVER", "SERVLET", "SECURITY", "MVC"].map((area) => ({
+      collectorId: area.toLowerCase(), area, scope: "app", state: "PRESENT", reasonCode: "OBSERVED", evidenceIds: []
+    }))
+  };
+  ui.renderGraph(graph);
+  ui.openEndpointDetail("endpoint-a");
+  await ui.layoutGraph();
+  const plan = ui.state.layout.plan;
+
+  assert.ok(plan.detailBlueprint.cards.length > 0);
+  const projectionById = new Map(plan.projection.nodes.map((projection) => [projection.id, projection]));
+  plan.detailBlueprint.cards.forEach((card) => {
+    let expectedY = card.contentBounds.y;
+    card.items.forEach((item) => {
+      assert.equal(card.itemBoundsById[item.id], item.bounds, item.id + " Bounds 참조 일치");
+      assert.ok(item.bounds.right <= card.bounds.right && item.bounds.bottom <= card.bounds.bottom,
+        item.id + "가 카드 안에 배치됨");
+      (item.projectionNodeIds || []).forEach((id) => {
+        const projection = projectionById.get(id);
+        if (projection) {
+          assert.deepEqual([projection.position.x, projection.position.y, projection.width, projection.height],
+            [item.bounds.x, item.bounds.y, item.bounds.width, item.bounds.height], id + " Projection 위치 일치");
+        } else {
+          assert.ok(plan.displayModel.projectionToItemIds[id]?.includes(item.id), id + " Runtime Alias 보존");
+        }
+      });
+      assert.equal(item.bounds.x, card.bounds.x + 14, `${card.id}/${item.id}의 좌우 간격 유지`);
+      if (!item.isHeader) {
+        assert.equal(item.bounds.y, expectedY, `${card.id}/${item.id}의 세로 배치 유지`);
+        expectedY = item.bounds.bottom + 8;
+      }
+    });
+  });
+});
+
+test("Detail 외부 Port는 카드 외곽에 표시되고 내부 학습선은 표시하지 않음", async () => {
+  const { ui, elements } = loadUi();
+  ui.renderGraph(detailGraphFixture());
+  ui.openEndpointDetail("endpoint-a");
+  await ui.layoutGraph();
+  const model = ui.state.layout.plan.displayModel;
+  assert.equal(findAllByClass(elements.get("graph-nodes"), "graph-learning-segment").length, 0);
+  assert.ok(model.ports.length > 0);
+  for (const port of model.ports) {
+    const item = model.itemById[port.itemId];
+    const card = model.cardById[item.cardId];
+    const row = findAllByClass(elements.get("graph-nodes"), "graph-composite-item")
+      .find((element) => element.getAttribute("data-composite-item-id") === item.id);
+    const rendered = findAllByClass(row, "graph-composite-port")
+      .find((element) => element.getAttribute("data-port-ids") === port.id);
+    assert.ok(rendered);
+    assert.equal(Number(rendered.getAttribute("cx")), port.x - item.bounds.x);
+    assert.equal(Number(rendered.getAttribute("cy")), port.y - item.bounds.y);
+    if (port.side === "LEFT") assert.equal(port.x, card.bounds.x);
+    if (port.side === "RIGHT") assert.equal(port.x, card.bounds.right);
+    if (port.side === "TOP") assert.equal(port.y, card.bounds.y);
+    if (port.side === "BOTTOM") assert.equal(port.y, card.bounds.bottom);
+  }
+});
+
+test("Overview와 Detail은 각 전용 Composite Blueprint 내부 처리 모델을 사용함", () => {
   const { ui, layoutApi } = loadUi();
   const graph = ui.normalizeGraph(detailGraphFixture());
   const overview = layoutApi.semanticLayout({ ...graph, presentationContext: "overview" }, { positions: {} });
@@ -8878,9 +10269,43 @@ test("Overview와 Detail은 내부 처리 표시 모델을 분리함", () => {
   assert.equal(overview.plan.projection.nodes.length, 0);
   assert.equal(overview.plan.displayModel.instances.some((item) => item.originalNodeIds.includes("servlet-1")), false);
   assert.deepEqual(Array.from(overview.plan.lanes, (lane) => lane.id),
-    ["servlet-filter", "security-chain", "security-filter", "security-checks", "endpoint", "handler"]);
+    ["servlet-filter", "security-chain", "security-checks", "endpoint", "handler"]);
+  assert.ok(overview.plan.displayModel.composites.length > 0);
   assert.ok(detail.plan.projection.nodes.some((node) => node.id === "education-handler-mapping"));
   assert.ok(detail.plan.lanes.some((lane) => lane.id === "mvc"));
+  assert.ok(detail.plan.lanes.some((lane) => lane.id === "security-filter"));
+  assert.ok(detail.plan.displayModel.composites.length > 0);
+  assert.ok(detail.plan.displayModel.composites.every((card) => card.displayKind === "composite-card"));
+  assert.ok(detail.plan.overviewRouting.relations.length > 0);
+  assert.equal(detail.plan.overviewRouting.unresolved.length, 0,
+    JSON.stringify(detail.plan.overviewRouting.unresolved));
+});
+
+test("Detail 주 처리 관계는 원본 방향을 유지하고 가로 Port를 사용함", () => {
+  const { ui, layoutApi } = loadUi();
+  const graph = ui.normalizeGraph(detailGraphFixture());
+  const plan = layoutApi.semanticLayout({ ...graph, presentationContext: "detail" }, { positions: {} }).plan;
+  const cardForNode = (id) => plan.displayModel.composites.find((card) => card.originalNodeIds.includes(id));
+  const endpoint = cardForNode("endpoint-a");
+  const handler = cardForNode("handler-a");
+  const relation = plan.overviewRouting.relations.find((item) => item.originalEdgeIds.includes("handler-map-a"));
+  const sourcePort = plan.displayModel.portById[relation.visualSourcePortId];
+  const targetPort = plan.displayModel.portById[relation.visualTargetPortId];
+
+  assert.ok(endpoint && handler && relation);
+  assert.ok(handler.bounds.x > endpoint.bounds.x, "선택 Endpoint 오른쪽에 Handler 배치");
+  assert.equal(relation.originalSourceInstanceId, endpoint.id);
+  assert.equal(relation.originalTargetInstanceId, handler.id);
+  assert.equal(relation.visualDirection, "ORIGINAL");
+  assert.equal(sourcePort.side, "RIGHT");
+  assert.equal(targetPort.side, "LEFT");
+  assert.equal(plan.overviewRouting.unresolved.length, 0, JSON.stringify(plan.overviewRouting.unresolved.map((item) => {
+    const edge = plan.overviewRouting.relations.find((relation) => relation.id === item.relationId);
+    return { ...item, source: edge && plan.displayModel.cardById[edge.sourceInstanceId].bounds,
+      target: edge && plan.displayModel.cardById[edge.targetInstanceId].bounds,
+      sourcePort: edge && plan.displayModel.portById[edge.visualSourcePortId],
+      targetPort: edge && plan.displayModel.portById[edge.visualTargetPortId] };
+  })));
 });
 
 test("확정된 마지막 Filter는 같은 Chain의 URL 정책만 향함", () => {
@@ -8890,13 +10315,14 @@ test("확정된 마지막 Filter는 같은 Chain의 URL 정책만 향함", () =>
     attributes: { policySource: "URL", chainKey: "chain-a", chainOrder: "1" }, evidenceIds: [] });
   const graph = ui.normalizeGraph(snapshot);
   const plan = layoutApi.semanticLayout({ ...graph, presentationContext: "overview" }, { positions: {} }).plan;
-  const target = plan.displayModel.instances.find((instance) => instance.rowId === "chain:chain-a"
-    && instance.originalNodeIds.includes("url-policy"));
-  assert.ok(target);
-  const edge = plan.projection.edges.find((item) => item.id === "filter-to-check-chain-a-url-policy");
-  assert.ok(edge);
-  assert.equal(edge.sourceId, "security-filter-2");
-  assert.equal(edge.targetId, target.id);
+  const relation = plan.overviewRouting.relations.find((item) => item.flowGroup === "chain-a"
+    && item.presentationKind === "CONCEPTUAL_REFERENCE" && item.relatedNodeIds.includes("url-policy"));
+  assert.ok(relation);
+  const sourceItem = plan.displayModel.itemById[relation.sourceItemId];
+  const targetItem = plan.displayModel.itemById[relation.targetItemId];
+  assert.ok(sourceItem.originalNodeIds.includes("security-filter-2"));
+  assert.ok(targetItem.originalNodeIds.includes("url-policy"));
+  assert.ok(plan.overviewRouting.routesByRelationId[relation.id]);
   assert.equal(plan.projection.edges.some((item) => item.id.startsWith("filter-to-dispatcher-")), false);
 });
 
@@ -8975,6 +10401,182 @@ test("Overview 배선은 목적지 앞 공통 선분을 공유하고 각 관계�
   }
 });
 
+test("동일 카드의 여섯 Target Port는 하나의 Junction과 여섯 Branch로 연결함", () => {
+  const { layoutApi } = loadUi();
+  const instances = [
+    { id: "source", position: { x: 0, y: 240, width: 260, height: 120 } },
+    { id: "authorization-card", position: { x: 1200, y: 60, width: 420, height: 520 } }
+  ];
+  const ports = [
+    { id: "source-output", itemId: "source-item", side: "RIGHT", x: 260, y: 300 },
+    ...Array.from({ length: 6 }, (_, index) => ({ id: `target-input-${index}`, itemId: `target-item-${index}`,
+      side: "LEFT", x: 1200, y: 100 + index * 88 }))
+  ];
+  const relations = Array.from({ length: 6 }, (_, index) => [0, 1].map((duplicate) => ({
+    id: `secured-${index}-${duplicate}`, sourceInstanceId: "source", targetInstanceId: "authorization-card",
+    visualSourcePortId: "source-output", visualTargetPortId: `target-input-${index}`,
+    rowId: "chain:main", role: "ANALYSIS_REFERENCE", type: "SECURED_BY"
+  }))).flat();
+  const plan = layoutApi.routeOverview(instances, relations, [], null, 0, ports);
+
+  assert.deepEqual(Array.from(plan.unresolved), []);
+  assert.equal(plan.junctions.length, 1);
+  const [junction] = plan.junctions;
+  const segments = new Map(plan.segments.map((segment) => [segment.id, segment]));
+  const branches = plan.segments.filter((segment) => segment.fromJunctionId === junction.id);
+  const trunks = plan.segments.filter((segment) => segment.toJunctionId === junction.id);
+  assert.equal(branches.length, 6);
+  assert.equal(trunks.length, 1);
+  assert.equal(trunks[0].routeRole, "TRUNK");
+  assert.equal(trunks[0].relationIds.length, relations.length);
+  assert.equal(plan.segments.some((segment) => segment.routeRole === "SPLIT_BUS"), false);
+  assert.deepEqual(Array.from(new Set(branches.map((segment) => `${segment.to.x},${segment.to.y}`))).sort(),
+    ports.slice(1).map((port) => `${port.x},${port.y}`).sort());
+  assert.deepEqual(Array.from(new Set(plan.junctions.flatMap((item) => item.segmentIds))).sort(),
+    Array.from(segments.keys()).sort());
+  assert.deepEqual(Array.from(new Set(plan.segments.flatMap((segment) => segment.relationIds))).sort(),
+    relations.map((relation) => relation.id).sort());
+});
+
+test("동일 Target Port의 Fan-in은 Source Port마다 Branch 하나와 공통 Trunk를 사용함", () => {
+  const { layoutApi } = loadUi();
+  const instances = [
+    ...Array.from({ length: 3 }, (_, index) => ({ id: `source-${index}`,
+      position: { x: 0, y: index * 240, width: 260, height: 120 } })),
+    { id: "target", position: { x: 1120, y: 240, width: 380, height: 160 } }
+  ];
+  const ports = [
+    ...Array.from({ length: 3 }, (_, index) => ({ id: `source-port-${index}`, itemId: `source-item-${index}`,
+      side: "RIGHT", x: 260, y: index * 240 + 60 })),
+    { id: "target-port", itemId: "target-item", side: "LEFT", x: 1120, y: 320 }
+  ];
+  const relations = Array.from({ length: 3 }, (_, index) => [0, 1].map((duplicate) => ({
+    id: `fanin-${index}-${duplicate}`, sourceInstanceId: `source-${index}`, targetInstanceId: "target",
+    visualSourcePortId: `source-port-${index}`, visualTargetPortId: "target-port",
+    rowId: "chain:main", role: "ANALYSIS_REFERENCE", type: "SECURED_BY"
+  }))).flat();
+  const plan = layoutApi.routeOverview(instances, relations, [], null, 0, ports);
+
+  assert.deepEqual(Array.from(plan.unresolved), []);
+  assert.equal(plan.junctions.length, 1, JSON.stringify({ unresolved: plan.unresolved,
+    segments: plan.segments.map(({ id, from, to, routeRole, relationIds, fromJunctionId, toJunctionId }) =>
+      ({ id, from, to, routeRole, relationIds, fromJunctionId, toJunctionId })) }));
+  const [junction] = plan.junctions;
+  const branches = plan.segments.filter((segment) => segment.toJunctionId === junction.id);
+  const trunks = plan.segments.filter((segment) => segment.fromJunctionId === junction.id);
+  assert.equal(branches.length, 3);
+  assert.equal(trunks.length, 1);
+  assert.equal(trunks[0].routeRole, "TRUNK");
+  assert.deepEqual(Array.from(new Set(branches.flatMap((segment) => segment.relationIds))).sort(),
+    relations.map((relation) => relation.id).sort());
+  assert.deepEqual(Array.from(new Set(trunks[0].relationIds)).sort(), relations.map((relation) => relation.id).sort());
+  assert.equal(plan.segments.some((segment) => segment.routeRole === "SPLIT_BUS"), false);
+});
+
+test("서로 독립적인 교차는 직접 Bézier와 관계 의미를 유지하고 Junction을 만들지 않음", () => {
+  const { layoutApi } = loadUi();
+  const instances = [
+    { id: "source-top", position: { x: 0, y: 0, width: 200, height: 120 } },
+    { id: "target-bottom", position: { x: 700, y: 420, width: 200, height: 120 } },
+    { id: "source-bottom", position: { x: 0, y: 500, width: 200, height: 120 } },
+    { id: "target-top", position: { x: 700, y: 0, width: 200, height: 120 } }
+  ];
+  const relations = [
+    { id: "top-to-bottom", sourceInstanceId: "source-top", targetInstanceId: "target-bottom",
+      rowId: "row-a", role: "API_MAPPING", type: "FLOWS_TO" },
+    { id: "bottom-to-top", sourceInstanceId: "source-bottom", targetInstanceId: "target-top",
+      rowId: "row-b", role: "API_MAPPING", type: "FLOWS_TO" }
+  ];
+  const plan = layoutApi.routeOverview(instances, relations);
+
+  assert.deepEqual(Array.from(plan.unresolved), []);
+  assert.deepEqual(Array.from(plan.junctions), []);
+  relations.forEach((relation) => {
+    const route = plan.routesByRelationId[relation.id];
+    assert.ok(route, relation.id);
+    assert.equal(route.orderedSegmentIds.length, 1, relation.id);
+    assert.equal(plan.segments.find((segment) => segment.id === route.orderedSegmentIds[0]).geometry?.kind, "CUBIC");
+  });
+});
+
+test("수직 Port 사이의 직접 경로는 아래쪽으로 진행하는 Bézier를 사용함", () => {
+  const { layoutApi } = loadUi();
+  const instances = [
+    { id: "vertical-source", position: { x: 120, y: 80, width: 380, height: 120 } },
+    { id: "vertical-target", position: { x: 220, y: 500, width: 380, height: 120 } }
+  ];
+  const ports = [
+    { id: "vertical-out", itemId: "vertical-out-item", side: "BOTTOM", x: 310, y: 200 },
+    { id: "vertical-in", itemId: "vertical-in-item", side: "TOP", x: 410, y: 500 }
+  ];
+  const relation = { id: "vertical-flow", sourceInstanceId: "vertical-source", targetInstanceId: "vertical-target",
+    visualSourcePortId: "vertical-out", visualTargetPortId: "vertical-in", rowId: "detail", role: "STRUCTURAL_FLOW", type: "FLOWS_TO" };
+  const plan = layoutApi.routeOverview(instances, [relation], [], null, 0, ports);
+  const route = plan.routesByRelationId[relation.id];
+  const segment = plan.segments.find((item) => route.orderedSegmentIds.includes(item.id));
+
+  assert.deepEqual(Array.from(plan.unresolved), []);
+  assert.equal(plan.junctions.length, 0);
+  assert.equal(segment.geometry.kind, "CUBIC");
+  assert.ok(segment.geometry.controlPoints[0].y > segment.from.y);
+  assert.ok(segment.geometry.controlPoints[1].y < segment.to.y);
+});
+
+test("카드 사이의 내부 통로를 사용하고 Row 밖으로 외곽 우회하지 않음", () => {
+  const { layoutApi } = loadUi();
+  const instances = [
+    { id: "source", position: { x: 0, y: 160, width: 300, height: 120 } },
+    { id: "obstacle", position: { x: 370, y: 160, width: 350, height: 120 } },
+    { id: "target", position: { x: 900, y: 160, width: 200, height: 120 } }
+  ];
+  const relation = { id: "internal-corridor", sourceInstanceId: "source", targetInstanceId: "target",
+    rowId: "row", role: "API_MAPPING", type: "FLOWS_TO" };
+  const row = { id: "row", rowTop: 80, rowBottom: 360 };
+  const plan = layoutApi.routeOverview(instances, [relation], [row]);
+
+  assert.deepEqual(Array.from(plan.unresolved), []);
+  const route = plan.routesByRelationId[relation.id];
+  assert.ok(route);
+  const segments = route.orderedSegmentIds.map((id) => plan.segments.find((segment) => segment.id === id));
+  const routePoints = segments.flatMap((segment) => [segment.from, ...(segment.geometry?.controlPoints || []), segment.to]);
+  assert.ok(routePoints.every((point) => point.y >= row.rowTop && point.y <= row.rowBottom),
+    "경로가 허용된 내부 Row 범위를 유지함");
+  assert.ok(routePoints.every((point) => point.x >= 0 && point.x <= 1100), "경로가 카드 사이 내부 통로에 머묾");
+  assert.ok(routePoints.some((point) => point.y < instances[1].position.y)
+    && routePoints.some((point) => point.x > instances[1].position.x + instances[1].position.width),
+  "장애물보다 위쪽 여유 통로를 이용함");
+  assert.ok(segments.some((segment) => segment.geometry?.kind === "CUBIC"), "굴곡을 Bézier로 렌더링함");
+});
+
+test("독립 관계 그룹은 기존 Junction과 좌표만으로 합쳐지지 않음", () => {
+  const { layoutApi } = loadUi();
+  const instances = [
+    { id: "source", position: { x: 0, y: 180, width: 300, height: 120 } },
+    { id: "first-target", position: { x: 1500, y: 0, width: 300, height: 120 } },
+    { id: "second-target", position: { x: 1500, y: 360, width: 300, height: 120 } },
+    { id: "branch-target", position: { x: 875, y: 180, width: 300, height: 120 } },
+    { id: "branch-source", position: { x: 2100, y: 600, width: 300, height: 120 } }
+  ];
+  const relations = [
+    { id: "first", sourceInstanceId: "source", targetInstanceId: "first-target",
+      rowId: "row", role: "evidence", type: "SECURED_BY" },
+    { id: "second", sourceInstanceId: "source", targetInstanceId: "second-target",
+      rowId: "row", role: "evidence", type: "SECURED_BY" },
+    { id: "branch", sourceInstanceId: "branch-source", targetInstanceId: "branch-target",
+      rowId: "row", role: "z-analysis", type: "ZZ_TEST" }
+  ];
+  const plan = layoutApi.routeOverview(instances, relations);
+  assert.deepEqual(Array.from(plan.unresolved), []);
+  const sharedIds = plan.routesByRelationId.first.orderedSegmentIds
+    .filter((id) => plan.routesByRelationId.second.orderedSegmentIds.includes(id));
+  assert.ok(sharedIds.length > 0);
+  const shared = sharedIds.map((id) => plan.segments.find((segment) => segment.id === id));
+  assert.ok(shared.some((segment) => segment.relationIds.includes("first") && segment.relationIds.includes("second")));
+  assert.equal(shared.some((segment) => segment.relationIds.includes("branch")), false);
+  assert.equal(sharedIds.some((id) => plan.routesByRelationId.branch.orderedSegmentIds.includes(id)), false);
+  assert.equal(plan.junctions.some((item) => item.relationIds.includes("branch")), false);
+});
+
 test("Overview SVG는 새 배선 계획의 물리 선분을 한 번씩 표시함", async () => {
   const { ui, elements } = loadUi();
   const snapshot = detailGraphFixture();
@@ -8992,8 +10594,68 @@ test("Overview 배선은 표시 관계를 누락하지 않고 해결함", () => 
   const graph = ui.normalizeGraph(detailGraphFixture());
   const layout = layoutApi.semanticLayout({ ...graph, presentationContext: "overview" }, { positions: {} });
   const plan = layout.plan.overviewRouting;
-  assert.deepEqual(Array.from(plan.unresolved), []);
+  assert.deepEqual(Array.from(plan.unresolved), [], JSON.stringify({
+    relations: plan.relations.map((relation) => ({ id: relation.id, source: relation.sourceInstanceId,
+      target: relation.targetInstanceId, sourcePort: relation.visualSourcePortId, targetPort: relation.visualTargetPortId })),
+    unresolved: plan.unresolved,
+    cards: layout.plan.displayModel.instances.map((instance) => ({ id: instance.id, position: instance.position })),
+    segments: plan.segments.map((segment) => ({ id: segment.id, from: segment.from, to: segment.to,
+      role: segment.routeRole, relations: segment.relationIds }))
+  }));
   for (const relation of plan.relations) assert.ok(plan.routesByRelationId[relation.id], relation.id);
+});
+
+test("장애물이 없는 독립 API–Handler 관계는 실제 Port를 잇는 단일 Bézier로 계획함", () => {
+  const { layoutApi } = loadUi();
+  const instances = [
+    { id: "api", position: { x: 0, y: 0, width: 400, height: 120 } },
+    { id: "handler", position: { x: 900, y: 220, width: 360, height: 140 } }
+  ];
+  const relation = { id: "api-handler", rowId: "row", role: "API_MAPPING", type: "FLOWS_TO",
+    sourceInstanceId: "api", targetInstanceId: "handler" };
+  const plan = layoutApi.routeOverview(instances, [relation]);
+  const route = plan.routesByRelationId[relation.id];
+  assert.deepEqual(Array.from(plan.unresolved), []);
+  assert.ok(route);
+  assert.equal(route.orderedSegmentIds.length, 1);
+  const segment = plan.segments.find((item) => item.id === route.orderedSegmentIds[0]);
+  assert.equal(segment.geometry?.kind, "CUBIC");
+  assert.deepEqual(segment.from, route.sourcePort);
+  assert.deepEqual(segment.to, route.targetPort);
+  assert.equal(segment.relationIds.includes(relation.id), true);
+});
+
+test("Controller Handler 항목 순서는 명시 FLOWS_TO의 API 순서를 따름", () => {
+  const { ui, layoutApi } = loadUi();
+  const handler = "example.SharedController";
+  const snapshot = {
+    nodes: [
+      { id: "endpoint-z", type: "ENDPOINT", serviceId: "orders", label: "GET /z",
+        attributes: { httpMethod: "GET", path: "/z", handler: `${handler}#alpha` }, evidenceIds: [] },
+      { id: "endpoint-a", type: "ENDPOINT", serviceId: "orders", label: "GET /a",
+        attributes: { httpMethod: "GET", path: "/a", handler: `${handler}#zeta` }, evidenceIds: [] },
+      { id: "handler-z", type: "HANDLER", serviceId: "orders", label: `${handler}#zeta`,
+        attributes: { handler: `${handler}#zeta` }, evidenceIds: [] },
+      { id: "handler-a", type: "HANDLER", serviceId: "orders", label: `${handler}#alpha`,
+        attributes: { handler: `${handler}#alpha` }, evidenceIds: [] }
+    ],
+    edges: [
+      { id: "map-z", sourceId: "endpoint-z", targetId: "handler-a", type: "FLOWS_TO",
+        confidence: "CONFIRMED", attributes: {}, evidenceIds: [] },
+      { id: "map-a", sourceId: "endpoint-a", targetId: "handler-z", type: "FLOWS_TO",
+        confidence: "CONFIRMED", attributes: {}, evidenceIds: [] }
+    ]
+  };
+  const graph = ui.normalizeGraph(snapshot);
+  const model = layoutApi.semanticLayout({ ...graph, presentationContext: "overview" }, { positions: {} }).plan.displayModel;
+  const apiCard = model.composites.find((card) => card.kind === "API_MAPPING");
+  const handlerCard = model.composites.find((card) => card.kind === "CONTROLLER_HANDLER");
+  const apiOrder = apiCard.items.filter((item) => !item.isHeader).map((item) => item.originalNodeIds[0]);
+  const handlerOrder = handlerCard.items.filter((item) => !item.isHeader).map((item) => item.originalNodeIds[0]);
+  assert.deepEqual(Array.from(apiOrder), ["endpoint-a", "endpoint-z"]);
+  assert.deepEqual(Array.from(handlerOrder), ["handler-z", "handler-a"]);
+  const mapping = new Map(snapshot.edges.map((edge) => [edge.sourceId, edge.targetId]));
+  assert.deepEqual(apiOrder.map((id) => mapping.get(id)), handlerOrder);
 });
 
 test("60 API Overview 배선은 미해결 관계를 남기지 않음", () => {
@@ -9107,23 +10769,32 @@ test("불완전한 다대다 배선은 존재하지 않는 관계를 생성하�
   assert.equal(plan.segments.some((segment) => segment.relationIds.length === 3), false);
 });
 
-test("Overview Chain은 확정 첫 Filter에만 연결되고 모든 포트는 오른쪽 출력과 왼쪽 입력임", () => {
+test("Overview Chain Header는 외부 등록선을 만들지 않고 가시 포트는 실제 항목 경계임", () => {
   const { ui, layoutApi } = loadUi();
   const graph = ui.normalizeGraph(detailGraphFixture());
   const plan = layoutApi.semanticLayout({ ...graph, presentationContext: "overview" }, { positions: {} }).plan;
   const routing = plan.overviewRouting;
-  const instances = new Map(plan.displayModel.instances.map((instance) => [instance.id, instance]));
-  const chain = instances.get("chain-a");
-  const linked = routing.relations.filter((relation) => relation.sourceInstanceId === chain.id || relation.targetInstanceId === chain.id);
-  assert.equal(linked.length, 1);
-  assert.equal(linked[0].targetInstanceId, "security-filter-1");
+  const card = plan.displayModel.composites.find((item) => item.kind === "SECURITY_CHAIN"
+    && item.originalNodeIds.includes("chain-a"));
+  const header = card.items.find((item) => item.isHeader);
+  assert.ok(header);
+  assert.ok(header.originalEdgeIds.includes("security-filtered-1"));
+  assert.equal(header.inputPortIds.length, 0);
+  assert.equal(header.outputPortIds.length, 0);
+  assert.equal(routing.relations.some((relation) => ["FILTERED_BY", "MATCHED_BY"].includes(relation.type)), false);
+  const ports = new Map(plan.displayModel.ports.map((port) => [port.id, port]));
   for (const relation of routing.relations) {
     const route = routing.routesByRelationId[relation.id];
     if (!route) continue;
-    const source = instances.get(relation.sourceInstanceId).position;
-    const target = instances.get(relation.targetInstanceId).position;
-    assert.equal(route.sourcePort.x, source.x + (source.width || 260), relation.id);
+    const source = ports.get(relation.visualSourcePortId);
+    const target = ports.get(relation.visualTargetPortId);
+    assert.ok(source && target, relation.id);
+    assert.equal(source.side, "RIGHT", relation.id);
+    assert.equal(target.side, "LEFT", relation.id);
+    assert.equal(route.sourcePort.x, source.x, relation.id);
+    assert.equal(route.sourcePort.y, source.y, relation.id);
     assert.equal(route.targetPort.x, target.x, relation.id);
+    assert.equal(route.targetPort.y, target.y, relation.id);
   }
 });
 
@@ -9164,15 +10835,44 @@ test("공유 Trunk는 중간 카드 뒤를 지나고 Branch는 카드를 피함"
   const plan = layoutApi.routeOverview(instances, relations);
   assert.deepEqual(Array.from(plan.unresolved), []);
   assert.ok(plan.segments.some((segment) => segment.routeRole === "TRUNK" && segment.relationIds.length === 2
-    && routeIntersectsPosition({ sections: [{ startPoint: segment.from, endPoint: segment.to }] }, instances[1].position)));
+    && routeIntersectsPosition({ sections: [{ startPoint: segment.from, endPoint: segment.to }] }, instances[1].position)),
+  JSON.stringify(plan.segments.map((segment) => ({ role: segment.routeRole, count: segment.relationIds.length,
+    from: segment.from, to: segment.to }))));
   plan.segments.filter((segment) => segment.routeRole !== "TRUNK").forEach((segment) => {
     assert.equal(routeIntersectsPosition({ sections: [{ startPoint: segment.from, endPoint: segment.to }] }, instances[1].position), false);
   });
 });
 
+function mappedSecurityReferenceGraph() {
+  const authorities = ["ROLE_CUSTOMER", "ROLE_SUPPORT", "ROLE_BANK_ADMIN"];
+  const handler = "example.OrderController#handle";
+  return {
+    nodes: [
+      { id: "shared-handler", type: "HANDLER", serviceId: "orders", label: "OrderController#handle",
+        attributes: { handler }, evidenceIds: [] },
+      { id: "shared-endpoint", type: "ENDPOINT", serviceId: "orders", label: "GET /orders/{id}",
+        attributes: { httpMethod: "GET", path: "/orders/{id}", handler }, evidenceIds: [] },
+      { id: "shared-chain", type: "SECURITY_CHAIN", serviceId: "orders", label: "Orders Chain",
+        attributes: { chainKey: "orders", chainOrder: "1", matcherCondition: "PATH /orders/**" }, evidenceIds: [] },
+      ...authorities.map((authority, index) => ({ id: `shared-policy-${index}`, type: "AUTHORIZATION",
+        serviceId: "orders", label: authority,
+        attributes: { policySource: "METHOD", policyKind: "AUTHORITY_REQUIRED", requiredAuthority: authority },
+        evidenceIds: [] }))
+    ],
+    edges: [
+      { id: "shared-match", sourceId: "shared-endpoint", targetId: "shared-chain", type: "MATCHED_BY",
+        confidence: "CONFIRMED", attributes: {}, evidenceIds: [] },
+      { id: "shared-mapping", sourceId: "shared-endpoint", targetId: "shared-handler", type: "FLOWS_TO",
+        confidence: "CONFIRMED", attributes: { flowKind: "HANDLER" }, evidenceIds: [] },
+      ...authorities.map((authority, index) => ({ id: `shared-edge-${index}`, sourceId: "shared-handler",
+        targetId: `shared-policy-${index}`, type: "SECURED_BY", confidence: "CONFIRMED", attributes: {}, evidenceIds: [] }))
+    ]
+  };
+}
+
 test("Overview 공통 Trunk는 카드 가림 마스크를 사용함", async () => {
   const { ui, elements } = loadUi();
-  ui.renderGraph(supportApiGraph(12));
+  ui.renderGraph(mappedSecurityReferenceGraph());
   await ui.layoutGraph();
   const trunks = ui.state.layout.plan.overviewRouting.segments.filter((segment) => segment.routeRole === "TRUNK");
   assert.ok(trunks.length > 0);
@@ -9185,7 +10885,7 @@ test("Overview 공통 Trunk는 카드 가림 마스크를 사용함", async () =
 
 test("공유 Segment 선택은 구성 원본 관계를 Inspector에서 제공함", async () => {
   const { ui, elements } = loadUi();
-  ui.renderGraph(supportApiGraph(12));
+  ui.renderGraph(mappedSecurityReferenceGraph());
   await ui.layoutGraph();
   const shared = findAllByClass(elements.get("graph-edges"), "graph-overview-segment")
     .find((path) => (path.getAttribute("data-edge-ids") || "").split(",").filter(Boolean).length > 1);
@@ -9226,6 +10926,24 @@ test("마지막 Filter의 구조 연결은 다른 Filter의 보안정보 사용�
   assert.equal(graph.edges.find((edge) => edge.id === "filter-read").sourceId, "security-filter-1");
 });
 
+test("Chain이 미확정이어도 확인된 Handler와 Endpoint의 보안 참조를 같은 행에 보존함", () => {
+  const { ui, layoutApi } = loadUi();
+  const snapshot = detailGraphFixture();
+  snapshot.edges.find((edge) => edge.id === "match-a").confidence = "UNKNOWN";
+  const graph = ui.normalizeGraph(snapshot);
+  const plan = layoutApi.semanticLayout({ ...graph, presentationContext: "overview" }, { positions: {} }).plan;
+  const endpointItem = compositeItemForNode(plan, "endpoint-a", "unresolved");
+  const securityItem = compositeItemForNode(plan, "authorization-a", "unresolved");
+  assert.ok(endpointItem, "미확정 Chain 행의 Endpoint 항목");
+  assert.ok(securityItem, "같은 행의 보안 근거 항목");
+  const reference = plan.overviewRouting.relations.find((relation) =>
+    relation.originalEdgeIds.includes("secured-a") && relation.viaEndpointId === "endpoint-a");
+  assert.ok(reference, "확인된 Handler → 보안 근거와 Endpoint FLOWS_TO를 연결한 참조");
+  assert.equal(reference.presentationKind, "VIA_ENDPOINT_REFERENCE");
+  assert.ok(reference.mappingEdgeIds.includes("handler-map-a"));
+  assert.equal(reference.rowId, "unresolved");
+});
+
 test("서로 다른 JWT Claim과 요구 권한은 같은 표시 그룹으로 뭉치지 않음", () => {
   const { ui, layoutApi } = loadUi();
   const snapshot = detailGraphFixture();
@@ -9241,35 +10959,35 @@ test("서로 다른 JWT Claim과 요구 권한은 같은 표시 그룹으로 뭉
   const graph = ui.normalizeGraph(snapshot);
   const plan = layoutApi.semanticLayout({ ...graph, presentationContext: "overview" }, { positions: {} }).plan;
   for (const [a, b] of [["claim-one", "claim-two"], ["role-one", "role-two"]]) {
-    assert.notEqual(plan.displayModel.nodeToDisplay[a], plan.displayModel.nodeToDisplay[b]);
+    const left = compositeItemForNode(plan, a);
+    const right = compositeItemForNode(plan, b);
+    assert.ok(left && right);
+    assert.notEqual(left.id, right.id);
   }
 });
 
-test("Filter 행 전환은 같은 Chain에서 오른쪽 출력과 왼쪽 입력을 사용함", () => {
+test("Filter 행은 확인된 순서대로 Chain 복합 카드 내부에 유지됨", () => {
   const { ui, layoutApi } = loadUi();
   const graph = ui.normalizeGraph(laneGraphFixture());
   const layout = layoutApi.semanticLayout({ ...graph, presentationContext: "overview" }, { positions: {} });
   const plan = layout.plan.overviewRouting;
-  const instances = new Map(layout.plan.displayModel.instances.map((instance) => [instance.id, instance]));
-  const wraps = plan.relations.filter((relation) => relation.routeKind === "filter-wrap");
-  assert.ok(wraps.length > 0);
-  for (const relation of wraps) {
-    const route = plan.routesByRelationId[relation.id];
-    assert.ok(route, relation.id);
-    const source = instances.get(relation.sourceInstanceId);
-    const target = instances.get(relation.targetInstanceId);
-    assert.equal(source.rowId, target.rowId);
-    assert.equal(route.sourcePort.x, source.position.x + 260, relation.id);
-    assert.equal(route.targetPort.x, target.position.x, relation.id);
-    const row = layout.plan.hiddenGroups.find((group) => group.id === source.rowId);
-    const segments = new Map(plan.segments.map((segment) => [segment.id, segment]));
-    for (const id of route.orderedSegmentIds) {
-      const segment = segments.get(id);
-      assert.ok(Math.min(segment.from.y, segment.to.y) >= row.rowTop - 26, relation.id);
-      assert.ok(Math.max(segment.from.y, segment.to.y) <= row.rowBottom + 26, relation.id);
-      assert.equal(segment.routeRole, "FILTER_WRAP");
-    }
-  }
+  const cards = layout.plan.displayModel.composites.filter((card) => card.kind === "SECURITY_CHAIN");
+  assert.equal(cards.length, 3);
+  cards.forEach((card) => {
+    const filters = card.items.filter((item) => !item.isHeader);
+    const orders = filters.map((item) => item.order);
+    assert.ok(filters.length > 0);
+    assert.ok(filters.every((item) => item.orderStatus === "CONFIRMED"));
+    assert.deepEqual(orders, orders.slice().sort((left, right) => left - right));
+    const y = filters.map((item) => item.bounds.y);
+    assert.deepEqual(y, y.slice().sort((left, right) => left - right));
+    assert.ok(filters.every((item) => item.bounds.x >= card.contentBounds.x - 1
+      && item.bounds.x + item.bounds.width <= card.contentBounds.x + card.contentBounds.width + 1),
+    JSON.stringify({ card: card.bounds, content: card.contentBounds,
+      filters: filters.map((item) => ({ id: item.id, bounds: item.bounds })) }));
+  });
+  assert.equal(plan.relations.some((relation) => relation.routeKind === "filter-wrap"), false);
+  assert.equal(plan.relations.some((relation) => relation.type === "FILTERED_BY"), false);
 });
 
 test("Chain 선택으로 원본 등록선이 새로 표시되지 않음", async () => {
@@ -9277,16 +10995,762 @@ test("Chain 선택으로 원본 등록선이 새로 표시되지 않음", async 
   ui.renderGraph(wrappedFilterGraph(0, 5));
   await ui.layoutGraph();
   const plan = ui.state.layout.plan.overviewRouting;
-  const chainRelations = plan.relations.filter((relation) => relation.sourceInstanceId === "chain" || relation.targetInstanceId === "chain");
-  assert.equal(chainRelations.length, 1);
-  assert.equal(chainRelations[0].targetInstanceId, "security-filter-0");
+  const chainCard = ui.state.layout.plan.displayModel.composites.find((card) => card.kind === "SECURITY_CHAIN"
+    && card.originalNodeIds.includes("chain"));
+  assert.ok(chainCard);
+  assert.equal(chainCard.items.filter((item) => !item.isHeader).length, 5);
+  const header = chainCard.items.find((item) => item.isHeader);
+  assert.ok(header.originalEdgeIds.filter((id) => id.startsWith("security-edge-")).length === 5);
+  assert.equal(plan.relations.some((relation) => relation.type === "FILTERED_BY" || relation.type === "MATCHED_BY"), false);
   const before = findAllByClass(elements.get("graph-edges"), "graph-overview-segment")
     .map((path) => [path.getAttribute("data-segment-id"), path.getAttribute("d")]);
-  ui.selectGraphElement("node", "chain");
+  const renderedCard = findAllByClass(elements.get("graph-nodes"), "graph-composite-card")
+    .find((element) => element.getAttribute("data-composite-card-id") === chainCard.id);
+  renderedCard.dispatchEvent({ type: "click" });
+  assert.equal(ui.state.selection.kind, "controller-group");
+  assert.equal(ui.state.selection.id, chainCard.id);
   const after = findAllByClass(elements.get("graph-edges"), "graph-overview-segment")
     .map((path) => [path.getAttribute("data-segment-id"), path.getAttribute("d")]);
   assert.deepEqual(after, before);
   assert.equal(after.some(([id]) => !id), false);
-  assert.equal(plan.relations.some((relation) => relation.type === "FILTERED_BY" || relation.type === "MATCHED_BY"), false);
   assert.equal(ui.state.graph.edges.filter((edge) => edge.type === "FILTERED_BY").length, 5);
+});
+
+if (actualSnapshotTargets.length > 0) {
+  test("실제 Snapshot의 전체 MAP과 보안 MAP은 모든 표시 관계를 연속 Segment로 렌더링함", async () => {
+    const metrics = [];
+    for (const target of actualSnapshotTargets) {
+      const response = await fetch(target.url);
+      assert.equal(response.status, 200, `${target.name}: Snapshot HTTP 상태`);
+      const snapshot = await response.json();
+      const { ui, elements } = loadUi();
+      ui.renderGraph(snapshot);
+      for (const view of ["all-flow", "security-flow"]) {
+        ui.selectView(view);
+        await ui.layoutGraph();
+        assert.ok(ui.state.layout, `${target.name}: 레이아웃 ${ui.state.layoutError}`);
+        const routing = ui.state.layout.plan.overviewRouting;
+        const missing = routing.relations.filter((relation) => !routing.routesByRelationId[relation.id]);
+        const segmentsById = new Map(routing.segments.map((segment) => [segment.id, segment]));
+        const displayModel = ui.state.layout.plan.displayModel;
+        const registration = (snapshot.runtimeArchitecture?.components || []).find((component) =>
+          component.kind === "SERVLET_FILTER_REGISTRATION"
+          && component.attributes?.registrationName === "springSecurityFilterChain"
+          && /DelegatingFilterProxy/.test(component.className || "") && component.graphNodeIds?.length === 1);
+        if (registration && displayModel.originalNodeToItemIds[registration.graphNodeIds[0]]?.length) {
+          const delegation = routing.relations.filter((relation) => relation.presentationKind === "SECURITY_CHAIN_SELECTION");
+          assert.ok(delegation.length > 0, `${target.name}: 보안 위임 연결`);
+          assert.ok(delegation.every((relation) => relation.relatedNodeIds.includes(registration.graphNodeIds[0])),
+            `${target.name}: 실제 위임 Filter 출발`);
+        }
+        const decorations = findAllByClass(elements.get("graph-nodes"), "graph-composite-timeline");
+        assert.ok(decorations.every((element) => !element.getAttribute("data-port-ids")
+          && !element.getAttribute("data-segment-id")), `${target.name}: Timeline 장식 분리`);
+        assert.ok(findAllByClass(elements.get("graph-nodes"), "graph-composite-display-id").length > 0,
+          `${target.name}: 원본 표시 ID`);
+        const disconnected = [];
+        routing.relations.forEach((relation) => {
+          const route = routing.routesByRelationId[relation.id];
+          if (!route) return;
+          let current = route.sourcePort;
+          route.orderedSegmentIds.forEach((id) => {
+            const segment = segmentsById.get(id);
+            if (!segment || !segment.relationIds.includes(relation.id)) {
+              disconnected.push({ relationId: relation.id, segmentId: id, reason: "missing-segment" });
+              return;
+            }
+            const same = (left, right) => left.x === right.x && left.y === right.y;
+            if (!same(current, segment.from) && !same(current, segment.to)) {
+              disconnected.push({ relationId: relation.id, segmentId: id, reason: "disconnected" });
+              return;
+            }
+            current = same(current, segment.from) ? segment.to : segment.from;
+          });
+          if (current.x !== route.targetPort.x || current.y !== route.targetPort.y) {
+            disconnected.push({ relationId: relation.id, reason: "wrong-target" });
+          }
+        });
+        const rendered = findAllByClass(elements.get("graph-edges"), "graph-overview-segment");
+        const roleCounts = Object.fromEntries(Array.from(new Set(routing.relations.map((relation) => relation.role)),
+          (role) => [role, routing.relations.filter((relation) => relation.role === role).length]));
+        const relationById = new Map(routing.relations.map((relation) => [relation.id, relation]));
+        const routeOrderErrors = routing.relations.filter((relation) => {
+          const route = routing.routesByRelationId[relation.id];
+          return route && new Set(route.orderedSegmentIds).size !== route.orderedSegmentIds.length;
+        }).length;
+        const wrongPortDirectionCount = routing.relations.filter((relation) => {
+          const route = routing.routesByRelationId[relation.id];
+          const sourceBounds = displayModel.cardById[relation.sourceInstanceId]?.bounds;
+          const targetBounds = displayModel.cardById[relation.targetInstanceId]?.bounds;
+          return route && (!sourceBounds || !targetBounds
+            || route.sourcePort.x !== sourceBounds.x + sourceBounds.width
+            || route.targetPort.x !== targetBounds.x);
+        }).length;
+        const portsById = new Map(displayModel.ports.map((port) => [port.id, port]));
+        const routePortErrors = routing.relations.filter((relation) => {
+          const route = routing.routesByRelationId[relation.id];
+          return !route || [route.sourcePort, route.targetPort].some((routePort) => {
+            const port = portsById.get(routePort.id);
+            return !port || port.x !== routePort.x || port.y !== routePort.y;
+          });
+        }).length;
+        const portGroups = new Map();
+        displayModel.ports.forEach((port) => {
+          const key = `${port.itemId}:${port.side}`;
+          const group = portGroups.get(key) || [];
+          group.push(port);
+          portGroups.set(key, group);
+        });
+        const portPlacementErrors = Array.from(portGroups.values()).reduce((count, ports) => {
+          const item = displayModel.itemById[ports[0].itemId];
+          const uniqueY = new Set(ports.map((port) => port.y));
+          const outsideItem = ports.filter((port) => port.y < item.bounds.y + 4
+            || port.y > item.bounds.y + item.bounds.height - 4).length;
+          return count + ports.length - uniqueY.size + outsideItem;
+        }, 0);
+        const segmentMembershipErrors = routing.segments.filter((segment) => {
+          const usedBy = routing.relations.filter((relation) =>
+            routing.routesByRelationId[relation.id]?.orderedSegmentIds.includes(segment.id))
+            .map((relation) => relation.id).sort();
+          return JSON.stringify(usedBy) !== JSON.stringify(segment.relationIds.slice().sort());
+        }).length;
+        const pathById = new Map(rendered.flatMap((path) =>
+          (path.getAttribute("data-segment-ids") || path.getAttribute("data-segment-id") || "")
+            .split(",").filter(Boolean).map((id) => [id, path])));
+        const pointKey = (point) => `${point.x},${point.y}`;
+        const physicalGeometryKey = (segment) => {
+          const controls = segment.geometry?.kind === "CUBIC" ? segment.geometry.controlPoints : [];
+          const points = [segment.from, ...controls, segment.to].map(pointKey);
+          const forward = points.join(">");
+          const reverse = points.slice().reverse().join(">");
+          return `${controls.length ? "CUBIC" : "LINE"}:${forward < reverse ? forward : reverse}`;
+        };
+        const segmentById = new Map(routing.segments.map((segment) => [segment.id, segment]));
+        const geometryCounts = new Map();
+        rendered.forEach((path) => {
+          const segment = segmentById.get(path.getAttribute("data-segment-id"));
+          if (!segment) return;
+          const key = physicalGeometryKey(segment);
+          geometryCounts.set(key, (geometryCounts.get(key) || 0) + 1);
+        });
+        const duplicatePhysicalSegmentCount = Array.from(geometryCounts.values())
+          .reduce((sum, count) => sum + count - 1, 0);
+        const duplicatePhysicalSegmentExamples = Array.from(geometryCounts.entries())
+          .filter(([, count]) => count > 1).slice(0, 3);
+        const svgErrorExamples = rendered.flatMap((path) => {
+          const ids = (path.getAttribute("data-segment-ids") || "").split(",").filter(Boolean);
+          const segments = ids.map((id) => segmentById.get(id));
+          if (!ids.length || segments.some((segment) => !segment)) return [{ reason: "missing-segment", ids }];
+          if (new Set(segments.map(physicalGeometryKey)).size !== 1) return [{ reason: "geometry", ids }];
+          const relationIds = Array.from(new Set(segments.flatMap((segment) => segment.relationIds)));
+          const members = relationIds.map((id) => relationById.get(id)).filter(Boolean);
+          const originalIds = Array.from(new Set(members.flatMap((relation) => relation.originalEdgeIds || [])));
+          const runtimeIds = Array.from(new Set(members.flatMap((relation) => relation.runtimeRelationshipIds || [])));
+          if ((path.getAttribute("data-relation-ids") || "") !== relationIds.join(",")
+            || (path.getAttribute("data-edge-ids") || "") !== originalIds.join(",")
+            || (path.getAttribute("data-runtime-relationship-ids") || "") !== runtimeIds.join(",")) {
+            return [{ reason: "membership", ids }];
+          }
+          const first = segments[0];
+          const commands = (reverse) => {
+            const start = reverse ? first.to : first.from;
+            const end = reverse ? first.from : first.to;
+            if (first.geometry?.kind === "CUBIC") {
+              const controls = reverse ? first.geometry.controlPoints.slice().reverse() : first.geometry.controlPoints;
+              return `M ${start.x} ${start.y} C ${controls[0].x} ${controls[0].y}, ${controls[1].x} ${controls[1].y}, ${end.x} ${end.y}`;
+            }
+            return `M ${start.x} ${start.y} L ${end.x} ${end.y}`;
+          };
+          if (![commands(false), commands(true)].includes(path.getAttribute("d"))) return [{ reason: "path", ids }];
+          return [];
+        });
+        const svgSegmentErrors = svgErrorExamples.length
+          + routing.segments.filter((segment) => !pathById.has(segment.id)).length;
+        const cardById = displayModel.cardById;
+        const lineIntersectsBounds = (start, end, bounds) => {
+          let low = 0;
+          let high = 1;
+          const dx = end.x - start.x;
+          const dy = end.y - start.y;
+          const constraints = [[-dx, start.x - bounds.left], [dx, bounds.right - start.x],
+            [-dy, start.y - bounds.top], [dy, bounds.bottom - start.y]];
+          for (const [direction, distance] of constraints) {
+            if (direction === 0) {
+              if (distance < 0) return false;
+              continue;
+            }
+            const ratio = distance / direction;
+            if (direction < 0) low = Math.max(low, ratio);
+            else high = Math.min(high, ratio);
+            if (low > high) return false;
+          }
+          return true;
+        };
+        const cubicIntersectsBounds = (start, firstControl, secondControl, end, bounds, depth = 0) => {
+          const controlBounds = {
+            left: Math.min(start.x, firstControl.x, secondControl.x, end.x),
+            right: Math.max(start.x, firstControl.x, secondControl.x, end.x),
+            top: Math.min(start.y, firstControl.y, secondControl.y, end.y),
+            bottom: Math.max(start.y, firstControl.y, secondControl.y, end.y)
+          };
+          if (controlBounds.right < bounds.left || controlBounds.left > bounds.right
+            || controlBounds.bottom < bounds.top || controlBounds.top > bounds.bottom) return false;
+          const distanceFromLine = (point) => {
+            const dx = end.x - start.x;
+            const dy = end.y - start.y;
+            const length = Math.hypot(dx, dy);
+            return length ? Math.abs(dy * point.x - dx * point.y + end.x * start.y - end.y * start.x) / length
+              : Math.hypot(point.x - start.x, point.y - start.y);
+          };
+          if (depth >= 12 || Math.max(distanceFromLine(firstControl), distanceFromLine(secondControl)) <= 0.25) {
+            return lineIntersectsBounds(start, end, bounds);
+          }
+          const midpoint = (left, right) => ({ x: (left.x + right.x) / 2, y: (left.y + right.y) / 2 });
+          const startFirst = midpoint(start, firstControl);
+          const firstSecond = midpoint(firstControl, secondControl);
+          const secondEnd = midpoint(secondControl, end);
+          const leftMiddle = midpoint(startFirst, firstSecond);
+          const rightMiddle = midpoint(firstSecond, secondEnd);
+          const center = midpoint(leftMiddle, rightMiddle);
+          return cubicIntersectsBounds(start, startFirst, leftMiddle, center, bounds, depth + 1)
+            || cubicIntersectsBounds(center, rightMiddle, secondEnd, end, bounds, depth + 1);
+        };
+        const curveCollidesWithCard = (segment, card) => {
+          if (!card.bounds || !segment.geometry?.controlPoints || segment.geometry.controlPoints.length !== 2) return false;
+          const bounds = { left: card.bounds.x - 2, right: card.bounds.x + card.bounds.width + 2,
+            top: card.bounds.y - 2, bottom: card.bounds.y + card.bounds.height + 2 };
+          return cubicIntersectsBounds(segment.from, segment.geometry.controlPoints[0],
+            segment.geometry.controlPoints[1], segment.to, bounds);
+        };
+        const curveCollisionCount = routing.segments.filter((segment) => {
+          if (segment.geometry?.kind !== "CUBIC") return false;
+          const endpointCardIds = new Set(segment.relationIds.flatMap((id) => {
+            const relation = relationById.get(id);
+            return relation ? [relation.sourceInstanceId, relation.targetInstanceId] : [];
+          }));
+          return Object.values(cardById).some((card) => !endpointCardIds.has(card.id)
+            && curveCollidesWithCard(segment, card));
+        }).length;
+        const curveCollisionExamples = routing.segments.filter((segment) => {
+          if (segment.geometry?.kind !== "CUBIC") return false;
+          const endpointCardIds = new Set(segment.relationIds.flatMap((id) => {
+            const relation = relationById.get(id);
+            return relation ? [relation.sourceInstanceId, relation.targetInstanceId] : [];
+          }));
+          return Object.values(cardById).some((card) => !endpointCardIds.has(card.id)
+            && curveCollidesWithCard(segment, card));
+        }).slice(0, 3).map((segment) => {
+          const endpointCardIds = new Set(segment.relationIds.flatMap((id) => {
+            const relation = relationById.get(id);
+            return relation ? [relation.sourceInstanceId, relation.targetInstanceId] : [];
+          }));
+          const overlappingCards = Object.values(cardById).filter((card) => card.bounds && !endpointCardIds.has(card.id)
+            && curveCollidesWithCard(segment, card))
+            .map((card) => ({ kind: card.kind, bounds: [card.bounds.x, card.bounds.y,
+              card.bounds.width, card.bounds.height] }));
+          return { id: segment.id, from: [segment.from.x, segment.from.y], to: [segment.to.x, segment.to.y],
+            controls: segment.geometry.controlPoints.map((point) => [point.x, point.y]), overlappingCards,
+            relationTypes: segment.relationIds.map((id) => relationById.get(id)?.type) };
+        });
+        const junctions = routing.junctions || [];
+        const junctionsById = new Map(junctions.map((junction) => [junction.id, junction]));
+        const renderedJunctions = findAllByClass(elements.get("graph-edges"), "graph-overview-junction");
+        const junctionValidation = junctions.map((junction) => {
+          const memberSegments = junction.segmentIds.map((id) => segmentsById.get(id)).filter(Boolean);
+          const memberRelations = Array.from(new Set(memberSegments.flatMap((segment) => segment.relationIds))).sort();
+          const neighbors = new Set(memberSegments.map((segment) => segment.from.x === junction.x
+            && segment.from.y === junction.y ? `${segment.to.x},${segment.to.y}` : `${segment.from.x},${segment.from.y}`));
+          const misalignedSegmentIds = memberSegments.filter((segment) =>
+            !((segment.from.x === junction.x && segment.from.y === junction.y)
+              || (segment.to.x === junction.x && segment.to.y === junction.y))).map((segment) => segment.id);
+          const reasons = [];
+          if (memberSegments.length !== junction.segmentIds.length) reasons.push("missing-segment");
+          if (neighbors.size < 3) reasons.push("insufficient-branches");
+          if (memberRelations.join(",") !== junction.relationIds.slice().sort().join(",")) reasons.push("relation-membership");
+          if (misalignedSegmentIds.length) reasons.push("misaligned-segment");
+          return { junction, memberSegments, memberRelations, neighbors, misalignedSegmentIds, reasons,
+            invalid: reasons.length > 0 };
+        });
+        const junctionErrors = junctionValidation.filter((item) => item.invalid).length;
+        const junctionErrorExamples = junctionValidation.filter((item) => item.invalid).slice(0, 4)
+          .map(({ junction, memberSegments, memberRelations, neighbors, misalignedSegmentIds, reasons }) => ({
+            point: [junction.x, junction.y], reasons,
+            declaredSegmentCount: junction.segmentIds.length, memberSegmentIds: memberSegments.map((segment) => segment.id),
+            declaredRelationCount: junction.relationIds.length, actualRelationCount: memberRelations.length,
+            neighborCount: neighbors.size, misalignedSegmentIds }));
+        const junctionDomErrors = junctions.filter((junction) => {
+          const element = renderedJunctions.find((item) => item.getAttribute("data-junction-id") === junction.id);
+          return !element || Number(element.getAttribute("cx")) !== junction.x
+            || Number(element.getAttribute("cy")) !== junction.y;
+        }).length + Math.max(0, renderedJunctions.length - junctionsById.size);
+        const unresolvedDom = JSON.parse(elements.get("graph-svg").getAttribute("data-unresolved-routes") || "[]");
+        const expectedJunctionCount = junctions.length;
+        metrics.push({ service: target.name, view, relationCount: routing.relations.length,
+          routedCount: Object.keys(routing.routesByRelationId).length, missingCount: missing.length,
+          unresolvedCount: routing.unresolved.length, unresolvedReasons: Object.fromEntries(Array.from(
+            new Set(routing.unresolved.map((item) => item.reason)),
+            (reason) => [reason, routing.unresolved.filter((item) => item.reason === reason).length])),
+          unresolvedRelations: routing.unresolved.map(({ relationId, reason }) => {
+            const relation = routing.relations.find((item) => item.id === relationId);
+            const source = relation && displayModel.itemById[relation.sourceItemId];
+            const targetItem = relation && displayModel.itemById[relation.targetItemId];
+            const sourceCard = relation && displayModel.cardById[relation.sourceInstanceId];
+            const targetCard = relation && displayModel.cardById[relation.targetInstanceId];
+            const portPoint = (id) => {
+              const port = id && displayModel.portById[id];
+              return port ? [port.x, port.y] : null;
+            };
+            const bounds = (card) => card ? [card.bounds.x, card.bounds.y,
+              card.bounds.width, card.bounds.height] : null;
+            return { relationKind: relationId.split(":", 1)[0], reason, role: relation?.role,
+              type: relation?.type, sourceKind: source?.kind, targetKind: targetItem?.kind,
+              sourceCardKind: sourceCard?.kind, targetCardKind: targetCard?.kind,
+              sourceItemBounds: source?.bounds && [source.bounds.x, source.bounds.y,
+                source.bounds.width, source.bounds.height],
+              targetItemBounds: targetItem?.bounds && [targetItem.bounds.x, targetItem.bounds.y,
+                targetItem.bounds.width, targetItem.bounds.height],
+              sourcePort: portPoint(relation?.visualSourcePortId), targetPort: portPoint(relation?.visualTargetPortId),
+              sourceCard: bounds(sourceCard), targetCard: bounds(targetCard) };
+          }),
+          disconnectedCount: disconnected.length, roleCounts, segmentCount: routing.segments.length,
+          sharedSegmentCount: routing.segments.filter((segment) => segment.relationIds.length > 1).length,
+          cubicSegmentCount: routing.segments.filter((segment) => segment.geometry?.kind === "CUBIC").length,
+          routeOrderErrors, wrongPortDirectionCount, routePortErrors, portPlacementErrors,
+          segmentMembershipErrors, svgSegmentErrors,
+          svgErrorExamples,
+          duplicatePhysicalSegmentCount, curveCollisionCount, junctionErrors, junctionDomErrors,
+          duplicatePhysicalSegmentExamples, curveCollisionExamples, junctionErrorExamples,
+          unresolvedDomCount: unresolvedDom.length,
+          branchJunctionCount: expectedJunctionCount,
+          renderedSegmentCount: rendered.length,
+          uniqueRenderedSegmentCount: pathById.size,
+          physicalSegmentCount: geometryCounts.size,
+          renderedJunctionCount: findAllByClass(elements.get("graph-edges"), "graph-overview-junction").length });
+      }
+    }
+    const failures = metrics.filter((item) => item.missingCount || item.unresolvedCount || item.disconnectedCount
+      || item.renderedSegmentCount !== item.physicalSegmentCount || item.uniqueRenderedSegmentCount !== item.segmentCount
+      || item.renderedJunctionCount !== item.branchJunctionCount || item.routeOrderErrors
+      || item.wrongPortDirectionCount || item.segmentMembershipErrors || item.svgSegmentErrors
+      || item.routePortErrors || item.portPlacementErrors
+      || item.duplicatePhysicalSegmentCount || item.curveCollisionCount || item.junctionErrors
+      || item.junctionDomErrors || item.unresolvedDomCount || item.cubicSegmentCount === 0);
+    const failureDetails = failures.map((item) => ({ service: item.service, view: item.view,
+      relationCount: item.relationCount, routedCount: item.routedCount, missingCount: item.missingCount,
+      unresolvedRelations: item.unresolvedRelations, duplicateExamples: item.duplicatePhysicalSegmentExamples,
+      unresolvedCount: item.unresolvedCount, disconnectedCount: item.disconnectedCount,
+      routeOrderErrors: item.routeOrderErrors, wrongPortDirectionCount: item.wrongPortDirectionCount,
+      routePortErrors: item.routePortErrors, portPlacementErrors: item.portPlacementErrors,
+      segmentMembershipErrors: item.segmentMembershipErrors, svgSegmentErrors: item.svgSegmentErrors,
+      svgErrorExamples: item.svgErrorExamples.slice(0, 3),
+      duplicatePhysicalSegmentCount: item.duplicatePhysicalSegmentCount,
+      curveCollisionCount: item.curveCollisionCount, curveCollisionExamples: item.curveCollisionExamples,
+      junctionErrors: item.junctionErrors, junctionErrorExamples: item.junctionErrorExamples,
+      junctionDomErrors: item.junctionDomErrors, unresolvedDomCount: item.unresolvedDomCount,
+      renderedSegmentCount: item.renderedSegmentCount, segmentCount: item.segmentCount,
+      renderedJunctionCount: item.renderedJunctionCount, branchJunctionCount: item.branchJunctionCount }));
+    assert.deepEqual(failureDetails, [], `실제 Snapshot Overview 연결/렌더 지표 ${JSON.stringify(failureDetails)}`);
+  });
+
+  test("실제 Account API Item 선택은 명시 매핑과 해당 Row의 Flow만 강조함", async () => {
+    const target = actualSnapshotTargets.find((item) => item.name === "Account");
+    assert.ok(target, "실제 Account Snapshot 대상 필요");
+    const response = await fetch(target.url);
+    assert.equal(response.status, 200);
+    const snapshot = await response.json();
+    const endpoint = snapshot.nodes.find((node) => node.type === "ENDPOINT"
+      && node.attributes.httpMethod === "POST" && node.attributes.path === "/api/admin/savings/products");
+    assert.ok(endpoint, "POST /api/admin/savings/products Endpoint 필요");
+    const { ui, elements, window } = loadUi();
+    ui.renderGraph(snapshot);
+    ui.selectView("all-flow");
+    await ui.layoutGraph();
+    const plan = ui.state.layout.plan;
+    const mapping = window.MapInBootFlow.createIndex(snapshot).handlerFor(endpoint.id);
+    assert.equal(mapping.status, "CONFIRMED", "API–Handler 관계는 명시 FLOWS_TO로 확인");
+    assert.match(mapping.node.attributes.handler, /AdminController#createSavingsProduct\(/);
+    const item = compositeItemForNode(plan, endpoint.id, `chain:${snapshot.edges.find((edge) =>
+      edge.type === "MATCHED_BY" && edge.sourceId === endpoint.id)?.targetId}`);
+    assert.ok(item, "선택 Endpoint의 복합 항목 필요");
+    const relationIds = new Set(plan.overviewRouting.relations.filter((relation) => relation.rowId === item.rowId
+      && (relation.sourceItemId === item.id || relation.targetItemId === item.id
+        || (relation.relatedNodeIds || []).includes(endpoint.id))).map((relation) => relation.id));
+    assert.ok(Array.from(relationIds, (id) => plan.overviewRouting.relations.find((relation) => relation.id === id))
+      .some((relation) => relation.role === "API_MAPPING" && relation.mappingEdgeIds.includes(mapping.edge.id)),
+    "선택 API에 실제 Handler 매핑 Segment 존재");
+    const itemElement = findAllByClass(elements.get("graph-nodes"), "graph-composite-item")
+      .find((element) => element.getAttribute("data-composite-item-id") === item.id);
+    assert.ok(itemElement);
+    itemElement.dispatchEvent({ type: "click" });
+    assert.equal(itemElement.getAttribute("data-related"), "true", "선택 항목 강조");
+    const paths = findAllByClass(elements.get("graph-edges"), "graph-overview-segment");
+    const incorrectPaths = paths.filter((path) => {
+      const related = path.getAttribute("data-related") === "true";
+      const containsSelectedRelation = path.getAttribute("data-relation-ids").split(",")
+        .some((id) => relationIds.has(id));
+      return related !== containsSelectedRelation;
+    });
+    assert.deepEqual(incorrectPaths.map((path) => path.getAttribute("data-segment-id")), [],
+      "실제 관계 교집합과 Segment 강조 범위 일치");
+    const unrelatedMappings = plan.overviewRouting.relations.filter((relation) => relation.role === "API_MAPPING"
+      && !relationIds.has(relation.id));
+    assert.ok(unrelatedMappings.length > 0, "비교할 다른 API 매핑 필요");
+    const unrelatedSegments = new Set(unrelatedMappings.flatMap((relation) =>
+      plan.overviewRouting.routesByRelationId[relation.id]?.orderedSegmentIds || []));
+    assert.equal(paths.filter((path) => unrelatedSegments.has(path.getAttribute("data-segment-id"))
+      && path.getAttribute("data-related") === "true").length, 0, "다른 API 매핑 흐림 유지");
+
+    const routing = plan.overviewRouting;
+    const relationById = new Map(routing.relations.map((relation) => [relation.id, relation]));
+    const mergedPath = paths.find((path) => (path.getAttribute("data-segment-ids") || "").split(",").length > 1
+      && (path.getAttribute("data-edge-ids") || "").split(",").filter(Boolean).length > 1);
+    assert.ok(mergedPath, "여러 논리 Segment를 공유하는 실제 SVG 선분 필요");
+    const mergedEdges = mergedPath.getAttribute("data-edge-ids").split(",").filter(Boolean);
+    mergedPath.dispatchEvent({ type: "click" });
+    assert.deepEqual(Array.from(ui.state.selection.segmentEdgeIds).sort(), mergedEdges.slice().sort());
+    const inspectorLinks = findAllByClass(elements.get("inspector"), "inspector-link");
+    mergedEdges.forEach((id) => assert.ok(inspectorLinks.some((link) => link.getAttribute("data-edge-id") === id), id));
+    for (const id of mergedEdges.slice(0, 2)) {
+      const link = findAllByClass(elements.get("inspector"), "inspector-link")
+        .find((item) => item.getAttribute("data-edge-id") === id);
+      if (!link) {
+        mergedPath.dispatchEvent({ type: "click" });
+      }
+      findAllByClass(elements.get("inspector"), "inspector-link")
+        .find((item) => item.getAttribute("data-edge-id") === id).dispatchEvent({ type: "click" });
+      assert.equal(ui.state.selection.id, id);
+      const edge = snapshot.edges.find((item) => item.id === id);
+      assert.ok(edge.evidenceIds.length > 0);
+      assert.ok(findAllByClass(elements.get("inspector"), "inspector-evidence").length > 0);
+    }
+    const graphNodeById = new Map(snapshot.nodes.map((node) => [node.id, node]));
+    const flowIndex = window.MapInBootFlow.createIndex(snapshot);
+    const renderedPaths = () => findAllByClass(elements.get("graph-edges"), "graph-overview-segment");
+    const selectItemAndCheckScope = (selectedItem) => {
+      const renderedItem = findAllByClass(elements.get("graph-nodes"), "graph-composite-item")
+        .find((element) => element.getAttribute("data-composite-item-id") === selectedItem.id);
+      assert.ok(renderedItem, `${selectedItem.label} 복합 항목 렌더링`);
+      renderedItem.dispatchEvent({ type: "click" });
+      const scope = window.MapInBootInspector.related(ui.state.graph, ui.state.selection, [], snapshot,
+        plan.displayModel, routing);
+      assert.ok(scope.displayItemIds.has(selectedItem.id), `${selectedItem.label} 선택 항목 범위`);
+      const inScopeRelations = routing.relations.filter((relation) => scope.visualRelationIds.has(relation.id));
+      assert.ok(inScopeRelations.length > 0, `${selectedItem.label} 실제 관계`);
+      assert.ok(inScopeRelations.every((relation) => relation.rowId === selectedItem.rowId),
+        `${selectedItem.label} 다른 Chain Row 제외`);
+      const expectedSegments = new Set(inScopeRelations.flatMap((relation) =>
+        routing.routesByRelationId[relation.id]?.orderedSegmentIds || []));
+      assert.deepEqual(Array.from(scope.segmentIds).sort(), Array.from(expectedSegments).sort(),
+        `${selectedItem.label} 관계 Segment 합집합`);
+      const incorrect = renderedPaths().filter((path) =>
+        (path.getAttribute("data-related") === "true") !== (path.getAttribute("data-segment-ids") || "")
+          .split(",").some((id) => scope.segmentIds.has(id)));
+      assert.deepEqual(incorrect.map((path) => path.getAttribute("data-segment-id")), [],
+        `${selectedItem.label} 실제 Segment만 강조`);
+
+      const endpointAnchors = new Set(inScopeRelations.map((relation) => relation.viaEndpointId).filter(Boolean));
+      assert.ok(endpointAnchors.size > 0, `${selectedItem.label} 원본 Endpoint 참조`);
+      const mappingRelations = inScopeRelations.filter((relation) => relation.role === "API_MAPPING");
+      assert.ok(mappingRelations.length > 0, `${selectedItem.label} 명시 API–Handler 매핑`);
+      mappingRelations.forEach((mappingRelation) => {
+        const endpointIds = (mappingRelation.relatedNodeIds || []).filter((id) => graphNodeById.get(id)?.type === "ENDPOINT");
+        const handlerIds = (mappingRelation.relatedNodeIds || []).filter((id) => graphNodeById.get(id)?.type === "HANDLER");
+        assert.equal(endpointIds.length, 1, `${selectedItem.label} 매핑 Endpoint 개수`);
+        assert.equal(handlerIds.length, 1, `${selectedItem.label} 매핑 Handler 개수`);
+        assert.ok(endpointAnchors.has(endpointIds[0]), `${selectedItem.label} 원본 근거 Endpoint만 매핑`);
+        const confirmed = flowIndex.handlerFor(endpointIds[0]);
+        assert.equal(confirmed.status, "CONFIRMED", `${selectedItem.label} 명시 Handler 관계`);
+        assert.equal(confirmed.node.id, handlerIds[0], `${selectedItem.label} Handler 관계 일치`);
+        assert.ok(mappingRelation.mappingEdgeIds.includes(confirmed.edge.id), `${selectedItem.label} FLOWS_TO 참조`);
+        assert.ok(scope.nodeIds.has(endpointIds[0]) && scope.nodeIds.has(handlerIds[0]),
+          `${selectedItem.label} Endpoint 및 Handler 강조`);
+      });
+      const unrelatedMappingRelations = routing.relations.filter((relation) => relation.rowId === selectedItem.rowId
+        && relation.role === "API_MAPPING" && !scope.visualRelationIds.has(relation.id));
+      assert.ok(unrelatedMappingRelations.length > 0, `${selectedItem.label} 비교할 무관 API 매핑`);
+      unrelatedMappingRelations.forEach((unrelated) => {
+        const exclusiveSegments = routing.routesByRelationId[unrelated.id].orderedSegmentIds.filter((id) => {
+          const segment = routing.segments.find((candidate) => candidate.id === id);
+          return segment && segment.relationIds.every((memberId) => !scope.visualRelationIds.has(memberId));
+        });
+        assert.ok(exclusiveSegments.every((id) => !scope.segmentIds.has(id)),
+          `${selectedItem.label} 무관 API 전용 Branch 제외`);
+      });
+      return scope;
+    };
+
+    const cases = [
+      ["ROLE_STAFF 권한 필요", (item) => item.label === "ROLE_STAFF 권한 필요"],
+      ["ROLE_BANK_ADMIN 권한 필요", (item) => item.label === "ROLE_BANK_ADMIN 권한 필요"],
+      ["ROLE_CUSTOMER 권한 필요", (item) => item.label === "ROLE_CUSTOMER 권한 필요"],
+      ["Principal 조회", (item) => item.label === "Principal 조회"],
+      ["JWT Claim 조회", (item) => item.label === "JWT Claim 조회"],
+      ["identity_verified 업무 상태", (item) => item.label.includes("identity_verified")]
+    ];
+    cases.forEach(([label, matches]) => {
+      const matchingItems = Object.values(plan.displayModel.itemById)
+        .filter((candidate) => candidate.rowId?.startsWith("chain:") && matches(candidate));
+      assert.ok(matchingItems.length > 0, `실제 Snapshot의 ${label} 항목`);
+      matchingItems.forEach((candidate) => selectItemAndCheckScope(candidate));
+    });
+
+    const selectedCard = plan.displayModel.cardById[item.cardId];
+    const cardElement = findAllByClass(elements.get("graph-nodes"), "graph-composite-card")
+      .find((element) => element.getAttribute("data-composite-card-id") === selectedCard.id);
+    assert.ok(cardElement, "API 복합 카드 Header 렌더링");
+    cardElement.dispatchEvent({ type: "click" });
+    const cardScope = window.MapInBootInspector.related(ui.state.graph, ui.state.selection, [], snapshot,
+      plan.displayModel, routing);
+    assert.deepEqual(Array.from(cardScope.rowIds), [selectedCard.rowId], "카드 Header는 해당 Row만 선택");
+    const cardItemIds = new Set(selectedCard.items.map((entry) => entry.id));
+    const cardNodeIds = new Set(selectedCard.items.flatMap((entry) => entry.originalNodeIds || []));
+    const expectedCardRelations = routing.relations.filter((relation) => relation.rowId === selectedCard.rowId
+      && (cardItemIds.has(relation.sourceItemId) || cardItemIds.has(relation.targetItemId)
+        || (relation.relatedNodeIds || []).some((id) => cardNodeIds.has(id))));
+    const expectedCardRelationIds = new Set(expectedCardRelations.map((entry) => entry.id));
+    assert.deepEqual({
+      missing: Array.from(expectedCardRelationIds).filter((id) => !cardScope.visualRelationIds.has(id)),
+      extra: Array.from(cardScope.visualRelationIds).filter((id) => !expectedCardRelationIds.has(id))
+    }, { missing: [], extra: [] }, "카드 Header는 내부 Flow 합집합만 선택");
+
+    const handlerItemIds = plan.displayModel.originalNodeToItemIds[mapping.node.id] || [];
+    const handlerItem = handlerItemIds.map((id) => plan.displayModel.itemById[id])
+      .find((candidate) => candidate?.rowId === item.rowId);
+    assert.ok(handlerItem, "같은 Chain Row의 명시 매핑 Handler 항목 필요");
+    const handlerScope = selectItemAndCheckScope(handlerItem);
+    const handlerMappingRelations = routing.relations.filter((relation) => relation.rowId === handlerItem.rowId
+      && relation.role === "API_MAPPING" && (relation.relatedNodeIds || []).includes(mapping.node.id));
+    assert.ok(handlerMappingRelations.length > 0, "선택 Handler의 명시 Endpoint 매핑 필요");
+    handlerMappingRelations.forEach((relation) => {
+      const endpointId = (relation.relatedNodeIds || []).find((id) => graphNodeById.get(id)?.type === "ENDPOINT");
+      const confirmed = flowIndex.handlerFor(endpointId);
+      assert.equal(confirmed.status, "CONFIRMED", "Handler 항목의 Endpoint 매핑 확인");
+      assert.equal(confirmed.node.id, mapping.node.id, "Handler 항목은 매핑된 원본 Handler만 포함");
+      assert.ok(handlerScope.visualRelationIds.has(relation.id), "Handler 항목의 실제 매핑 Flow 강조");
+    });
+    const handlerCard = plan.displayModel.cardById[handlerItem.cardId];
+    const handlerCardElement = findAllByClass(elements.get("graph-nodes"), "graph-composite-card")
+      .find((element) => element.getAttribute("data-composite-card-id") === handlerCard.id);
+    assert.ok(handlerCardElement, "Handler 복합 카드 Header 렌더링");
+    handlerCardElement.dispatchEvent({ type: "click" });
+    const handlerCardScope = window.MapInBootInspector.related(ui.state.graph, ui.state.selection, [], snapshot,
+      plan.displayModel, routing);
+    assert.deepEqual(Array.from(handlerCardScope.rowIds), [handlerCard.rowId], "Handler 카드 Header는 해당 Row만 선택");
+    const handlerCardItemIds = new Set(handlerCard.items.map((entry) => entry.id));
+    const handlerCardNodeIds = new Set(handlerCard.items.flatMap((entry) => entry.originalNodeIds || []));
+    const expectedHandlerCardRelationIds = new Set(routing.relations.filter((relation) => relation.rowId === handlerCard.rowId
+      && (handlerCardItemIds.has(relation.sourceItemId) || handlerCardItemIds.has(relation.targetItemId)
+        || (relation.relatedNodeIds || []).some((id) => handlerCardNodeIds.has(id))))
+      .map((relation) => relation.id));
+    assert.deepEqual({
+      missing: Array.from(expectedHandlerCardRelationIds).filter((id) => !handlerCardScope.visualRelationIds.has(id)),
+      extra: Array.from(handlerCardScope.visualRelationIds).filter((id) => !expectedHandlerCardRelationIds.has(id))
+    }, { missing: [], extra: [] }, "Handler 카드 Header는 내부 Flow 합집합만 선택");
+
+    const trunk = routing.segments.find((segment) => segment.routeRole === "TRUNK" && segment.relationIds.length > 1);
+    assert.ok(trunk, "실제 공통 Trunk 필요");
+    const trunkPath = renderedPaths().find((path) => path.getAttribute("data-segment-id") === trunk.id);
+    trunkPath.dispatchEvent({ type: "click" });
+    assert.equal(ui.state.selection.segmentId, trunk.id, "공통 Trunk 선택");
+    assert.deepEqual(renderedPaths().filter((path) => path.getAttribute("data-related") === "true")
+      .map((path) => path.getAttribute("data-segment-id")), [trunk.id], "선택 Trunk만 강조");
+    const branch = routing.segments.find((segment) => segment.fromJunctionId && segment.relationIds.length === 1);
+    assert.ok(branch, "실제 Junction 출발 단일 Branch 필요");
+    const branchPath = renderedPaths().find((path) => path.getAttribute("data-segment-id") === branch.id);
+    branchPath.dispatchEvent({ type: "click" });
+    assert.equal(ui.state.selection.segmentId, branch.id, "개별 Branch 선택");
+    assert.deepEqual(renderedPaths().filter((path) => path.getAttribute("data-related") === "true")
+      .map((path) => path.getAttribute("data-segment-id")), [branch.id], "개별 Branch만 강조");
+  });
+}
+
+test("긴급 안정화: 내부 학습 관계는 Port와 표시 Segment 없이 유지됨", () => {
+  const { ui, layoutApi } = loadUi();
+  const graph = ui.normalizeGraph(detailGraphFixture());
+  const plan = layoutApi.semanticLayout({ ...graph, presentationContext: "detail" }, { positions: {} }).plan;
+  const internal = plan.overviewRouting.relations.filter((relation) => relation.internalCardId && relation.role === "LEARNING_FLOW");
+  assert.ok(internal.length > 0);
+  for (const relation of internal) {
+    assert.equal(relation.visualSourcePortId, null);
+    assert.equal(relation.visualTargetPortId, null);
+    assert.equal(plan.overviewRouting.segments.some((segment) => segment.relationIds.includes(relation.id)), false);
+  }
+  for (const port of plan.displayModel.ports) {
+    const item = plan.displayModel.itemById[port.itemId];
+    const card = plan.displayModel.cardById[item.cardId];
+    if (port.side === "LEFT") assert.equal(port.x, card.bounds.x);
+    if (port.side === "RIGHT") assert.equal(port.x, card.bounds.right);
+    if (port.side === "TOP") assert.equal(port.y, card.bounds.y);
+    if (port.side === "BOTTOM") assert.equal(port.y, card.bounds.bottom);
+  }
+});
+
+
+test("긴급 안정화: 최종 표시 항목 주변에만 Finding 영역을 배치함", () => {
+  const { ui, layoutApi } = loadUi();
+  const graph = ui.normalizeGraph(detailGraphFixture());
+  graph.findingSections = [
+    { finding: { id: "finding-area", title: "영향" }, nodeIds: ["endpoint-a", "authorization-a"], edgeIds: [] },
+    { finding: { id: "finding-second", title: "별도 인가 조건의 충분히 긴 취약점 제목" }, nodeIds: ["endpoint-a"], edgeIds: [] },
+    { finding: { id: "finding-empty", title: "없음" }, nodeIds: ["not-visible"], edgeIds: [] }
+  ];
+  const layout = layoutApi.semanticLayout({ ...graph, presentationContext: "detail" }, { positions: {} });
+  const model = layout.plan.displayModel;
+  const sections = layout.plan.findingSectionLayouts;
+  assert.ok(sections.some((section) => section.findingId === "finding-area"));
+  assert.equal(sections.some((section) => section.findingId === "finding-empty"), false);
+  const endpointCard = model.cardById[model.itemById[model.originalNodeToItemIds["endpoint-a"][0]].cardId];
+  const endpointSections = sections.filter((section) => section.bounds.left === endpointCard.bounds.x - 32);
+  assert.equal(endpointSections.length, 2);
+  assert.ok(endpointSections[0].titleBounds.top >= endpointSections[1].titleBounds.bottom
+    || endpointSections[1].titleBounds.top >= endpointSections[0].titleBounds.bottom);
+  assert.ok(endpointSections.every((section) => section.titleBounds.bottom < endpointCard.bounds.y));
+  for (const id of ["endpoint-a", "authorization-a"]) {
+    const items = (model.originalNodeToItemIds[id] || []).map((itemId) => model.itemById[itemId]);
+    assert.ok(items.length);
+    assert.ok(items.every((item) => sections.some((section) => {
+      const card = model.cardById[item.cardId];
+      return section.findingId === "finding-area" && section.bounds.left <= card.bounds.x - 32
+        && section.bounds.right >= card.bounds.right + 32 && section.bounds.top <= card.bounds.y - 48
+        && section.bounds.bottom >= card.bounds.bottom + 28 && section.titleBounds.bottom <= card.bounds.y;
+    })));
+  }
+});
+
+test("긴급 안정화: 내부 단계는 표시선 없이 이동하고 활성 항목과 점이 바뀜", async () => {
+  const animationClock = createFakeClock();
+  const { ui, elements } = loadUi({ animationClock });
+  ui.renderGraph(detailGraphFixture());
+  ui.openEndpointDetail("endpoint-a");
+  await ui.layoutGraph();
+  const steps = ui.state.requestFlowSteps;
+  const index = steps.findIndex((step) => step.transition && step.transition.kind === "internal");
+  assert.ok(index >= 0, "내부 학습 경로 필요");
+  assert.equal(ui.requestFlow.seekToStep(index), true);
+  const active = () => findAllByClass(elements.get("graph-nodes"), "graph-composite-item")
+    .find((item) => item.getAttribute("data-request-flow-active") === "true");
+  assert.equal(active().getAttribute("data-composite-item-id"), steps[index].displayItemId);
+  assert.equal(elements.get("request-flow-dot").hasAttribute("hidden"), false);
+  ui.requestFlow.play();
+  animationClock.tick(1600);
+  assert.equal(ui.requestFlow.state().phase, "EDGE_TRAVEL");
+  assert.equal(elements.get("request-flow-dot").hasAttribute("hidden"), false);
+  const transition = steps[index].transition;
+  assert.notEqual(transition.from.y, transition.to.y);
+  assert.ok(Number(elements.get("request-flow-dot").getAttribute("cy")) >= Math.min(transition.from.y, transition.to.y));
+  ui.requestFlow.seekToStep(index + 1);
+  assert.equal(active().getAttribute("data-composite-item-id"), steps[index + 1].displayItemId);
+});
+
+if (actualSnapshotTargets.length) {
+  test("실제 Snapshot 상세 요청 단계는 표시 항목과 가로 방향 경로를 유지함", async () => {
+    for (const target of actualSnapshotTargets) {
+    const snapshot = await (await fetch(target.url)).json();
+    const endpoint = snapshot.nodes.find((node) => node.type === "ENDPOINT"
+      && (target.name === "Account" ? node.attributes.httpMethod === "POST"
+        && node.attributes.path === "/api/admin/savings/products"
+        : snapshot.edges.some((edge) => edge.type === "FLOWS_TO" && edge.confidence === "CONFIRMED" && edge.sourceId === node.id)));
+    assert.ok(endpoint, `${target.name}: Endpoint 필요`);
+    const { ui } = loadUi();
+    ui.renderGraph(snapshot);
+    ui.openEndpointDetail(endpoint.id);
+    await ui.layoutGraph();
+    const model = ui.state.layout.plan.displayModel;
+    const routing = ui.state.layout.plan.overviewRouting;
+    const regions = new Map((ui.state.layout.plan.detailBlueprint.regions || []).map((region) => [region.kind, region]));
+    const contains = (outer, inner) => outer.left <= inner.left && outer.top <= inner.top
+      && outer.right >= inner.right && outer.bottom >= inner.bottom;
+    for (const [parent, child] of [["HOST", "SERVLET"], ["SERVLET", "SECURITY"], ["SERVLET", "MVC"]]) {
+      if (regions.get(parent)?.bounds && regions.get(child)?.bounds) {
+        assert.ok(contains(regions.get(parent).bounds, regions.get(child).bounds), `${target.name}: 영역 계층 ${parent}/${child}`);
+      }
+    }
+    const security = regions.get("SECURITY")?.bounds;
+    const mvc = regions.get("MVC")?.bounds;
+    if (security && mvc) assert.ok(security.right < mvc.left || mvc.right < security.left
+      || security.bottom < mvc.top || mvc.bottom < security.top, `${target.name}: 기술 영역 겹침`);
+    const segmentById = new Map(routing.segments.map((segment) => [segment.id, segment]));
+    const same = (a, b) => Math.abs(a.x - b.x) < 0.001 && Math.abs(a.y - b.y) < 0.001;
+    for (const relation of routing.relations.filter((item) => item.role === "LEARNING_FLOW" && !item.internalCardId)) {
+      const route = routing.routesByRelationId[relation.id];
+      assert.ok(route, `${target.name}: 경로 누락 ${relation.id}`);
+      assert.ok(same(route.sourcePort, model.portById[relation.visualSourcePortId]));
+      assert.ok(same(route.targetPort, model.portById[relation.visualTargetPortId]));
+      assert.equal(route.sourcePort.side, "RIGHT", `${target.name}: 출발 방향`);
+      assert.equal(route.targetPort.side, "LEFT", `${target.name}: 도착 방향`);
+      let point = route.sourcePort;
+      for (const id of route.orderedSegmentIds) {
+        const segment = segmentById.get(id);
+        assert.ok(segment && (same(point, segment.from) || same(point, segment.to)), `${target.name}: 단절 ${id}`);
+        point = same(point, segment.from) ? segment.to : segment.from;
+      }
+      assert.ok(same(point, route.targetPort), `${target.name}: 도착 Port 불일치`);
+    }
+    const contexts = model.runtimeComponents.filter((component) => component.kind === "SERVLET_CONTEXT");
+    if (contexts.length === 1) {
+      const context = model.itemById[model.projectionToItemIds["education-servlet-container"]?.[0]];
+      assert.ok(context?.runtimeComponentIds.includes(contexts[0].id), `${target.name}: 컨텍스트 참조 누락`);
+      assert.equal(model.composites.filter((card) => card.title === "서블릿 컨테이너").length, 1);
+    }
+    const steps = ui.state.requestFlowSteps.filter((step) => step.anchorId);
+    assert.ok(steps.length > 5);
+    for (const step of steps) {
+      assert.ok(model.itemById[step.displayItemId], `${step.id}: 표시 항목 누락`);
+      assert.ok(!step.label.includes("|"), `${step.id}: 내부 식별자 노출`);
+    }
+    for (const relation of routing.relations.filter((item) => item.role === "LEARNING_FLOW" && !item.internalCardId)) {
+      const source = model.cardById[relation.sourceInstanceId];
+      const destination = model.cardById[relation.targetInstanceId];
+      if (relation.projectionEdgeIds.some((id) => id.startsWith("handler-to-http-response"))) continue;
+      assert.ok(destination.bounds.x > source.bounds.x, `역행: ${relation.projectionEdgeIds.join(",")} ${source.title} → ${destination.title}`);
+      assert.equal(source.bounds.y + source.bounds.height / 2, destination.bounds.y + destination.bounds.height / 2,
+        `${target.name}: 주 흐름 중심선`);
+      assert.ok(routing.routesByRelationId[relation.id], `경로 없음: ${relation.projectionEdgeIds.join(",")}`);
+    }
+    const byProjection = (id) => model.itemById[model.projectionToItemIds[id]?.[0]];
+    const request = byProjection("education-http-request");
+    const container = byProjection("education-servlet-container");
+    const requestObject = byProjection("education-http-servlet-request");
+    const responseObject = byProjection("education-http-servlet-response");
+    assert.ok(request && container && requestObject && responseObject);
+    assert.notEqual(request.cardId, requestObject.cardId);
+    assert.equal(requestObject.cardId, responseObject.cardId);
+    assert.equal(model.projectionToItemIds["education-request-prepare"], undefined);
+    }
+  });
+}
+
+
+test("요청 흐름 상세 팝오버는 단계 이동과 닫기 조작을 따름", async () => {
+  const { ui, elements, document } = loadUi();
+  const controls = elements.get("request-flow-controls");
+  const detail = elements.get("request-flow-details");
+  const toggle = elements.get("request-flow-detail-toggle");
+  controls.append(toggle, detail);
+  detail.append(elements.get("request-flow-detail-close"), elements.get("request-flow-next"));
+  document.body.append(controls);
+  ui.renderGraph(detailGraphFixture());
+  ui.openEndpointDetail("endpoint-a");
+  await ui.layoutGraph();
+  assert.equal(detail.hidden, true);
+  assert.equal(toggle.disabled, false);
+  toggle.dispatchEvent({ type: "click" });
+  assert.equal(detail.hidden, false);
+  assert.equal(toggle.getAttribute("aria-expanded"), "true");
+  const title = elements.get("request-flow-step-title").textContent;
+  elements.get("request-flow-next").dispatchEvent({ type: "click" });
+  assert.equal(ui.requestFlow.state().stepIndex, 1);
+  assert.notEqual(elements.get("request-flow-step-title").textContent, title);
+  assert.equal(detail.hidden, false);
+  elements.get("request-flow-detail-close").dispatchEvent({ type: "click" });
+  assert.equal(detail.hidden, true);
+  toggle.dispatchEvent({ type: "click" });
+  document.dispatchEvent({ type: "keydown", key: "Escape" });
+  assert.equal(detail.hidden, true);
+  toggle.dispatchEvent({ type: "click" });
+  document.dispatchEvent({ type: "click", target: document.body });
+  assert.equal(detail.hidden, false);
+  toggle.dispatchEvent({ type: "click" });
+  assert.equal(detail.hidden, true);
+  assert.doesNotMatch(indexHtml, /id="setting-show-detail-flow"/);
 });

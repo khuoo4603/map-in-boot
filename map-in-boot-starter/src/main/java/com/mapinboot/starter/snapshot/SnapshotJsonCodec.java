@@ -42,16 +42,18 @@ public class SnapshotJsonCodec {
             if (payload == null || !payload.isObject()) {
                 throw new MapInBootException(ErrorCode.INVALID_SNAPSHOT, "Snapshot JSON 구조가 올바르지 않습니다.");
             }
-            // 표시 코드 필드가 없는 schemaVersion 1 Snapshot의 읽기 호환 처리
-            boolean hasEvidenceDisplayCodes = payload.has("evidenceDisplayCodes");
-            if (hasEvidenceDisplayCodes && !payload.get("evidenceDisplayCodes").isObject()) {
+            if (!payload.has("schemaVersion") || !"2".equals(payload.get("schemaVersion").asString())) {
+                throw new MapInBootException(ErrorCode.UNSUPPORTED_SCHEMA, "지원하지 않는 Snapshot schemaVersion입니다.");
+            }
+            if (!payload.has("evidenceDisplayCodes") || !payload.get("evidenceDisplayCodes").isObject()) {
                 throw new MapInBootException(ErrorCode.INVALID_SNAPSHOT, "Snapshot Evidence 표시 코드가 올바르지 않습니다.");
             }
             Snapshot snapshot = mapper.treeToValue(payload, Snapshot.class);
-            SnapshotAssembler.validateSnapshot(snapshot, !hasEvidenceDisplayCodes);
+            SnapshotAssembler.validateSnapshot(snapshot);
             return snapshot;
         } catch (MapInBootException exception) {
-            if (exception.getErrorCode() == ErrorCode.INVALID_SNAPSHOT) {
+            if (exception.getErrorCode() == ErrorCode.INVALID_SNAPSHOT
+                    || exception.getErrorCode() == ErrorCode.UNSUPPORTED_SCHEMA) {
                 throw exception;
             }
             throw new MapInBootException(ErrorCode.INVALID_SNAPSHOT, "Snapshot 구조 검증에 실패했습니다.", exception);

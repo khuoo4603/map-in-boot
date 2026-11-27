@@ -74,7 +74,6 @@
         </fieldset>
         <fieldset class="settings-group">
           <legend>학습 흐름</legend>
-          <label class="settings-option"><span>상세 처리 과정 보기</span><span class="settings-switch"><input id="setting-show-detail-flow" type="checkbox" role="switch" aria-checked="false"><span class="settings-switch-track" aria-hidden="true"></span></span></label>
           <label class="settings-choice"><span>노드에서 머무는 시간</span><select id="setting-flow-node-duration" aria-label="노드에서 머무는 시간">
             <option value="500">0.5초</option>
             <option value="1000">1초</option>
@@ -208,34 +207,25 @@
                 <h2 class="request-flow-title">요청 처리 흐름</h2>
                 <p class="request-flow-status" id="request-flow-status" data-state="idle" role="status" aria-live="polite">시작 전</p>
               </div>
-              <section class="request-flow-details" id="request-flow-details" aria-label="현재 처리 단계" hidden>
-                <p class="request-flow-step-count" id="request-flow-step-count" role="status" aria-live="polite">0 / 0</p>
-                <p class="request-flow-step-kind" id="request-flow-step-kind">단계 없음</p>
-                <h3 class="request-flow-step-title" id="request-flow-step-title">표시할 단계가 없습니다.</h3>
+              <div class="request-flow-buttons">
+                <button id="request-flow-start" type="button" aria-label="시작" title="시작"><svg class="toolbar-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M8 5l11 7-11 7z"></path></svg></button>
+                <button id="request-flow-pause" type="button" aria-label="일시정지" title="일시정지"><svg class="toolbar-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M9 5v14M15 5v14"></path></svg></button>
+                <button id="request-flow-reset" type="button" aria-label="처음으로" title="처음으로"><svg class="toolbar-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M4 11a8 8 0 1 1 2.2 5.5M4 5v6h6"></path></svg></button>
+                <span class="request-flow-divider" aria-hidden="true"></span>
+                <button id="request-flow-detail-toggle" type="button" aria-label="상세" title="상세" aria-expanded="false" aria-controls="request-flow-details" disabled><svg class="toolbar-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="9"></circle><path d="M12 11v5M12 8h.01"></path></svg></button>
+              </div>
+              <section class="request-flow-details" id="request-flow-details" role="dialog" aria-labelledby="request-flow-step-title" hidden>
+                <header class="request-flow-detail-header">
+                  <h3 class="request-flow-step-title" id="request-flow-step-title">표시할 단계가 없습니다.</h3>
+                  <button class="request-flow-detail-close" id="request-flow-detail-close" type="button" aria-label="상세 닫기">×</button>
+                </header>
                 <p class="request-flow-step-description" id="request-flow-step-description"></p>
-                <div class="request-flow-filter-education" id="request-flow-filter-education" aria-label="표준 필터 처리 원리" hidden>
-                  <p class="request-flow-filter-row"><strong>현재 경로 상태</strong><span id="request-flow-filter-status"></span></p>
-                  <p class="request-flow-filter-name" id="request-flow-filter-name"></p>
-                  <p class="request-flow-filter-fqcn" id="request-flow-filter-fqcn"></p>
-                  <p class="request-flow-filter-description" id="request-flow-filter-description"></p>
-                  <p class="request-flow-filter-row"><strong>역할</strong><span id="request-flow-filter-role"></span></p>
-                  <p class="request-flow-filter-row"><strong>입력</strong><span id="request-flow-filter-input"></span></p>
-                  <p class="request-flow-filter-row"><strong>확인 조건</strong><span id="request-flow-filter-condition"></span></p>
-                  <p class="request-flow-filter-row"><strong>대표 처리</strong><span id="request-flow-filter-processing"></span></p>
-                  <p class="request-flow-filter-row"><strong>가능한 결과</strong><span id="request-flow-filter-outcomes"></span></p>
-                  <p class="request-flow-filter-row"><strong>주의사항</strong><span id="request-flow-filter-cautions"></span></p>
-                  <p class="request-flow-filter-row"><strong>참고 자료</strong><span id="request-flow-filter-source"></span></p>
-                </div>
-                <div class="request-flow-navigation" id="request-flow-navigation" hidden>
-                  <button id="request-flow-previous" type="button" disabled>이전 단계</button>
-                  <button id="request-flow-next" type="button" disabled>다음 단계</button>
+                <div class="request-flow-navigation" id="request-flow-navigation">
+                  <button id="request-flow-previous" type="button" disabled>이전</button>
+                  <button id="request-flow-next" type="button" disabled>다음</button>
+                  <span class="request-flow-popover-count" id="request-flow-popover-count" aria-live="polite">0 / 0</span>
                 </div>
               </section>
-              <div class="request-flow-buttons">
-                <button id="request-flow-start" type="button">시작</button>
-                <button id="request-flow-pause" type="button">일시정지</button>
-                <button id="request-flow-reset" type="button">처음부터</button>
-              </div>
             </div>
             <div class="graph-minimap" id="graph-minimap" hidden>
               <svg id="graph-minimap-svg" viewBox="0 0 640 360" role="img" aria-label="Graph 미니맵">

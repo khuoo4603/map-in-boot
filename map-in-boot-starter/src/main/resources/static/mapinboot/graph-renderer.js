@@ -170,16 +170,44 @@
     if (registrationKind === "SECURITY") return nodeStyles.FILTER;
     return "#94a3b8";
   }
+  function compositeStyleFor(card) {
+    const styles = {
+      SERVLET_FILTERS: { stroke: "#65b98d", body: "#14271e", header: "#254636", title: "#a1d7b6" },
+      APPLICATION_CONTEXT: { stroke: "#65b98d", body: "#14271e", header: "#254636", title: "#a1d7b6" },
+      SERVLET_ENTRY: { stroke: "#65b98d", body: "#14271e", header: "#254636", title: "#a1d7b6" },
+      SECURITY_CHAIN: { stroke: "#d6a35a", body: "#292319", header: "#473820", title: "#e5bd73" },
+      SECURITY_UNRESOLVED: { stroke: "#d6a35a", body: "#292319", header: "#473820", title: "#e5bd73" },
+      AUTHENTICATION: { stroke: "#38bdf8", body: "#172733", header: "#25465a", title: "#9bdcff" },
+      AUTHORIZATION: { stroke: "#cf788a", body: "#302125", header: "#482c32", title: "#efa4b3" },
+      SECURITY_DATA: { stroke: "#4ab9ad", body: "#142e29", header: "#20443d", title: "#72d2bd" },
+      BUSINESS_SECURITY_STATE: { stroke: "#a3e635", body: "#202919", header: "#39452a", title: "#c6ee75" },
+      API_MAPPING: { stroke: "#73adde", body: "#192a36", header: "#284357", title: "#a8d5fa" },
+      CONTROLLER_HANDLER: { stroke: "#b4a0e5", body: "#292536", header: "#3e344f", title: "#d4c4f8" },
+      DETAIL_LEARNING: { stroke: "#6aa580", body: "#15221a", header: "#253a2c", title: "#b5d8c0" },
+      RUNTIME_HOST: { stroke: "#86b2c4", body: "#18242a", header: "#2b414a", title: "#b2d0da" },
+      RUNTIME_SERVLET: { stroke: "#65b98d", body: "#14271e", header: "#254636", title: "#a1d7b6" },
+      RUNTIME_SECURITY: { stroke: "#d6a35a", body: "#292319", header: "#473820", title: "#e5bd73" },
+      RUNTIME_MVC: { stroke: "#79a8ca", body: "#182531", header: "#29445a", title: "#b3d7f2" }
+    };
+    if (styles[card.kind]) return styles[card.kind];
+    if (card.areaId === "security") return styles.SECURITY_CHAIN;
+    if (card.areaId === "mvc") return styles.API_MAPPING;
+    if (card.areaId === "servlet") return styles.SERVLET_FILTERS;
+    if (card.areaId === "host") return styles.RUNTIME_HOST;
+    return { stroke: "#94a3b8", body: "#17211b", header: "#26352c", title: "#d6ded8" };
+  }
   const edgeStyles = {
     FLOWS_TO: { color: "#7dd3fc", dash: "none" },
-    MATCHED_BY: { color: "#c4b5fd", dash: "6 4" },
-    FILTERED_BY: { color: "#fbbf24", dash: "2 4" },
-    SECURED_BY: { color: "#fb7185", dash: "8 3 2 3" },
-    READS_SECURITY_DATA: { color: "#60a5fa", dash: "3 3" },
-    WRITES_SECURITY_DATA: { color: "#a78bfa", dash: "1 3" },
-    CONVERTS_TO_AUTHORITY: { color: "#f0abfc", dash: "10 2" },
-    USES_FOR_AUTHORIZATION: { color: "#f59e0b", dash: "5 2" },
-    SECURITY_STATE: { color: "#86efac", dash: "12 3" }
+    MATCHED_BY: { color: "#c4b5fd", dash: "none" },
+    FILTERED_BY: { color: "#fbbf24", dash: "none" },
+    SECURED_BY: { color: "#fb7185", dash: "none" },
+    READS_SECURITY_DATA: { color: "#60a5fa", dash: "none" },
+    WRITES_SECURITY_DATA: { color: "#a78bfa", dash: "none" },
+    CONVERTS_TO_AUTHORITY: { color: "#f0abfc", dash: "none" },
+    USES_FOR_AUTHORIZATION: { color: "#f59e0b", dash: "none" },
+    SECURITY_STATE: { color: "#86efac", dash: "none" },
+    API_MAPPING: { color: "#9dbdac", dash: "none" },
+    SECURITY_CHECK_REFERENCE: { color: "#8ab7a0", dash: "none" }
   };
   const detailKeys = {
     APPLICATION: ["applicationVersion", "applicationClass"],
@@ -701,6 +729,19 @@
     svg.appendChild(definitions);
   }
 
+  function ensureCompositeTextClips(svg) {
+    if (!svg) return null;
+    let definitions = Array.from(svg.children || []).find((child) => child.getAttribute("data-composite-text-clips") === "true");
+    if (!definitions) {
+      definitions = createElement("defs");
+      definitions.setAttribute("data-composite-text-clips", "true");
+      svg.appendChild(definitions);
+    } else {
+      definitions.replaceChildren();
+    }
+    return definitions;
+  }
+
   function controllerGroupDisplay(group, displayIds) {
     const methodCount = Array.isArray(group.handlerMethods) ? group.handlerMethods.length : 0;
     const endpointCount = Array.isArray(group.endpointIds) ? group.endpointIds.length : 0;
@@ -878,10 +919,12 @@
     const values = Object.values(positions);
     const width = values.length === 0
       ? 640
-      : Math.max(640, ...values.map((position) => position.x + NODE_WIDTH + NODE_PADDING));
+      : Math.max(640, ...values.map((position) => position.x
+        + (Number.isFinite(position.width) ? position.width : NODE_WIDTH) + NODE_PADDING));
     const height = values.length === 0
       ? 360
-      : Math.max(360, ...values.map((position) => position.y + NODE_HEIGHT + NODE_PADDING));
+      : Math.max(360, ...values.map((position) => position.y
+        + (Number.isFinite(position.height) ? position.height : NODE_HEIGHT) + NODE_PADDING));
     return {
       width: bounds && Number.isFinite(bounds.width) ? Math.max(width, bounds.width) : width,
       height: bounds && Number.isFinite(bounds.height) ? Math.max(height, bounds.height) : height
@@ -1048,7 +1091,76 @@
     if (!layer) return { areas: [], chainAreas: [] };
     layer.replaceChildren();
     const areas = [];
+    const runtimeBlueprint = plan && plan.detailBlueprint;
+    if (runtimeBlueprint && Array.isArray(runtimeBlueprint.regions)) {
+      runtimeBlueprint.regions.forEach((definition) => {
+        const bounds = definition.bounds;
+        if (!bounds) return;
+        const group = createElement("g");
+        group.setAttribute("class", "graph-area runtime-blueprint-region");
+        group.setAttribute("data-area-id", definition.id);
+        group.setAttribute("data-area-kind", definition.kind || "runtime");
+        group.setAttribute("data-parent-area-id", definition.parentId || "");
+        group.setAttribute("data-coverage", definition.coverage || "UNKNOWN");
+        const box = createElement("rect");
+        box.setAttribute("class", "graph-area-box runtime-blueprint-region-box");
+        box.setAttribute("x", String(bounds.x));
+        box.setAttribute("y", String(bounds.y));
+        box.setAttribute("width", String(bounds.width));
+        box.setAttribute("height", String(bounds.height));
+        group.appendChild(box);
+        addText(group, "graph-area-label runtime-blueprint-region-label", bounds.x + 12, bounds.y + 21, definition.title);
+        layer.appendChild(group);
+        areas.push({ id: definition.id, label: definition.title, nodeIds: [], instanceIds: [], bounds: [bounds] });
+      });
+      if ((!runtimeBlueprint.supported || !runtimeBlueprint.cards.length) && runtimeBlueprint.statusText) {
+        const status = createElement("g");
+        status.setAttribute("class", "runtime-blueprint-status");
+        status.setAttribute("data-runtime-status", runtimeBlueprint.supported ? "UNKNOWN" : "UNSUPPORTED");
+        addText(status, "runtime-blueprint-status-text", runtimeBlueprint.bounds.left + 12,
+          runtimeBlueprint.bounds.top + 26, runtimeBlueprint.statusText);
+        layer.appendChild(status);
+      }
+    }
     const sourceNodes = new Map(graph.nodes.map((node) => [node.id, node]));
+    const composites = plan && plan.displayModel && Array.isArray(plan.displayModel.composites)
+      ? plan.displayModel.composites : null;
+    if (composites) {
+      const areaDefinitions = [
+        { id: "servlet-filter", label: "Servlet 필터" },
+        { id: "spring-security", label: "Spring Security" },
+        { id: "security-checks", label: "보안 점검" },
+        { id: "api-mapping", label: "API 매핑" },
+        { id: "controller-handler", label: "Controller / Handler" }
+      ];
+      areaDefinitions.forEach((definition) => {
+        const members = composites.filter((card) => card.areaId === definition.id && card.bounds);
+        if (!members.length) return;
+        const bounds = {
+          left: Math.min(...members.map((card) => card.bounds.x)) - 18,
+          top: Math.min(...members.map((card) => card.bounds.y)) - 30,
+          right: Math.max(...members.map((card) => card.bounds.x + card.bounds.width)) + 18,
+          bottom: Math.max(...members.map((card) => card.bounds.y + card.bounds.height)) + 18
+        };
+        const group = createElement("g");
+        group.setAttribute("class", "graph-area");
+        group.setAttribute("data-area-id", definition.id);
+        group.setAttribute("data-area-kind", "technical");
+        const box = createElement("rect");
+        box.setAttribute("class", "graph-area-box");
+        box.setAttribute("x", String(bounds.left));
+        box.setAttribute("y", String(bounds.top));
+        box.setAttribute("width", String(bounds.right - bounds.left));
+        box.setAttribute("height", String(bounds.bottom - bounds.top));
+        group.appendChild(box);
+        addText(group, "graph-area-label", bounds.left + 12, bounds.top + 18, definition.label);
+        layer.appendChild(group);
+        areas.push({ id: definition.id, label: definition.label,
+          nodeIds: Array.from(new Set(members.flatMap((card) => card.originalNodeIds || []))),
+          instanceIds: members.map((card) => card.id), bounds: [bounds] });
+      });
+      return { areas, chainAreas: [] };
+    }
     const displayInstances = plan && plan.displayModel && Array.isArray(plan.displayModel.instances)
       ? plan.displayModel.instances
       : graph.nodes.map((node) => ({ id: node.id, originalNodeIds: [node.id], displayType: node.type, position: positions[node.id] }));
@@ -1071,8 +1183,8 @@
       const bounds = {
         left: Math.min(...members.map((item) => item.position.x)) - 22,
         top: Math.min(...members.map((item) => item.position.y)) - 30,
-        right: Math.max(...members.map((item) => item.position.x + NODE_WIDTH)) + 22,
-        bottom: Math.max(...members.map((item) => item.position.y + NODE_HEIGHT)) + 22
+        right: Math.max(...members.map((item) => item.position.x + (item.position.width || NODE_WIDTH))) + 22,
+        bottom: Math.max(...members.map((item) => item.position.y + (item.position.height || NODE_HEIGHT))) + 22
       };
       const group = createElement("g");
       group.setAttribute("class", "graph-area");
@@ -1101,13 +1213,23 @@
     const nodeIds = new Set();
     if (!focus) return nodeIds;
     if (focus.kind === "node") nodeIds.add(focus.id);
-    if (focus.kind === "controller-group") {
+    if (focus.kind === "runtime-component") {
+      const component = (rendered.nodeElements || []).find((element) =>
+        element.getAttribute("data-runtime-component-id") === focus.id
+          || (element.getAttribute("data-runtime-component-ids") || "").split(",").includes(focus.id));
+      (component && component.getAttribute("data-node-ids") || "").split(",").filter(Boolean)
+        .forEach((id) => nodeIds.add(id));
       nodeIds.add(focus.id);
-      const group = (rendered.nodeElements || []).find((element) => element.getAttribute("data-controller-group-id") === focus.id);
-      ["data-handler-ids", "data-endpoint-ids", "data-node-ids"].forEach((attribute) => {
-        (group && group.getAttribute(attribute) || "").split(",").filter(Boolean).forEach((id) => nodeIds.add(id));
-      });
     }
+    if (focus.kind === "runtime-relationship") {
+      const relation = (rendered.runtimeRelationshipElements || []).find((element) =>
+        element.getAttribute("data-runtime-relationship-id") === focus.id);
+      (relation && relation.getAttribute("data-node-ids") || "").split(",").filter(Boolean)
+        .forEach((id) => nodeIds.add(id));
+      (relation && relation.getAttribute("data-runtime-component-ids") || "").split(",").filter(Boolean)
+        .forEach((id) => nodeIds.add(id));
+    }
+    if (focus.kind === "controller-group") return nodeIds;
     return nodeIds;
   }
 
@@ -1128,9 +1250,19 @@
     if (!rendered || !graph) return;
     const relatedNodeIds = new Set();
     const relatedEdgeIds = new Set();
+    const relatedDisplayItemIds = new Set();
+    const relatedCardIds = new Set();
+    const relatedVisualRelationIds = new Set();
+    const relatedSegmentIds = new Set();
+    const relatedJunctionIds = new Set();
     [related, retainedRelated].filter(Boolean).forEach((item) => {
       if (item.nodeIds instanceof Set) item.nodeIds.forEach((id) => relatedNodeIds.add(id));
       if (item.edgeIds instanceof Set) item.edgeIds.forEach((id) => relatedEdgeIds.add(id));
+      if (item.displayItemIds instanceof Set) item.displayItemIds.forEach((id) => relatedDisplayItemIds.add(id));
+      if (item.cardIds instanceof Set) item.cardIds.forEach((id) => relatedCardIds.add(id));
+      if (item.visualRelationIds instanceof Set) item.visualRelationIds.forEach((id) => relatedVisualRelationIds.add(id));
+      if (item.segmentIds instanceof Set) item.segmentIds.forEach((id) => relatedSegmentIds.add(id));
+      if (item.junctionIds instanceof Set) item.junctionIds.forEach((id) => relatedJunctionIds.add(id));
     });
     const focusNodeIds = graphFocusNodeIds(focus, rendered);
     const matchedChains = new Set((graph.edges || []).filter((edge) => edge.type === "MATCHED_BY"
@@ -1156,8 +1288,13 @@
         primaryNodeIds.add(selectedEdge.targetId);
       }
     }
-    const nodeState = (ids) => {
+    const nodeState = (element, ids) => {
       if (!focus) return "base";
+      if (element.getAttribute("data-selected") === "true") return "primary";
+      const itemId = element.getAttribute("data-composite-item-id");
+      const cardId = element.getAttribute("data-composite-card-id");
+      if (itemId && relatedDisplayItemIds.has(itemId)) return "secondary";
+      if (cardId && relatedCardIds.has(cardId)) return "primary";
       if (ids.some((id) => primaryNodeIds.has(id))) return "primary";
       if (ids.some((id) => relatedNodeIds.has(id))) return "secondary";
       return "unrelated";
@@ -1166,19 +1303,28 @@
       const ids = [element.getAttribute("data-node-id"), element.getAttribute("data-controller-group-id"),
         ...(element.getAttribute("data-handler-ids") || "").split(","),
         ...(element.getAttribute("data-endpoint-ids") || "").split(","),
-        ...(element.getAttribute("data-node-ids") || "").split(",")].filter(Boolean);
-      element.setAttribute("data-emphasis", nodeState(ids));
+        ...(element.getAttribute("data-node-ids") || "").split(","),
+        ...(element.getAttribute("data-runtime-component-ids") || "").split(",")].filter(Boolean);
+      element.setAttribute("data-emphasis", nodeState(element, ids));
     });
     [...(rendered.edgeElements || []), ...(rendered.edgeTrunkElements || [])].forEach((element) => {
       const edgeIds = (element.getAttribute("data-edge-ids") || element.getAttribute("data-edge-id") || "").split(",").filter(Boolean);
       const nodeIds = (element.getAttribute("data-related-node-ids") || "").split(",").filter(Boolean);
       const flowGroups = (element.getAttribute("data-flow-groups") || "").split(",").filter(Boolean);
+      const segmentId = element.getAttribute("data-segment-id");
+      const segmentIds = (element.getAttribute("data-segment-ids") || segmentId || "").split(",").filter(Boolean);
+      const relationIds = (element.getAttribute("data-relation-ids") || "").split(",").filter(Boolean);
+      const visualRelated = focus && relatedVisualRelationIds.size
+        ? relationIds.some((id) => relatedVisualRelationIds.has(id)) : false;
+      const segmentRelated = focus && relatedSegmentIds.size ? segmentIds.some((id) => relatedSegmentIds.has(id)) : visualRelated;
       const emphasis = !focus ? "base"
+        : segmentId && segmentIds.includes(focus.segmentId) ? "primary"
+          : segmentId ? segmentRelated ? "secondary" : "unrelated"
         : edgeIds.some((id) => primaryEdgeIds.has(id)) || nodeIds.some((id) => focusNodeIds.has(id))
           || flowGroups.some((id) => focusedChainIds.has(id)) ? "primary"
           : edgeIds.some((id) => relatedEdgeIds.has(id)) ? "secondary" : "unrelated";
       element.setAttribute("data-emphasis", emphasis);
-      if (element.getAttribute("data-segment-id")) element.setAttribute("data-related", String(emphasis !== "unrelated"));
+      if (segmentId) element.setAttribute("data-related", String(emphasis !== "unrelated"));
       if (element.getAttribute("data-reference-only") === "true") {
         element.setAttribute("data-reference-visible", String(Boolean(focus) && emphasis !== "unrelated"));
       }
@@ -1209,6 +1355,11 @@
     (rendered.chainAreas || []).forEach((area) => {
       if (!area.element) return;
       area.element.setAttribute("data-related", String((area.nodeIds || []).some((id) => relatedNodeIds.has(id))));
+    });
+    (rendered.junctionElements || []).forEach((element) => {
+      const id = element.getAttribute("data-junction-id");
+      element.setAttribute("data-related", String(!focus || relatedJunctionIds.has(id)));
+      element.setAttribute("data-emphasis", !focus ? "base" : relatedJunctionIds.has(id) ? "secondary" : "unrelated");
     });
   }
 
@@ -1422,13 +1573,18 @@
     };
     const entries = (Array.isArray(sections) ? sections : []).slice().sort((left, right) =>
       stringValue(left.finding && left.finding.id, "").localeCompare(stringValue(right.finding && right.finding.id, "")));
-    entries.forEach((section) => {
+    const composite = Boolean(plan && plan.displayModel && plan.displayModel.composites
+      && plan.displayModel.composites.length);
+    const displayEntries = composite ? entries.flatMap((section) =>
+      (plan.findingSectionLayouts || []).filter((item) => item.findingId === section.finding.id)
+        .map((planned) => ({ section, planned }))) : entries.map((section) => ({ section, planned: null }));
+    displayEntries.forEach(({ section, planned: compositePlan }) => {
       const nodes = (section.nodeIds || []).map((id) => nodeById.get(id)).filter(Boolean);
       const located = nodes.map((node) => positions[node.id]).filter(Boolean);
-      if (located.length === 0) return;
-      const planned = plan && Array.isArray(plan.findingSectionLayouts)
+      if (!composite && located.length === 0) return;
+      const planned = compositePlan || (plan && Array.isArray(plan.findingSectionLayouts)
         ? plan.findingSectionLayouts.find((item) => item.findingId === section.finding.id)
-        : null;
+        : null);
       const relatedIds = new Set(nodes.map((node) => node.id));
       const minY = Math.min(...located.map((point) => point.y));
       let bounds = planned && planned.bounds;
@@ -1533,11 +1689,142 @@
     svg.setAttribute("data-selection-active", String(Boolean(options.selection)));
   }
 
+  function renderRuntimeBlueprintEdges(layer, blueprint, options, graph, elements) {
+    if (!layer || !blueprint || !Array.isArray(blueprint.relations)) return;
+    const cards = new Map((blueprint.cards || []).map((card) => [card.runtimeComponentIds[0], card]));
+    blueprint.relations.forEach((relation) => {
+      const source = cards.get(relation.sourceId);
+      const target = cards.get(relation.targetId);
+      if (!source || !target) return;
+      const path = createElement("path");
+      path.setAttribute("class", "runtime-blueprint-edge");
+      path.setAttribute("d", relation.d);
+      path.setAttribute("data-runtime-relationship-id", relation.id);
+      path.setAttribute("data-runtime-relationship-kind", relation.kind);
+      path.setAttribute("data-runtime-area", source.regionId || "");
+      path.setAttribute("data-confidence", relation.confidence || "UNKNOWN");
+      path.setAttribute("data-runtime-component-ids", `${relation.sourceId},${relation.targetId}`);
+      path.setAttribute("data-node-ids", Array.from(new Set([...(source.originalNodeIds || []), ...(target.originalNodeIds || [])])).join(","));
+      path.setAttribute("data-evidence-ids", (relation.evidenceRefs || []).join(","));
+      path.setAttribute("data-selected", String(Boolean(options.selection && options.selection.kind === "runtime-relationship"
+        && options.selection.id === relation.id)));
+      path.setAttribute("data-related", String(!options.selection
+        || (source.runtimeComponentIds || []).includes(options.selection.id)
+        || (target.runtimeComponentIds || []).includes(options.selection.id)));
+      path.setAttribute("tabindex", "0");
+      path.setAttribute("role", "button");
+      path.setAttribute("aria-label", `Runtime 관계 ${relation.kind}`);
+      const select = (event) => {
+        if (event && event.stopPropagation) event.stopPropagation();
+        if (options.onRuntimeRelationshipClick) options.onRuntimeRelationshipClick(relation.id, path);
+      };
+      path.addEventListener("click", select);
+      path.addEventListener("keydown", (event) => {
+        if (!event || (event.key !== "Enter" && event.key !== " ")) return;
+        if (event.preventDefault) event.preventDefault();
+        select(event);
+      });
+      if (options.onRuntimeRelationshipFocus) path.addEventListener("focus", () => options.onRuntimeRelationshipFocus(relation.id, path));
+      if (options.onRuntimeRelationshipBlur) path.addEventListener("blur", () => options.onRuntimeRelationshipBlur(relation.id, path));
+      if (options.onRuntimeRelationshipHover) path.addEventListener("mouseenter", () => options.onRuntimeRelationshipHover(relation.id, path));
+      if (options.onRuntimeRelationshipLeave) path.addEventListener("mouseleave", () => options.onRuntimeRelationshipLeave(relation.id, path));
+      layer.appendChild(path);
+      elements.push(path);
+    });
+  }
+
+  function renderRuntimeBlueprintCards(layer, blueprint, options, findings, relatedNodeIds) {
+    if (!layer || !blueprint || !Array.isArray(blueprint.cards)) return [];
+    const nodes = [];
+    blueprint.cards.forEach((definition) => {
+      const bounds = definition.bounds;
+      if (!bounds) return;
+      const component = definition.component || {};
+      const graphNodeIds = definition.originalNodeIds || [];
+      const componentId = (definition.runtimeComponentIds || [])[0];
+      const hasFinding = findings.some((entry) => (entry.nodeIds || []).some((id) => graphNodeIds.includes(id))
+        || (entry.edgeIds || []).some((id) => (definition.originalEdgeIds || []).includes(id)));
+      const card = createElement("g");
+      card.setAttribute("class", "runtime-blueprint-card");
+      card.setAttribute("transform", `translate(${bounds.x} ${bounds.y})`);
+      card.setAttribute("data-runtime-component-id", componentId || "");
+      card.setAttribute("data-runtime-kind", definition.kind || "UNKNOWN");
+      card.setAttribute("data-runtime-area", definition.regionId || "");
+      card.setAttribute("data-node-ids", graphNodeIds.join(","));
+      card.setAttribute("data-evidence-ids", (definition.evidenceRefs || []).join(","));
+      card.setAttribute("data-has-finding", String(hasFinding));
+      card.setAttribute("data-selected", String(Boolean(options.selection && options.selection.kind === "runtime-component"
+        && options.selection.id === componentId)));
+      card.setAttribute("data-related", String(!options.selection || graphNodeIds.some((id) => relatedNodeIds.has(id))
+        || (options.selection.kind === "runtime-component" && options.selection.id === componentId)));
+      card.setAttribute("tabindex", "0");
+      card.setAttribute("role", "button");
+      card.setAttribute("aria-label", `${definition.title} · ${definition.kind}`);
+      const select = (event) => {
+        if (event && event.stopPropagation) event.stopPropagation();
+        if (options.onRuntimeComponentClick) options.onRuntimeComponentClick(componentId, card);
+      };
+      card.addEventListener("click", select);
+      card.addEventListener("keydown", (event) => {
+        if (!event || (event.key !== "Enter" && event.key !== " ")) return;
+        if (event.preventDefault) event.preventDefault();
+        select(event);
+      });
+      if (options.onRuntimeComponentFocus) card.addEventListener("focus", () => options.onRuntimeComponentFocus(componentId, card));
+      if (options.onRuntimeComponentBlur) card.addEventListener("blur", () => options.onRuntimeComponentBlur(componentId, card));
+      if (options.onRuntimeComponentHover) card.addEventListener("mouseenter", () => options.onRuntimeComponentHover(componentId, card));
+      if (options.onRuntimeComponentLeave) card.addEventListener("mouseleave", () => options.onRuntimeComponentLeave(componentId, card));
+
+      const surface = createElement("rect");
+      surface.setAttribute("class", "runtime-blueprint-card-surface");
+      surface.setAttribute("width", String(bounds.width));
+      surface.setAttribute("height", String(bounds.height));
+      surface.setAttribute("rx", "5");
+      card.appendChild(surface);
+      addNodeText(card, "runtime-blueprint-card-kind", 10, 15, definition.kind || "Runtime", bounds.width - 20, 28);
+      addNodeText(card, "runtime-blueprint-card-title", 10, 34, definition.title || "구성 객체", bounds.width - 20, 30);
+      addNodeText(card, "runtime-blueprint-card-detail", 10, 52, definition.detail || "", bounds.width - 20, 32);
+      const input = createElement("circle");
+      input.setAttribute("class", "runtime-blueprint-port runtime-blueprint-port-in");
+      input.setAttribute("cx", "0");
+      input.setAttribute("cy", String(bounds.height / 2));
+      input.setAttribute("r", "3");
+      card.appendChild(input);
+      const output = createElement("circle");
+      output.setAttribute("class", "runtime-blueprint-port runtime-blueprint-port-out");
+      output.setAttribute("cx", String(bounds.width));
+      output.setAttribute("cy", String(bounds.height / 2));
+      output.setAttribute("r", "3");
+      card.appendChild(output);
+      layer.appendChild(card);
+      nodes.push(card);
+    });
+    return nodes;
+  }
+
   function render(graph, layers, options = {}) {
     const findings = Array.isArray(options.findings) ? options.findings : [];
     const displayIds = options.displayIds || createDisplayIds(graph);
     if (graph.nodes.length > 0 && layers.svg) layers.svg.removeAttribute("hidden");
     ensureNodeTextClips(layers.svg);
+    const compositeTextClips = ensureCompositeTextClips(layers.svg);
+    let compositeTextClipIndex = 0;
+    const compositeTextClip = (x, y, width, height) => {
+      if (!compositeTextClips || width <= 0 || height <= 0) return "";
+      const id = `graph-composite-text-clip-${compositeTextClipIndex++}`;
+      const clipPath = createElement("clipPath");
+      clipPath.setAttribute("id", id);
+      clipPath.setAttribute("class", "graph-composite-text-clip");
+      clipPath.setAttribute("clipPathUnits", "userSpaceOnUse");
+      const rect = createElement("rect");
+      rect.setAttribute("x", String(x));
+      rect.setAttribute("y", String(y));
+      rect.setAttribute("width", String(width));
+      rect.setAttribute("height", String(height));
+      clipPath.appendChild(rect);
+      compositeTextClips.appendChild(clipPath);
+      return `url(#${id})`;
+    };
     function appendMarkers(parent, entries, x, y) {
       entries.forEach(({ finding }, index) => {
         const marker = createElement("g");
@@ -1576,8 +1863,24 @@
         parent.appendChild(marker);
       });
     }
-    const overviewInstances = !options.detailMode && options.layoutPlan && options.layoutPlan.displayModel
+    const overviewInstances = options.layoutPlan && options.layoutPlan.displayModel
       && Array.isArray(options.layoutPlan.displayModel.instances) ? options.layoutPlan.displayModel.instances : null;
+    const displayModel = options.layoutPlan && options.layoutPlan.displayModel;
+    const compositeCards = displayModel && Array.isArray(displayModel.composites) ? displayModel.composites : null;
+    const hasCompositeCards = Boolean(compositeCards);
+    const canonicalItemByNodeId = new Map();
+    const canonicalItemByEdgeId = new Map();
+    if (compositeCards) compositeCards.forEach((card) => (card.items || []).forEach((item) => {
+      if (!item.isHeader && !item.bounds) return;
+      (item.originalNodeIds || []).forEach((id) => { if (!canonicalItemByNodeId.has(id)) canonicalItemByNodeId.set(id, item.id); });
+      (item.originalEdgeIds || []).forEach((id) => { if (!canonicalItemByEdgeId.has(id)) canonicalItemByEdgeId.set(id, item.id); });
+    }));
+    const findingsForItem = (item) => findings.filter((entry) => {
+      const nodeMatch = (entry.nodeIds || []).some((id) => canonicalItemByNodeId.get(id) === item.id);
+      const edgeMatch = !(entry.nodeIds || []).length
+        && (entry.edgeIds || []).some((id) => canonicalItemByEdgeId.get(id) === item.id);
+      return nodeMatch || edgeMatch;
+    });
     const visibleOriginalIds = overviewInstances && new Set(overviewInstances.flatMap((instance) => instance.originalNodeIds));
     const positions = positionsFor(visibleOriginalIds
       ? graph.nodes.filter((node) => visibleOriginalIds.has(node.id)) : graph.nodes, options.positions);
@@ -1592,9 +1895,11 @@
     controllerGroups.forEach((group) => {
       displayPositions[group.id] = group.position;
     });
-    const displayModel = options.layoutPlan && options.layoutPlan.displayModel;
-    if (!options.detailMode && displayModel && Array.isArray(displayModel.instances)) {
-      displayModel.instances.forEach((instance) => { displayPositions[instance.id] = instance.position; });
+    if (displayModel && Array.isArray(displayModel.instances)) {
+      displayModel.instances.forEach((instance) => {
+        displayPositions[instance.id] = instance.position;
+        (instance.originalNodeIds || []).forEach((nodeId) => { displayPositions[nodeId] = instance.position; });
+      });
     }
     const size = graphSize(displayPositions, options.bounds);
     const nodeById = new Map(graph.nodes.map((node) => [node.id, node]));
@@ -1612,9 +1917,14 @@
     const edgeElements = [];
     const edgeTrunkElements = [];
     const edgeLabelElements = [];
+    const junctionElements = [];
     const nodeElements = [];
+    const runtimeRelationshipElements = [];
+    const compositeItemElements = [];
+    const compositeCardElements = [];
+    const runtimeBlueprint = null;
     const areaResult = renderAreas(graph, displayPositions, layers.areaLayer, options.layoutPlan);
-    const overviewRouting = !options.detailMode && options.layoutPlan && options.layoutPlan.overviewRouting;
+    const overviewRouting = options.layoutPlan && options.layoutPlan.overviewRouting;
     let guides;
     if (overviewRouting || (options.findingDetailMode && !options.detailMode)) {
       if (layers.guideLayer) layers.guideLayer.replaceChildren();
@@ -1649,13 +1959,14 @@
       : graph.edges.map((edge) => ({ ...edge, originalEdgeId: edge.id, originalSourceId: edge.sourceId,
         originalTargetId: edge.targetId, originalEdgeIds: [edge.id], routeId: edge.id, rowId: null }));
     const labelGraph = {
-      nodes: !options.detailMode && displayModel && Array.isArray(displayModel.instances)
+      nodes: displayModel && Array.isArray(displayModel.instances)
         ? displayModel.instances.map((instance) => ({ id: instance.id, type: instance.displayType })) : graph.nodes,
       edges: edgeViews
     };
     const labelPositions = placeEdgeLabels(labelGraph, displayPositions, renderEdgeRoutes, options);
     layers.edgeLayer.replaceChildren();
     layers.nodeLayer.replaceChildren();
+    renderRuntimeBlueprintEdges(layers.edgeLayer, runtimeBlueprint, options, graph, runtimeRelationshipElements);
     layers.svg.setAttribute("viewBox", `0 0 ${size.width} ${size.height}`);
     layers.svg.setAttribute("data-layout-mode", options.layoutMode || "initial");
     if (layers.viewport) layers.viewport.setAttribute("data-layout-mode", options.layoutMode || "initial");
@@ -1861,26 +2172,66 @@
       });
       maskDefs.replaceChildren(mask);
       layers.svg.setAttribute("data-unresolved-routes", JSON.stringify(overviewRouting.unresolved));
+      // 동일 기하의 표시 선분만 합치고 관계별 Segment와 원본 근거 유지
+      const physicalSegments = new Map();
       overviewRouting.segments.forEach((segment) => {
+        const points = [segment.from, ...(segment.geometry?.kind === "CUBIC"
+          ? segment.geometry.controlPoints : []), segment.to].map((point) => [point.x, point.y]);
+        const forward = JSON.stringify(points);
+        const reverse = JSON.stringify(points.slice().reverse());
+        const key = `${segment.geometry?.kind === "CUBIC" ? "CUBIC" : "LINE"}:${forward < reverse ? forward : reverse}`;
+        const existing = physicalSegments.get(key);
+        if (existing) {
+          existing.segmentIds.push(segment.id);
+          existing.relationIds = Array.from(new Set([...existing.relationIds, ...segment.relationIds]));
+          Object.assign(existing.routeRolesByRelationId, segment.routeRolesByRelationId || {});
+          if (segment.routeRole === "TRUNK") existing.routeRole = "TRUNK";
+        } else {
+          physicalSegments.set(key, { ...segment, segmentIds: [segment.id],
+            relationIds: segment.relationIds.slice(), routeRolesByRelationId: { ...segment.routeRolesByRelationId } });
+        }
+      });
+      physicalSegments.forEach((segment) => {
         const members = segment.relationIds.map((id) => relations.get(id)).filter(Boolean);
         if (!members.length) return;
         const originalIds = Array.from(new Set(members.flatMap((relation) => relation.originalEdgeIds || [])));
+        const runtimeRelationIds = Array.from(new Set(members.flatMap((relation) => relation.runtimeRelationshipIds || [])));
+        const runtimeComponentIds = Array.from(new Set(members.flatMap((relation) => relation.runtimeComponentIds || [])));
+        const projectionEdgeIds = Array.from(new Set(members.flatMap((relation) => relation.projectionEdgeIds || [])));
         const relation = members[0];
         const style = edgeStyles[relation.type];
+        const runtimeReference = runtimeRelationIds.length > 0 && projectionEdgeIds.length === 0;
         const targetRoute = members.map((member) => overviewRouting.routesByRelationId[member.id])
-          .find((route) => route && route.orderedSegmentIds.at(-1) === segment.id);
+          .find((route) => route && segment.segmentIds.includes(route.orderedSegmentIds.at(-1)));
         const reverse = targetRoute && targetRoute.targetPort.x === segment.from.x && targetRoute.targetPort.y === segment.from.y;
         const start = reverse ? segment.to : segment.from;
         const end = reverse ? segment.from : segment.to;
         const path = createElement("path");
-        path.setAttribute("class", `graph-edge graph-overview-segment${style ? "" : " graph-projection-edge"}`);
-        path.setAttribute("d", `M ${start.x} ${start.y} L ${end.x} ${end.y}`);
+        path.setAttribute("class", `graph-edge graph-overview-segment${style ? "" : runtimeReference
+          ? " graph-runtime-blueprint-edge runtime-blueprint-edge" : " graph-projection-edge"}`);
+        if (segment.geometry && segment.geometry.kind === "CUBIC" && segment.geometry.controlPoints.length === 2) {
+          const controls = reverse ? segment.geometry.controlPoints.slice().reverse() : segment.geometry.controlPoints;
+          path.setAttribute("d", `M ${start.x} ${start.y} C ${controls[0].x} ${controls[0].y}, ${controls[1].x} ${controls[1].y}, ${end.x} ${end.y}`);
+          path.setAttribute("data-segment-geometry", "CUBIC");
+        } else {
+          path.setAttribute("d", `M ${start.x} ${start.y} L ${end.x} ${end.y}`);
+          path.setAttribute("data-segment-geometry", "LINE");
+        }
         path.setAttribute("data-segment-id", segment.id);
+        path.setAttribute("data-segment-ids", segment.segmentIds.join(","));
         path.setAttribute("data-route-role", segment.routeRole || "DIRECT");
+        path.setAttribute("data-route-roles", JSON.stringify(segment.routeRolesByRelationId || {}));
         if (segment.routeRole === "TRUNK" && segment.relationIds.length > 1) {
           path.setAttribute("mask", "url(#graph-overview-trunk-mask)");
         }
         path.setAttribute("data-relation-ids", segment.relationIds.join(","));
+        path.setAttribute("data-runtime-relationship-ids", runtimeRelationIds.join(","));
+        if (runtimeRelationIds.length) path.setAttribute("data-runtime-relationship-id", runtimeRelationIds[0]);
+        path.setAttribute("data-runtime-component-ids", runtimeComponentIds.join(","));
+        path.setAttribute("data-projection-edge-ids", projectionEdgeIds.join(","));
+        path.setAttribute("data-confidence", members.every((member) => member.confidence === "CONFIRMED")
+          ? "CONFIRMED" : members.some((member) => member.confidence === "PARTIAL") ? "PARTIAL" : "UNKNOWN");
+        if (runtimeReference) path.setAttribute("data-runtime-area", relation.sourceCard && relation.sourceCard.areaId || "");
         path.setAttribute("data-flow-groups", Array.from(new Set(members.map((member) => member.flowGroup).filter(Boolean))).join(","));
         path.setAttribute("data-edge-ids", originalIds.join(","));
         if (members.every((member) => member.role === "REGISTRATION_REFERENCE")) {
@@ -1893,42 +2244,75 @@
           ...(member.relatedNodeIds || [])
         ])));
         path.setAttribute("data-related-node-ids", nodeIds.join(","));
-        path.setAttribute("data-related", String(!selection || originalIds.some((id) => relatedEdgeIds.has(id))));
+        path.setAttribute("data-node-ids", nodeIds.join(","));
+        const routeRelated = options.related && options.related.visualRelationIds instanceof Set
+          ? segment.relationIds.some((id) => options.related.visualRelationIds.has(id))
+          : originalIds.some((id) => relatedEdgeIds.has(id)) || nodeIds.some((id) => relatedNodeIds.has(id));
+        const selectedSegment = Boolean(selection && segment.segmentIds.includes(selection.segmentId));
+        const segmentRelated = options.related && options.related.segmentIds instanceof Set
+          && options.related.segmentIds.size > 0 ? segment.segmentIds.some((id) => options.related.segmentIds.has(id)) : routeRelated;
+        path.setAttribute("data-related", String(!selection || selectedSegment || segmentRelated));
         path.setAttribute("data-has-finding", String(findings.some((entry) => entry.edgeIds.some((id) => originalIds.includes(id)))));
-        path.setAttribute("data-selected", String(Boolean(selection && selection.kind === "edge" && originalIds.includes(selection.id))));
+        path.setAttribute("data-selected", String(Boolean(selectedSegment
+          || selection && selection.kind === "edge" && originalIds.includes(selection.id)
+          || selection && selection.kind === "runtime-relationship" && runtimeRelationIds.includes(selection.id))));
         if (style) {
           path.setAttribute("data-edge-type", relation.type);
           path.setAttribute("data-edge-layer", relation.type === "FLOWS_TO" ? "flow" : "analysis");
           path.setAttribute("stroke", style.color);
           path.setAttribute("stroke-dasharray", style.dash);
         }
-        if (targetRoute && (!style || members.every((member) => member.visualDirection !== "REVERSED"))) {
-          path.setAttribute("marker-end", style ? "url(#graph-arrow)" : "url(#graph-guide-arrow)");
-        }
-        if (originalIds.length) {
-          path.setAttribute("data-edge-id", originalIds[0]);
+        const terminalRoutes = members.filter((member) =>
+          segment.segmentIds.includes(overviewRouting.routesByRelationId[member.id]?.orderedSegmentIds.at(-1)));
+        const endsAtStart = terminalRoutes.some((member) => {
+          const route = overviewRouting.routesByRelationId[member.id];
+          return route.targetPort.x === segment.from.x && route.targetPort.y === segment.from.y;
+        });
+        const endsAtEnd = terminalRoutes.some((member) => {
+          const route = overviewRouting.routesByRelationId[member.id];
+          return route.targetPort.x === segment.to.x && route.targetPort.y === segment.to.y;
+        });
+        const marker = style ? "url(#graph-arrow)" : "url(#graph-guide-arrow)";
+        if (reverse ? endsAtEnd : endsAtStart) path.setAttribute("marker-start", marker);
+        if (reverse ? endsAtStart : endsAtEnd) path.setAttribute("marker-end", marker);
+        if (originalIds.length || runtimeRelationIds.length) {
+          if (originalIds.length) path.setAttribute("data-edge-id", originalIds[0]);
           path.setAttribute("tabindex", "0");
           path.setAttribute("role", "button");
           const original = edgeById.get(originalIds[0]);
-          if (original) path.setAttribute("aria-label", `${edgeTypeLabel(original.type)} · ${displayIds.node(original.sourceId)} → ${displayIds.node(original.targetId)}`);
-          if (options.onEdgeClick) path.addEventListener("click", (event) => {
+          path.setAttribute("aria-label", original
+            ? `${edgeTypeLabel(original.type)} · ${displayIds.node(original.sourceId)} → ${displayIds.node(original.targetId)}`
+            : `실제 Runtime 관계 ${relation.type}`);
+          const activateRoute = (event) => {
             if (event && event.stopPropagation) event.stopPropagation();
-            options.onEdgeClick(originalIds[0], path, originalIds);
-          });
+            if (originalIds.length && options.onEdgeClick) options.onEdgeClick(originalIds[0], path, originalIds, segment.id);
+            else if (runtimeRelationIds.length && options.onRuntimeRelationshipClick) {
+              options.onRuntimeRelationshipClick(runtimeRelationIds[0], path);
+            }
+          };
+          path.addEventListener("click", activateRoute);
           path.addEventListener("keydown", (event) => {
             if (event.key !== "Enter" && event.key !== " ") return;
             if (event.preventDefault) event.preventDefault();
-            if (options.onEdgeClick) options.onEdgeClick(originalIds[0], path, originalIds);
+            activateRoute(event);
           });
-          if (options.onEdgeFocus) path.addEventListener("focus", () => options.onEdgeFocus(originalIds[0], path));
-          if (options.onEdgeBlur) path.addEventListener("blur", () => options.onEdgeBlur(originalIds[0], path));
-          if (options.onEdgeHover) path.addEventListener("mouseenter", () => options.onEdgeHover(originalIds[0], path));
-          if (options.onEdgeLeave) path.addEventListener("mouseleave", () => options.onEdgeLeave(originalIds[0], path));
+          if (originalIds.length) {
+            if (options.onEdgeFocus) path.addEventListener("focus", () => options.onEdgeFocus(originalIds[0], path));
+            if (options.onEdgeBlur) path.addEventListener("blur", () => options.onEdgeBlur(originalIds[0], path));
+            if (options.onEdgeHover) path.addEventListener("mouseenter", () => options.onEdgeHover(originalIds[0], path));
+            if (options.onEdgeLeave) path.addEventListener("mouseleave", () => options.onEdgeLeave(originalIds[0], path));
+          } else {
+            if (options.onRuntimeRelationshipFocus) path.addEventListener("focus", () => options.onRuntimeRelationshipFocus(runtimeRelationIds[0], path));
+            if (options.onRuntimeRelationshipBlur) path.addEventListener("blur", () => options.onRuntimeRelationshipBlur(runtimeRelationIds[0], path));
+            if (options.onRuntimeRelationshipHover) path.addEventListener("mouseenter", () => options.onRuntimeRelationshipHover(runtimeRelationIds[0], path));
+            if (options.onRuntimeRelationshipLeave) path.addEventListener("mouseleave", () => options.onRuntimeRelationshipLeave(runtimeRelationIds[0], path));
+          }
         }
         layers.edgeLayer.appendChild(path);
         edgeElements.push(path);
+        if (runtimeRelationIds.length) runtimeRelationshipElements.push(path);
         members.filter((member) => (member.originalEdgeIds || []).length
-          && overviewRouting.routesByRelationId[member.id]?.orderedSegmentIds.at(-1) === segment.id
+          && segment.segmentIds.includes(overviewRouting.routesByRelationId[member.id]?.orderedSegmentIds.at(-1))
           && !labeledRelations.has(member.id)).forEach((member) => {
           const original = edgeById.get(member.originalEdgeIds[0]);
           if (!original || !style) return;
@@ -1967,6 +2351,24 @@
             markedFindings.add(entry.finding.id);
           });
       });
+      (overviewRouting.junctions || []).forEach((junction) => {
+        const circle = createElement("circle");
+        circle.setAttribute("class", "graph-overview-junction");
+        circle.setAttribute("data-junction-id", junction.id);
+        circle.setAttribute("data-segment-ids", junction.segmentIds.join(","));
+        circle.setAttribute("data-relation-ids", junction.relationIds.join(","));
+        circle.setAttribute("cx", String(junction.x));
+        circle.setAttribute("cy", String(junction.y));
+        circle.setAttribute("r", "3.5");
+        const relatedJunction = options.related && options.related.junctionIds instanceof Set
+          && options.related.junctionIds.has(junction.id);
+        circle.setAttribute("data-related", String(!selection || relatedJunction));
+        circle.setAttribute("data-selected", String(Boolean(selection && selection.segmentId
+          && junction.segmentIds.includes(selection.segmentId))));
+        circle.setAttribute("aria-hidden", "true");
+        layers.edgeLayer.appendChild(circle);
+        junctionElements.push(circle);
+      });
       // Chain에 직접 연결하지 않는 원본 관계의 Finding 위치 표시
       findings.filter((entry) => !markedFindings.has(entry.finding.id)).forEach((entry) => {
         const edge = entry.edgeIds.map((id) => edgeById.get(id)).find((item) => item
@@ -1986,7 +2388,7 @@
       });
     }
 
-    const nodeInstances = !options.detailMode && displayModel && Array.isArray(displayModel.instances)
+    const nodeInstances = hasCompositeCards ? [] : !options.detailMode && displayModel && Array.isArray(displayModel.instances)
       ? displayModel.instances.filter((instance) => instance.kind === "node")
       : graph.nodes.filter((node) => !groupedHandlerIds.has(node.id)).map((node) => ({
         id: node.id, originalNodeIds: [node.id], position: displayPositions[node.id]
@@ -2074,7 +2476,7 @@
       nodeElements.push(group);
     });
 
-    controllerGroups.forEach((groupDefinition) => {
+    (hasCompositeCards ? [] : controllerGroups).forEach((groupDefinition) => {
       const position = displayPositions[groupDefinition.id];
       if (!position) return;
       const display = groupDefinition.type
@@ -2151,7 +2553,315 @@
       nodeElements.push(group);
     });
 
-    const graphHidden = graph.nodes.length === 0;
+    compositeCards && compositeCards.forEach((cardDefinition) => {
+      const bounds = cardDefinition.bounds;
+      if (!bounds) return;
+      const style = compositeStyleFor(cardDefinition);
+      const cardFindings = (cardDefinition.items || []).flatMap((item) => findingsForItem(item))
+        .filter((entry, index, all) => all.findIndex((candidate) => candidate.finding.id === entry.finding.id) === index);
+      const card = createElement("g");
+      card.setAttribute("class", "graph-node graph-composite-card");
+      card.setAttribute("transform", `translate(${bounds.x} ${bounds.y})`);
+      card.setAttribute("data-controller-group-id", cardDefinition.id);
+      card.setAttribute("data-composite-card-id", cardDefinition.id);
+      card.setAttribute("data-node-ids", (cardDefinition.originalNodeIds || []).join(","));
+      card.setAttribute("data-edge-ids", (cardDefinition.originalEdgeIds || []).join(","));
+      card.setAttribute("data-runtime-component-ids", (cardDefinition.runtimeComponentIds || []).join(","));
+      card.setAttribute("data-has-finding", String(cardFindings.length > 0));
+      card.setAttribute("data-selected", String(Boolean(selection
+        && (selection.kind === "controller-group" && selection.id === cardDefinition.id
+          || selection.kind === "runtime-component" && (cardDefinition.runtimeComponentIds || []).includes(selection.id)))));
+      card.setAttribute("data-related", String(!selection || (cardDefinition.originalNodeIds || []).some((id) => relatedNodeIds.has(id))
+        || (cardDefinition.originalEdgeIds || []).some((id) => relatedEdgeIds.has(id))
+        || (cardDefinition.runtimeComponentIds || []).some((id) => relatedNodeIds.has(id))));
+      card.setAttribute("tabindex", "0");
+      card.setAttribute("role", "button");
+      card.setAttribute("aria-label", `${cardDefinition.title} · ${(cardDefinition.items || []).filter((item) => !item.isHeader).length}개 항목`);
+      const selectCard = (event) => {
+        if (event && event.stopPropagation) event.stopPropagation();
+        if (options.onControllerGroupClick) options.onControllerGroupClick(cardDefinition.id, card);
+      };
+      card.addEventListener("click", selectCard);
+      card.addEventListener("keydown", (event) => {
+        if (!event || (event.key !== "Enter" && event.key !== " ")) return;
+        if (event.preventDefault) event.preventDefault();
+        selectCard(event);
+      });
+      if (options.onControllerGroupFocus) card.addEventListener("focus", () => options.onControllerGroupFocus(cardDefinition.id, card));
+      if (options.onControllerGroupBlur) card.addEventListener("blur", () => options.onControllerGroupBlur(cardDefinition.id, card));
+      if (options.onControllerGroupHover) card.addEventListener("mouseenter", () => options.onControllerGroupHover(cardDefinition.id, card));
+      if (options.onControllerGroupLeave) card.addEventListener("mouseleave", () => options.onControllerGroupLeave(cardDefinition.id, card));
+
+      const surface = createElement("rect");
+      surface.setAttribute("class", "graph-composite-surface");
+      surface.setAttribute("width", String(bounds.width));
+      surface.setAttribute("height", String(bounds.height));
+      surface.setAttribute("rx", "6");
+      surface.setAttribute("fill", style.body);
+      surface.setAttribute("stroke", style.stroke);
+      card.appendChild(surface);
+      const headerBounds = cardDefinition.headerBounds || { height: 42 };
+      const header = createElement("rect");
+      header.setAttribute("class", "graph-composite-header");
+      header.setAttribute("width", String(bounds.width));
+      header.setAttribute("height", String(headerBounds.height));
+      header.setAttribute("rx", "6");
+      header.setAttribute("fill", style.header);
+      card.appendChild(header);
+      const headerBottom = createElement("line");
+      headerBottom.setAttribute("class", "graph-composite-header-rule");
+      headerBottom.setAttribute("x1", "0");
+      headerBottom.setAttribute("x2", String(bounds.width));
+      headerBottom.setAttribute("y1", String(headerBounds.height));
+      headerBottom.setAttribute("y2", String(headerBounds.height));
+      card.appendChild(headerBottom);
+      const headerItems = (cardDefinition.items || []).filter((item) => item.isHeader);
+      const headerFindings = headerItems.flatMap((item) => findingsForItem(item))
+        .filter((entry, index, all) => all.findIndex((candidate) => candidate.finding.id === entry.finding.id) === index);
+      const headerMarkerX = headerFindings.length
+        ? Math.max(18, bounds.width - 18 - (headerFindings.length - 1) * 32) : null;
+      const headerTextWidth = headerMarkerX === null ? bounds.width - 28 : Math.max(8, headerMarkerX - 36);
+      const headerTitleY = cardDefinition.subtitle ? headerBounds.height / 2 - 5 : headerBounds.height / 2 + 7;
+      const headerTitle = addNodeText(card, "graph-composite-title", 14, headerTitleY, cardDefinition.title,
+        headerTextWidth, Math.max(8, Math.floor(headerTextWidth / 9)));
+      headerTitle.setAttribute("clip-path", compositeTextClip(14, 4, headerTextWidth, headerBounds.height - 8));
+      headerTitle.setAttribute("fill", style.title);
+      if (cardDefinition.subtitle) {
+        const subtitle = addNodeText(card, "graph-composite-subtitle", 14, Math.min(headerBounds.height - 8, headerTitleY + 20),
+          cardDefinition.subtitle, headerTextWidth, Math.max(8, Math.floor(headerTextWidth / 9)));
+        subtitle.setAttribute("clip-path", compositeTextClip(14, 4, headerTextWidth, headerBounds.height - 8));
+        subtitle.setAttribute("fill", style.title);
+      }
+      if (headerFindings.length) {
+        appendMarkers(card, headerFindings, headerMarkerX, Math.max(16, headerBounds.height - 17));
+      }
+      (displayModel.ports || []).filter((port) => headerItems.some((item) => item.id === port.itemId)).forEach((definition) => {
+        const port = createElement("circle");
+        port.setAttribute("class", definition.direction === "IN" || definition.side === "LEFT"
+          ? "graph-composite-port graph-composite-port-in" : "graph-composite-port graph-composite-port-out");
+        port.setAttribute("cx", String(definition.x - bounds.x));
+        port.setAttribute("cy", String(definition.y - bounds.y));
+        port.setAttribute("r", "4");
+        port.setAttribute("data-port-ids", definition.id);
+        port.setAttribute("data-item-id", definition.itemId);
+        port.setAttribute("data-port-channel", definition.channel);
+        card.appendChild(port);
+      });
+
+      const cardItems = (cardDefinition.items || []).filter((item) => !item.isHeader);
+      const orderedItems = cardItems.filter((item) => item.kind === "FILTER"
+        && ["CONFIRMED", "REGISTRATION"].includes(item.orderStatus)
+        && Number.isInteger(Number(item.order)) && Number(item.order) > 0);
+      const displayCodes = (ids) => Array.from(new Set((ids || []).filter((id) => nodeById.has(id))))
+        .map((id) => displayIds.node(id)).sort();
+      const displayCode = (ids) => {
+        const codes = displayCodes(ids);
+        return codes.length > 1 ? `${codes[0]} 외 ${codes.length - 1}개` : codes[0] || "";
+      };
+      if (cardDefinition.kind === "SECURITY_CHAIN") {
+        const chainIds = headerItems.flatMap((item) => item.originalNodeIds || [])
+          .concat((cardDefinition.originalNodeIds || []).filter((id) => nodeById.get(id)?.type === "SECURITY_CHAIN"));
+        const code = displayCode(chainIds);
+        if (code) {
+          const headerCode = addNodeText(card, "graph-composite-display-id", headerMarkerX === null ? bounds.width - 16 : headerMarkerX - 22,
+            headerBounds.height - 10, code, bounds.width - 32, 32);
+          headerCode.setAttribute("text-anchor", "end");
+        }
+      }
+      cardItems.forEach((item, index) => {
+        const itemBounds = item.bounds;
+        if (!itemBounds) return;
+        const row = createElement("g");
+        row.setAttribute("class", "graph-node graph-composite-item");
+        row.setAttribute("transform", `translate(${itemBounds.x - bounds.x} ${itemBounds.y - bounds.y})`);
+        row.setAttribute("data-controller-group-id", item.id);
+        row.setAttribute("data-composite-item-id", item.id);
+        if (options.detailMode && (item.originalNodeIds || []).length === 1) {
+          row.setAttribute("data-node-id", item.originalNodeIds[0]);
+        }
+        row.setAttribute("data-node-ids", (item.originalNodeIds || []).join(","));
+        row.setAttribute("data-edge-ids", (item.originalEdgeIds || []).join(","));
+        row.setAttribute("data-runtime-component-ids", (item.runtimeComponentIds || []).join(","));
+        row.setAttribute("data-projection-node-ids", (item.projectionNodeIds || []).join(","));
+        row.setAttribute("data-origin-kind", item.originKind || "GRAPH_NODE");
+        const itemFindings = findingsForItem(item);
+        row.setAttribute("data-has-finding", String(itemFindings.length > 0));
+        row.setAttribute("data-selected", String(Boolean(selection
+          && (selection.kind === "controller-group" && selection.id === item.id
+            || selection.kind === "runtime-component" && (item.runtimeComponentIds || []).includes(selection.id)))));
+        row.setAttribute("data-related", String(!selection || (item.originalNodeIds || []).some((id) => relatedNodeIds.has(id))
+          || (item.originalEdgeIds || []).some((id) => relatedEdgeIds.has(id))
+          || (item.runtimeComponentIds || []).some((id) => relatedNodeIds.has(id))));
+        row.setAttribute("tabindex", "0");
+        row.setAttribute("role", "button");
+        row.setAttribute("aria-label", [item.label, item.detail, `${(item.originalNodeIds || []).length}개 원본 Node`]
+          .filter(Boolean).join(" · "));
+        const selectItem = (event) => {
+          if (event && event.stopPropagation) event.stopPropagation();
+          if (options.detailMode) {
+            const runtimeComponentId = (item.runtimeComponentIds || [])[0];
+            const originalNodeId = (item.originalNodeIds || [])[0];
+            if (runtimeComponentId && options.onRuntimeComponentClick) options.onRuntimeComponentClick(runtimeComponentId, row);
+            else if (originalNodeId && options.onNodeClick) options.onNodeClick(originalNodeId, row);
+            return;
+          }
+          if (options.onControllerGroupClick) options.onControllerGroupClick(item.id, row);
+        };
+        row.addEventListener("click", selectItem);
+        row.addEventListener("keydown", (event) => {
+          if (!event || (event.key !== "Enter" && event.key !== " ")) return;
+          if (event.preventDefault) event.preventDefault();
+          selectItem(event);
+        });
+        const focusItem = (callbackName) => {
+          if (options.detailMode && (item.runtimeComponentIds || []).length) {
+            const callback = options[callbackName.replace("ControllerGroup", "RuntimeComponent")];
+            if (callback) callback(item.runtimeComponentIds[0], row);
+          } else if (options.detailMode && (item.originalNodeIds || []).length) {
+            const callback = options[callbackName.replace("ControllerGroup", "Node")];
+            if (callback) callback(item.originalNodeIds[0], row);
+          } else if (options[callbackName]) options[callbackName](item.id, row);
+        };
+        row.addEventListener("focus", () => focusItem("onControllerGroupFocus"));
+        row.addEventListener("blur", () => focusItem("onControllerGroupBlur"));
+        row.addEventListener("mouseenter", () => focusItem("onControllerGroupHover"));
+        row.addEventListener("mouseleave", () => focusItem("onControllerGroupLeave"));
+
+        const rowSurface = createElement("rect");
+        rowSurface.setAttribute("class", "graph-composite-item-surface");
+        rowSurface.setAttribute("x", "0");
+        rowSurface.setAttribute("width", String(itemBounds.width));
+        rowSurface.setAttribute("height", String(itemBounds.height));
+        rowSurface.setAttribute("rx", "2");
+        row.appendChild(rowSurface);
+        if (index > 0) {
+          const separator = createElement("line");
+          separator.setAttribute("class", "graph-composite-item-separator");
+          separator.setAttribute("x1", "10");
+          separator.setAttribute("x2", String(itemBounds.width - 10));
+          separator.setAttribute("y1", "0");
+          separator.setAttribute("y2", "0");
+          row.appendChild(separator);
+        }
+        const labelX = orderedItems.includes(item) ? 52 : item.inputPortIds && item.inputPortIds.length ? 13 : 8;
+        const markerX = itemFindings.length
+          ? Math.max(18, itemBounds.width - 18 - (itemFindings.length - 1) * 32) : null;
+        const textRight = markerX === null
+          ? itemBounds.width - (item.outputPortIds && item.outputPortIds.length ? 18 : 10)
+          : markerX - 22;
+        const labelWidth = Math.max(8, textRight - labelX);
+        const code = displayCode(item.originalNodeIds);
+        const codeWidth = code ? Math.min(labelWidth / 2, code.length * 7 + 12) : 0;
+        const node = (item.originalNodeIds || []).map((id) => nodeById.get(id)).find((value) => value?.type === "FILTER");
+        const filterClass = node && String((node.attributes || {}).filterClass || "");
+        const standardFilters = window.MapInBootStandardFilters;
+        const standard = filterClass && standardFilters && standardFilters.list().find((entry) => entry.fqcn === filterClass);
+        const servletDescriptions = {
+          "org.springframework.boot.servlet.filter.OrderedCharacterEncodingFilter": "요청·응답 문자 인코딩 설정",
+          "org.springframework.boot.servlet.filter.OrderedFormContentFilter": "폼 요청 데이터 처리",
+          "org.springframework.boot.servlet.filter.OrderedRequestContextFilter": "요청 컨텍스트 연결",
+          "org.springframework.boot.web.servlet.DelegatingFilterProxyRegistrationBean$1": "스프링 시큐리티 처리 위임",
+          "org.apache.tomcat.websocket.server.WsFilter": "WebSocket 연결 처리"
+        };
+        const detailText = node ? standard?.description || servletDescriptions[filterClass] || ((node.attributes || {}).custom === true
+          ? "커스텀 필터" : (node.attributes || {}).registrationKind === "SERVLET"
+            ? "등록된 서블릿 필터" : "등록된 보안 필터") : item.detail;
+        const detailWidth = Math.max(8, labelWidth - codeWidth);
+        const labelLineCount = Math.max(1, (item.labelLines || []).length);
+        const secondaryLine = Boolean(detailText || code);
+        const labelY = itemBounds.height / 2 - (labelLineCount - 1 + Number(secondaryLine)) * 9 + 5;
+        const detailY = labelY + labelLineCount * 18;
+        const label = addNodeText(row, "graph-composite-item-label", labelX, labelY, item.label,
+          labelWidth, Math.max(8, Math.floor(labelWidth / 8)));
+        if (item.labelLines && item.labelLines.length > 1) {
+          label.textContent = "";
+          item.labelLines.forEach((line, lineIndex) => {
+            const span = createElement("tspan");
+            span.setAttribute("x", String(labelX));
+            if (lineIndex) span.setAttribute("dy", "18");
+            span.textContent = line;
+            label.appendChild(span);
+          });
+        }
+        label.setAttribute("clip-path", compositeTextClip(labelX, 2, labelWidth, itemBounds.height - 4));
+        label.setAttribute("fill", style.title);
+        if (detailText) {
+          const detail = addNodeText(row, "graph-composite-item-detail", labelX, detailY, detailText,
+            detailWidth, Math.max(8, Math.floor(detailWidth / 8)));
+          detail.setAttribute("clip-path", compositeTextClip(labelX, detailY - 16, detailWidth, Math.max(1, itemBounds.height - detailY + 2)));
+          detail.setAttribute("fill", style.title);
+        }
+        if (code) {
+          const idText = addNodeText(row, "graph-composite-display-id", textRight, detailY, code,
+            codeWidth, Math.max(8, Math.floor(codeWidth / 7)));
+          idText.setAttribute("text-anchor", "end");
+        }
+        const itemPorts = (displayModel.ports || []).filter((port) => port.itemId === item.id);
+        ["LEFT", "RIGHT", "TOP", "BOTTOM"].forEach((side) => {
+          const sidePorts = itemPorts.filter((port) => port.side === side);
+          sidePorts.forEach((definition) => {
+            const port = createElement("circle");
+            port.setAttribute("class", definition.direction === "IN"
+              ? "graph-composite-port graph-composite-port-in"
+              : "graph-composite-port graph-composite-port-out");
+            port.setAttribute("cx", String(definition.x - itemBounds.x));
+            port.setAttribute("cy", String(definition.y - itemBounds.y));
+            port.setAttribute("r", "4");
+            port.setAttribute("data-port-ids", definition.id);
+            port.setAttribute("data-item-id", item.id);
+            port.setAttribute("data-port-channel", definition.channel);
+            row.appendChild(port);
+          });
+        });
+        if (itemFindings.length) {
+          appendMarkers(row, itemFindings, markerX, itemBounds.height / 2);
+        }
+        card.appendChild(row);
+        compositeItemElements.push(row);
+        nodeElements.push(row);
+      });
+      orderedItems.forEach((item, index) => {
+        const current = item.bounds;
+        if (!current) return;
+        const x = current.x - bounds.x + 27;
+        const y = current.y - bounds.y + current.height / 2;
+        const next = orderedItems[index + 1];
+        if (next && cardItems.indexOf(next) === cardItems.indexOf(item) + 1 && next.bounds) {
+          const line = createElement("line");
+          line.setAttribute("class", "graph-composite-timeline");
+          line.setAttribute("x1", String(x)); line.setAttribute("x2", String(x));
+          line.setAttribute("y1", String(y)); line.setAttribute("y2", String(next.bounds.y - bounds.y + next.bounds.height / 2));
+          line.setAttribute("stroke", style.stroke); line.setAttribute("opacity", ".45");
+          card.appendChild(line);
+        }
+        const dot = createElement("circle");
+        dot.setAttribute("class", "graph-composite-timeline");
+        dot.setAttribute("cx", String(x)); dot.setAttribute("cy", String(y)); dot.setAttribute("r", "3.5");
+        dot.setAttribute("fill", style.stroke); card.appendChild(dot);
+        const number = addNodeText(card, "graph-composite-order", x - 10, y + 4,
+          String(item.order).padStart(2, "0"), 22, 4);
+        number.setAttribute("text-anchor", "end"); number.setAttribute("fill", style.stroke);
+      });
+      layers.nodeLayer.appendChild(card);
+      compositeCardElements.push(card);
+      nodeElements.push(card);
+    });
+
+    const runtimeBlueprintNodes = runtimeBlueprint && Array.isArray(runtimeBlueprint.cards)
+      ? runtimeBlueprint.cards.map((card) => ({
+        id: card.id,
+        type: "RUNTIME_COMPONENT",
+        label: card.title,
+        originalNodeIds: card.originalNodeIds || [],
+        runtimeComponentIds: card.runtimeComponentIds || [],
+        position: { x: card.bounds.x, y: card.bounds.y, width: card.bounds.width, height: card.bounds.height },
+        width: card.bounds.width,
+        height: card.bounds.height,
+        bounds: card.bounds,
+        kind: "runtime-component"
+      })) : [];
+    nodeElements.push(...renderRuntimeBlueprintCards(layers.nodeLayer, runtimeBlueprint, options, findings, relatedNodeIds));
+    const graphHidden = graph.nodes.length === 0 && !(compositeCards && compositeCards.length);
     if (typeof layers.svg.toggleAttribute === "function") {
       layers.svg.toggleAttribute("hidden", graphHidden);
     } else if (graphHidden) {
@@ -2159,7 +2869,20 @@
     } else {
       layers.svg.removeAttribute("hidden");
     }
-    const displayNodes = !options.detailMode && displayModel && Array.isArray(displayModel.instances)
+    const displayNodes = (hasCompositeCards
+      ? compositeCards.map((card) => ({
+        id: card.id,
+        type: "COMPOSITE_CARD",
+        label: card.title,
+        originalNodeIds: card.originalNodeIds,
+        rowId: card.rowId,
+        position: card.position,
+        width: card.bounds.width,
+        height: card.bounds.height,
+        bounds: card.bounds,
+        kind: "composite-card"
+      }))
+      : !options.detailMode && displayModel && Array.isArray(displayModel.instances)
       ? displayModel.instances.map((instance) => {
         const sourceNode = nodeById.get((instance.originalNodeIds || [])[0]);
         const definition = controllerGroups.find((group) => group.id === instance.id);
@@ -2172,9 +2895,9 @@
           originalNodeIds: instance.originalNodeIds,
           rowId: instance.rowId,
           position,
-          width: NODE_WIDTH,
-          height: NODE_HEIGHT,
-          bounds: { x: position.x, y: position.y, width: NODE_WIDTH, height: NODE_HEIGHT },
+          width: position.width || NODE_WIDTH,
+          height: position.height || NODE_HEIGHT,
+          bounds: { x: position.x, y: position.y, width: position.width || NODE_WIDTH, height: position.height || NODE_HEIGHT },
           kind: instance.kind
         };
       })
@@ -2194,7 +2917,7 @@
         height: NODE_HEIGHT,
         bounds: { x: group.position.x, y: group.position.y, width: NODE_WIDTH, height: NODE_HEIGHT },
         kind: "controller-group"
-      })));
+      })))).concat(runtimeBlueprintNodes);
     const findingSections = renderFindingSections(graph, displayPositions, layers.findingLayer, layers.findingTitleLayer,
       options.findingSections, options.onFindingSectionClick || options.onFindingClick, options.layoutPlan);
     const rendered = {
@@ -2211,6 +2934,11 @@
       edgeElements,
       edgeTrunkElements,
       edgeLabelElements,
+      compositeCardElements,
+      compositeItemElements,
+      junctionElements,
+      runtimeRelationshipElements,
+      runtimeBlueprintNodes,
       nodeById,
       edgeById,
       securityMembershipEdgeIds: membershipEdgeIds,
@@ -2230,6 +2958,31 @@
     const selection = options.selection || null;
     const relatedNodeIds = options.related && options.related.nodeIds instanceof Set ? options.related.nodeIds : new Set();
     const relatedEdgeIds = options.related && options.related.edgeIds instanceof Set ? options.related.edgeIds : new Set();
+    const relatedDisplayItemIds = options.related && options.related.displayItemIds instanceof Set
+      ? options.related.displayItemIds : new Set();
+    const relatedCardIds = options.related && options.related.cardIds instanceof Set ? options.related.cardIds : new Set();
+    const relatedVisualRelationIds = options.related && options.related.visualRelationIds instanceof Set
+      ? options.related.visualRelationIds : new Set();
+    const relatedSegmentIds = options.related && options.related.segmentIds instanceof Set ? options.related.segmentIds : new Set();
+    const detailBlueprint = options.layoutPlan && options.layoutPlan.detailBlueprint;
+    const runtimeRelationships = detailBlueprint && Array.isArray(detailBlueprint.relations) ? detailBlueprint.relations : [];
+    const selectedRuntimeComponentIds = new Set();
+    if (selection && selection.kind === "runtime-component") selectedRuntimeComponentIds.add(selection.id);
+    if (selection && selection.kind === "runtime-relationship") {
+      const selectedRelationship = runtimeRelationships.find((relation) => relation.id === selection.id);
+      if (selectedRelationship) {
+        selectedRuntimeComponentIds.add(selectedRelationship.sourceId);
+        selectedRuntimeComponentIds.add(selectedRelationship.targetId);
+      }
+    }
+    if (selection && selection.kind === "runtime-component") {
+      runtimeRelationships.forEach((relation) => {
+        if (relation.sourceId === selection.id || relation.targetId === selection.id) {
+          selectedRuntimeComponentIds.add(relation.sourceId);
+          selectedRuntimeComponentIds.add(relation.targetId);
+        }
+      });
+    }
     const findings = Array.isArray(options.findings) ? options.findings : [];
     const findingIds = new Set(findings.map((entry) => entry.finding.id));
     const findingNodeIds = new Set(findings.flatMap((entry) => entry.nodeIds || []));
@@ -2237,23 +2990,55 @@
     rendered.nodeElements.forEach((element) => {
       const nodeId = element.getAttribute("data-node-id");
       const groupId = element.getAttribute("data-controller-group-id");
+      const runtimeComponentId = element.getAttribute("data-runtime-component-id");
+      const runtimeComponentIds = (element.getAttribute("data-runtime-component-ids") || "").split(",").filter(Boolean);
+      const nodeIds = (element.getAttribute("data-node-ids") || "").split(",").filter(Boolean);
       const id = nodeId || groupId;
       const selected = Boolean(selection && ((selection.kind === "node" && selection.id === nodeId)
-        || (selection.kind === "controller-group" && selection.id === groupId)));
+        || (selection.kind === "controller-group" && selection.id === groupId)
+        || (selection.kind === "runtime-component"
+          && (selection.id === runtimeComponentId || runtimeComponentIds.includes(selection.id)))));
       element.setAttribute("data-selected", String(selected));
-      element.setAttribute("data-related", String(!selection || relatedNodeIds.has(id)
-        || (element.getAttribute("data-handler-ids") || "").split(",").some((item) => relatedNodeIds.has(item))
-        || (element.getAttribute("data-node-ids") || "").split(",").some((item) => relatedNodeIds.has(item))));
+      const compositeItemId = element.getAttribute("data-composite-item-id");
+      const compositeCardId = element.getAttribute("data-composite-card-id");
+      const displayScoped = Boolean(selection && selection.kind === "controller-group"
+        && (compositeItemId || compositeCardId));
+      element.setAttribute("data-related", String(!selection || displayScoped
+        ? !selection || (compositeItemId ? relatedDisplayItemIds.has(compositeItemId)
+          : compositeCardId ? relatedCardIds.has(compositeCardId) : selected)
+        : relatedNodeIds.has(id)
+          || (element.getAttribute("data-handler-ids") || "").split(",").some((item) => relatedNodeIds.has(item))
+          || nodeIds.some((item) => relatedNodeIds.has(item))
+          || runtimeComponentIds.some((id) => selectedRuntimeComponentIds.has(id))
+          || (selection.kind === "runtime-component" && selection.id === runtimeComponentId)
+          || (element.getAttribute("data-edge-ids") || "").split(",").some((item) => relatedEdgeIds.has(item))));
       if (nodeId) element.setAttribute("data-has-finding", String(findingNodeIds.has(nodeId)));
       if (groupId) element.setAttribute("data-has-finding", String([
         ...(element.getAttribute("data-handler-ids") || "").split(","),
         ...(element.getAttribute("data-node-ids") || "").split(",")
-      ].some((item) => findingNodeIds.has(item))));
+      ].some((item) => findingNodeIds.has(item))
+        || (element.getAttribute("data-edge-ids") || "").split(",").some((item) => findingEdgeIds.has(item))));
+      if (runtimeComponentId || runtimeComponentIds.length) element.setAttribute("data-has-finding", String(nodeIds.some((item) => findingNodeIds.has(item))));
+      if (runtimeComponentId || runtimeComponentIds.length) element.setAttribute("data-related", String(!selection
+        || selectedRuntimeComponentIds.has(runtimeComponentId)
+        || runtimeComponentIds.some((id) => selectedRuntimeComponentIds.has(id))
+        || nodeIds.some((item) => relatedNodeIds.has(item))
+        || (element.getAttribute("data-edge-ids") || "").split(",").some((item) => relatedEdgeIds.has(item))));
     });
     rendered.edgeElements.forEach((element) => {
       const edgeIds = (element.getAttribute("data-edge-ids") || element.getAttribute("data-edge-id") || "").split(",");
       element.setAttribute("data-selected", String(Boolean(selection && selection.kind === "edge" && edgeIds.includes(selection.id))));
-      element.setAttribute("data-related", String(!selection || edgeIds.some((id) => relatedEdgeIds.has(id))));
+      const segmentId = element.getAttribute("data-segment-id");
+      if (segmentId) {
+        const segmentIds = (element.getAttribute("data-segment-ids") || segmentId).split(",").filter(Boolean);
+        const relationIds = (element.getAttribute("data-relation-ids") || "").split(",").filter(Boolean);
+        const related = relatedSegmentIds.size > 0 ? segmentIds.some((id) => relatedSegmentIds.has(id))
+          : relationIds.some((id) => relatedVisualRelationIds.has(id));
+        const selectedSegment = selection && segmentIds.includes(selection.segmentId);
+        element.setAttribute("data-selected", String(Boolean(selection && (selectedSegment
+          || selection.kind === "edge" && edgeIds.includes(selection.id)))));
+        element.setAttribute("data-related", String(!selection || selectedSegment || related));
+      } else element.setAttribute("data-related", String(!selection || edgeIds.some((id) => relatedEdgeIds.has(id))));
       element.setAttribute("data-has-finding", String(edgeIds.some((id) => findingEdgeIds.has(id))));
     });
     (rendered.edgeTrunkElements || []).forEach((element) => {
@@ -2262,12 +3047,31 @@
       element.setAttribute("data-related", String(!selection || edgeIds.some((id) => relatedEdgeIds.has(id))));
       element.setAttribute("data-has-finding", String(edgeIds.some((id) => findingEdgeIds.has(id))));
     });
+    (rendered.runtimeRelationshipElements || []).forEach((element) => {
+      const id = element.getAttribute("data-runtime-relationship-id");
+      const nodeIds = (element.getAttribute("data-node-ids") || "").split(",").filter(Boolean);
+      const runtimeComponentIds = (element.getAttribute("data-runtime-component-ids") || "").split(",").filter(Boolean);
+      element.setAttribute("data-selected", String(Boolean(selection && selection.kind === "runtime-relationship" && selection.id === id)));
+      element.setAttribute("data-related", String(!selection
+        || selectedRuntimeComponentIds.size === 0 && nodeIds.some((nodeId) => relatedNodeIds.has(nodeId))
+        || runtimeComponentIds.some((componentId) => selectedRuntimeComponentIds.has(componentId))
+        || nodeIds.some((nodeId) => relatedNodeIds.has(nodeId))));
+      element.setAttribute("data-has-finding", String(nodeIds.some((nodeId) => findingNodeIds.has(nodeId))));
+    });
     rendered.edgeLabelElements.forEach((element) => {
       const edgeId = element.getAttribute("data-edge-id");
       const selected = Boolean(selection && selection.kind === "edge" && selection.id === edgeId);
       element.setAttribute("data-selected", String(selected));
       element.setAttribute("data-related", String(!selection || relatedEdgeIds.has(edgeId)));
       if (selected) element.setAttribute("data-visible", "true");
+    });
+    (rendered.junctionElements || []).forEach((element) => {
+      const junctionId = element.getAttribute("data-junction-id");
+      const selected = Boolean(selection && selection.segmentId
+        && (element.getAttribute("data-segment-ids") || "").split(",").includes(selection.segmentId));
+      element.setAttribute("data-selected", String(selected));
+      element.setAttribute("data-related", String(!selection || selected
+        || (options.related && options.related.junctionIds instanceof Set && options.related.junctionIds.has(junctionId))));
     });
     applyGraphEmphasis(rendered, graph, selection, options.related);
     (rendered.guides || []).forEach((guide) => {

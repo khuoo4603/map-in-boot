@@ -16,6 +16,8 @@ import com.mapinboot.core.graph.model.GraphEdge;
 import com.mapinboot.core.graph.model.GraphNode;
 import com.mapinboot.core.graph.model.SecurityGraph;
 import com.mapinboot.core.snapshot.Snapshot;
+import com.mapinboot.core.snapshot.runtime.RuntimeArchitecture;
+import com.mapinboot.core.snapshot.runtime.RuntimeArchitectureAssembler;
 import java.time.Instant;
 import java.io.IOException;
 import java.io.InputStream;
@@ -34,25 +36,24 @@ public class SnapshotAssembler {
     private final GraphFingerprintGenerator fingerprintGenerator = new GraphFingerprintGenerator();
     private final EvidenceDisplayCodeResolver evidenceDisplayCodeResolver = new EvidenceDisplayCodeResolver();
     private final List<FindingEvaluator> findingEvaluators;
-    private final String schemaVersion;
     private final String sdkVersion;
 
-    public SnapshotAssembler(List<FindingEvaluator> findingEvaluators, String schemaVersion) {
-        this(findingEvaluators, schemaVersion, loadSdkVersion());
+    public SnapshotAssembler(List<FindingEvaluator> findingEvaluators) {
+        this(findingEvaluators, loadSdkVersion());
     }
 
-    SnapshotAssembler(List<FindingEvaluator> findingEvaluators, String schemaVersion, String sdkVersion) {
-        if (findingEvaluators == null || schemaVersion == null || schemaVersion.isBlank()
-                || sdkVersion == null || sdkVersion.isBlank()) {
+    SnapshotAssembler(List<FindingEvaluator> findingEvaluators, String sdkVersion) {
+        if (findingEvaluators == null || sdkVersion == null || sdkVersion.isBlank()) {
             throw new MapInBootException(ErrorCode.INVALID_CONFIG, "Snapshot 조립 설정이 올바르지 않습니다.");
         }
         this.findingEvaluators = List.copyOf(findingEvaluators);
-        this.schemaVersion = schemaVersion;
         this.sdkVersion = sdkVersion;
     }
 
-    public Snapshot assemble(AnalysisReport report, String serviceId, String instanceId, String applicationVersion) {
-        if (report == null || report.collectionReport() == null || isBlank(serviceId) || isBlank(instanceId)) {
+    public Snapshot assemble(AnalysisReport report, String serviceId, String instanceId, String applicationVersion,
+                             RuntimeArchitecture runtimeArchitecture) {
+        if (report == null || report.collectionReport() == null || isBlank(serviceId) || isBlank(instanceId)
+                || runtimeArchitecture == null) {
             throw new MapInBootException(ErrorCode.INVALID_SNAPSHOT, "Snapshot 조립 입력이 올바르지 않습니다.");
         }
         if (findingEvaluators.size() > 1) {
@@ -70,7 +71,7 @@ public class SnapshotAssembler {
         Snapshot snapshot = new Snapshot(
                 UUID.randomUUID().toString(),
                 Instant.now(),
-                schemaVersion,
+                "2",
                 sdkVersion,
                 serviceId,
                 instanceId,
@@ -81,16 +82,13 @@ public class SnapshotAssembler {
                 report.evidence(),
                 findings,
                 analysisStatus,
-                evidenceDisplayCodes);
+                evidenceDisplayCodes,
+                runtimeArchitecture);
         validateSnapshot(snapshot);
         return snapshot;
     }
 
     static void validateSnapshot(Snapshot snapshot) {
-        validateSnapshot(snapshot, false);
-    }
-
-    static void validateSnapshot(Snapshot snapshot, boolean allowLegacyMissingEvidenceDisplayCodes) {
         if (snapshot == null || isBlank(snapshot.snapshotId()) || snapshot.capturedAt() == null
                 || isBlank(snapshot.schemaVersion()) || isBlank(snapshot.sdkVersion())
                 || isBlank(snapshot.serviceId()) || isBlank(snapshot.instanceId())
@@ -104,8 +102,16 @@ public class SnapshotAssembler {
             }
         }
         validateSnapshotContents(graph, snapshot.evidence(), snapshot.findings(), snapshot.analysisStatus());
-        if (!allowLegacyMissingEvidenceDisplayCodes || !snapshot.evidenceDisplayCodes().isEmpty()) {
-            validateEvidenceDisplayCodes(snapshot.evidence(), snapshot.evidenceDisplayCodes());
+        if (!"2".equals(snapshot.schemaVersion())) {
+            throw new MapInBootException(ErrorCode.UNSUPPORTED_SCHEMA, "지원하지 않는 Snapshot schemaVersion입니다.");
+        }
+        validateEvidenceDisplayCodes(snapshot.evidence(), snapshot.evidenceDisplayCodes());
+        RuntimeArchitectureAssembler.validate(snapshot.runtimeArchitecture());
+        Set<String> graphNodeIds = new HashSet<>(graph.nodes().stream().map(GraphNode::id).toList());
+        for (var component : snapshot.runtimeArchitecture().components()) {
+            if (component.graphNodeIds().stream().anyMatch(id -> !graphNodeIds.contains(id))) {
+                invalidSnapshot("Runtime Architecture의 Graph 참조가 없습니다.");
+            }
         }
         if (!snapshot.graphFingerprint().equals(new GraphFingerprintGenerator().generate(graph))) {
             invalidSnapshot("Snapshot Graph Fingerprint가 일치하지 않습니다.");

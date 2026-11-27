@@ -140,14 +140,11 @@ class LocalSnapshotStoreIntegrationTest {
     @Test
     void unsupportedSchemaIsReportedSeparately() throws Exception {
         Snapshot unsupported = snapshot(Instant.parse("2026-10-31T00:00:00Z"), AnalysisStatus.READY, "/one");
-        Snapshot schemaTwo = new Snapshot(unsupported.snapshotId(), unsupported.capturedAt(), "2",
-                unsupported.sdkVersion(), unsupported.serviceId(), unsupported.instanceId(),
-                unsupported.applicationVersion(), unsupported.graphFingerprint(), unsupported.nodes(), unsupported.edges(),
-                unsupported.evidence(), unsupported.findings(), unsupported.analysisStatus(),
-                unsupported.evidenceDisplayCodes());
+        String schemaThree = new SnapshotJsonCodec().encode(unsupported)
+                .replace("\"schemaVersion\":\"2\"", "\"schemaVersion\":\"3\"");
         Files.createDirectories(tempDirectory);
         Files.writeString(tempDirectory.resolve("snapshot-11111111-1111-1111-1111-111111111111.json"),
-                new SnapshotJsonCodec().encode(schemaTwo));
+                schemaThree);
 
         MapInBootException exception = assertThrows(MapInBootException.class,
                 () -> new LocalSnapshotStore(tempDirectory, 7, new SnapshotJsonCodec()).loadLatest("service"));
@@ -158,10 +155,10 @@ class LocalSnapshotStoreIntegrationTest {
     @Test
     void saveRejectsUnsupportedSchema() {
         Snapshot source = snapshot(Instant.now(), AnalysisStatus.READY, "/one");
-        Snapshot unsupported = new Snapshot(source.snapshotId(), source.capturedAt(), "2", source.sdkVersion(),
+        Snapshot unsupported = new Snapshot(source.snapshotId(), source.capturedAt(), "3", source.sdkVersion(),
                 source.serviceId(), source.instanceId(), source.applicationVersion(), source.graphFingerprint(),
                 source.nodes(), source.edges(), source.evidence(), source.findings(), source.analysisStatus(),
-                source.evidenceDisplayCodes());
+                source.evidenceDisplayCodes(), source.runtimeArchitecture());
 
         MapInBootException exception = assertThrows(MapInBootException.class,
                 () -> store(new SnapshotJsonCodec(), 7).save(unsupported, true));
@@ -175,7 +172,7 @@ class LocalSnapshotStoreIntegrationTest {
         Snapshot withoutStatus = new Snapshot(source.snapshotId(), source.capturedAt(), source.schemaVersion(),
                 source.sdkVersion(), source.serviceId(), source.instanceId(), source.applicationVersion(),
                 source.graphFingerprint(), source.nodes(), source.edges(), source.evidence(), source.findings(), Map.of(),
-                source.evidenceDisplayCodes());
+                source.evidenceDisplayCodes(), source.runtimeArchitecture());
 
         MapInBootException exception = assertThrows(MapInBootException.class,
                 () -> store(new SnapshotJsonCodec(), 7).save(withoutStatus, true));
@@ -244,19 +241,19 @@ class LocalSnapshotStoreIntegrationTest {
                 Map.of("flowKind", "HANDLER"), Confidence.CONFIRMED, List.of(evidence.id()));
         AnalysisReport analysis = new AnalysisReport(collection, List.of(relation), List.of(evidence),
                 Map.of("analyzer", status), List.of());
-        Snapshot assembled = new SnapshotAssembler(List.of(), "1")
-                .assemble(analysis, "service", "instance", "test");
+        Snapshot assembled = new SnapshotAssembler(List.of(), "test")
+                .assemble(analysis, "service", "instance", "test", com.mapinboot.core.snapshot.runtime.RuntimeArchitectureAssembler.unknown());
         return new Snapshot(assembled.snapshotId(), capturedAt, assembled.schemaVersion(), assembled.sdkVersion(),
                 assembled.serviceId(), assembled.instanceId(), assembled.applicationVersion(), assembled.graphFingerprint(),
                 assembled.nodes(), assembled.edges(), assembled.evidence(), assembled.findings(), assembled.analysisStatus(),
-                assembled.evidenceDisplayCodes());
+                assembled.evidenceDisplayCodes(), assembled.runtimeArchitecture());
     }
 
     private Snapshot withApplicationVersion(Snapshot snapshot, String applicationVersion) {
         return new Snapshot(snapshot.snapshotId(), snapshot.capturedAt(), snapshot.schemaVersion(), snapshot.sdkVersion(),
                 snapshot.serviceId(), snapshot.instanceId(), applicationVersion, snapshot.graphFingerprint(),
                 snapshot.nodes(), snapshot.edges(), snapshot.evidence(), snapshot.findings(), snapshot.analysisStatus(),
-                snapshot.evidenceDisplayCodes());
+                snapshot.evidenceDisplayCodes(), snapshot.runtimeArchitecture());
     }
 
     private Snapshot withEvidenceSummary(Snapshot snapshot, String summary) {
@@ -265,6 +262,6 @@ class LocalSnapshotStoreIntegrationTest {
         return new Snapshot(snapshot.snapshotId(), snapshot.capturedAt(), snapshot.schemaVersion(), snapshot.sdkVersion(),
                 snapshot.serviceId(), snapshot.instanceId(), snapshot.applicationVersion(), snapshot.graphFingerprint(),
                 snapshot.nodes(), snapshot.edges(), List.of(updated), snapshot.findings(), snapshot.analysisStatus(),
-                snapshot.evidenceDisplayCodes());
+                snapshot.evidenceDisplayCodes(), snapshot.runtimeArchitecture());
     }
 }

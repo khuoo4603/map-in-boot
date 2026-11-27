@@ -60,7 +60,6 @@
   const showAreasSetting = document.querySelector("#setting-show-areas");
   const showEdgeLabelsSetting = document.querySelector("#setting-show-edge-labels");
   const showMinimapSetting = document.querySelector("#setting-show-minimap");
-  const showDetailFlowSetting = document.querySelector("#setting-show-detail-flow");
   const flowNodeDurationSetting = document.querySelector("#setting-flow-node-duration");
   const flowSpeedSetting = document.querySelector("#setting-flow-speed");
   const flowClient = window.MapInBootFlow;
@@ -91,23 +90,12 @@
   const requestFlowPause = document.querySelector("#request-flow-pause");
   const requestFlowReset = document.querySelector("#request-flow-reset");
   const requestFlowStatus = document.querySelector("#request-flow-status");
+  const requestFlowDetailToggle = document.querySelector("#request-flow-detail-toggle");
+  const requestFlowDetailClose = document.querySelector("#request-flow-detail-close");
+  const requestFlowPopoverCount = document.querySelector("#request-flow-popover-count");
   const requestFlowDetails = document.querySelector("#request-flow-details");
-  const requestFlowStepCount = document.querySelector("#request-flow-step-count");
-  const requestFlowStepKind = document.querySelector("#request-flow-step-kind");
   const requestFlowStepTitle = document.querySelector("#request-flow-step-title");
   const requestFlowStepDescription = document.querySelector("#request-flow-step-description");
-  const requestFlowFilterEducation = document.querySelector("#request-flow-filter-education");
-  const requestFlowFilterStatus = document.querySelector("#request-flow-filter-status");
-  const requestFlowFilterName = document.querySelector("#request-flow-filter-name");
-  const requestFlowFilterFqcn = document.querySelector("#request-flow-filter-fqcn");
-  const requestFlowFilterDescription = document.querySelector("#request-flow-filter-description");
-  const requestFlowFilterRole = document.querySelector("#request-flow-filter-role");
-  const requestFlowFilterInput = document.querySelector("#request-flow-filter-input");
-  const requestFlowFilterCondition = document.querySelector("#request-flow-filter-condition");
-  const requestFlowFilterProcessing = document.querySelector("#request-flow-filter-processing");
-  const requestFlowFilterOutcomes = document.querySelector("#request-flow-filter-outcomes");
-  const requestFlowFilterCautions = document.querySelector("#request-flow-filter-cautions");
-  const requestFlowFilterSource = document.querySelector("#request-flow-filter-source");
   const requestFlowNavigation = document.querySelector("#request-flow-navigation");
   const requestFlowPrevious = document.querySelector("#request-flow-previous");
   const requestFlowNext = document.querySelector("#request-flow-next");
@@ -143,7 +131,7 @@
     allEndpointQuery: "",
     featureEndpointQuery: "",
     featureEndpointOptionIndex: -1,
-    display: { areas: true, edgeLabels: true, minimap: true, detailedFlow: false },
+    display: { areas: true, edgeLabels: true, minimap: true },
     requestFlowSettings: { nodeHoldDuration: 1500, speed: 1 },
     loading: false,
     selection: null,
@@ -167,8 +155,8 @@
   let requestFlowActiveNodeId = null;
   let requestFlowActiveNode = null;
   let requestFlowActiveEdges = [];
-  let requestFlowActiveRender = null;
   let handlingRequestFlowFailure = false;
+  let requestFlowDetailsOpen = false;
 
   const requestFlowController = requestFlowClient && requestFlowControls
     ? requestFlowClient.createController({
@@ -229,6 +217,14 @@
     else element.removeAttribute("hidden");
   }
 
+  // 재생 상태와 독립적인 상세 팝오버 표시
+  function setRequestFlowDetails(open, returnFocus = false) {
+    requestFlowDetailsOpen = Boolean(open && requestFlowController && requestFlowController.state().step);
+    setHidden(requestFlowDetails, !requestFlowDetailsOpen);
+    if (requestFlowDetailToggle) requestFlowDetailToggle.setAttribute("aria-expanded", String(requestFlowDetailsOpen));
+    if (returnFocus && requestFlowDetailToggle && typeof requestFlowDetailToggle.focus === "function") requestFlowDetailToggle.focus();
+  }
+
   function setRequestFlowVisibility(visible) {
     const nextVisible = Boolean(visible);
     if (requestFlowControls) requestFlowControls.hidden = !nextVisible;
@@ -237,6 +233,7 @@
       requestFlowEducation.setAttribute("aria-hidden", String(!nextVisible));
     }
     if (!nextVisible) {
+      setRequestFlowDetails(false);
       setRequestFlowNode(null);
       setRequestFlowEdge(null);
       if (requestFlowDot) setHidden(requestFlowDot, true);
@@ -244,31 +241,43 @@
   }
 
   function findRequestFlowNode(anchorId) {
-    const candidates = [
-      ...(graphNodes && graphNodes.children ? graphNodes.children : []),
-      ...(graphFlowProjection && graphFlowProjection.children ? graphFlowProjection.children : [])
+    const pending = [
+      ...(graphNodes && graphNodes.children ? Array.from(graphNodes.children) : []),
+      ...(graphFlowProjection && graphFlowProjection.children ? Array.from(graphFlowProjection.children) : [])
     ];
-    return candidates.find((element) => {
+    const candidates = [];
+    while (pending.length) {
+      const element = pending.shift();
+      candidates.push(element);
+      pending.push(...Array.from(element.children || []));
+    }
+    const directMatch = candidates.find((element) => [
+      element.getAttribute("data-node-id"),
+      element.getAttribute("data-projection-id"),
+      element.getAttribute("data-composite-item-id"),
+      ...(element.getAttribute("data-projection-node-ids") || "").split(",")
+    ].includes(anchorId));
+    if (directMatch) return directMatch;
+    const includesAnchor = (element) => {
       const identifiers = [
-        element.getAttribute("data-node-id"),
-        element.getAttribute("data-projection-id"),
         ...(element.getAttribute("data-node-ids") || "").split(","),
         ...(element.getAttribute("data-handler-ids") || "").split(","),
-        ...(element.getAttribute("data-endpoint-ids") || "").split(",")
+        ...(element.getAttribute("data-endpoint-ids") || "").split(","),
+        ...(element.getAttribute("data-runtime-component-ids") || "").split(",")
       ];
       return identifiers.includes(anchorId);
-    }) || null;
+    };
+    return candidates.find((element) => (element.getAttribute("class") || "").split(/\s+/)
+      .includes("graph-composite-item") && includesAnchor(element))
+      || candidates.find(includesAnchor) || null;
   }
 
   // 재생 단계에 맞는 실제 또는 교육용 표시 Node만 부분 갱신
   function setRequestFlowNode(anchorId) {
-    const render = state.graphRender;
     const nextId = anchorId || null;
-    if (requestFlowActiveNodeId === nextId && requestFlowActiveRender === render) return;
     if (requestFlowActiveNode) requestFlowActiveNode.removeAttribute("data-request-flow-active");
     requestFlowActiveNodeId = nextId;
     requestFlowActiveNode = null;
-    requestFlowActiveRender = render;
     if (!nextId) return;
     requestFlowActiveNode = findRequestFlowNode(nextId);
     if (requestFlowActiveNode) requestFlowActiveNode.setAttribute("data-request-flow-active", "true");
@@ -278,10 +287,13 @@
     requestFlowActiveEdges.forEach((element) => element.removeAttribute("data-request-flow-active"));
     requestFlowActiveEdges = [];
     if (!path) return;
-    requestFlowActiveEdges.push(path);
+    const paths = Array.isArray(path) ? path : [path];
     const classNames = (element) => (element.getAttribute("class") || "").split(/\s+/);
-    if (classNames(path).includes("graph-edge-flow-route")) {
-      const edgeIds = new Set((path.getAttribute("data-edge-ids") || path.getAttribute("data-edge-id") || "")
+    paths.forEach((entry) => {
+      const item = entry.element || entry;
+      requestFlowActiveEdges.push(item);
+      if (!classNames(item).includes("graph-edge-flow-route")) return;
+      const edgeIds = new Set((item.getAttribute("data-edge-ids") || item.getAttribute("data-edge-id") || "")
         .split(",").filter(Boolean));
       Array.from(graphEdges && graphEdges.children || []).forEach((element) => {
         if (!classNames(element).some((name) => name === "graph-edge-branch" || name === "graph-edge-trunk")) return;
@@ -289,26 +301,53 @@
           .split(",").filter(Boolean);
         if (ids.some((id) => edgeIds.has(id))) requestFlowActiveEdges.push(element);
       });
-    }
+    });
+    requestFlowActiveEdges = Array.from(new Set(requestFlowActiveEdges));
     requestFlowActiveEdges.forEach((element) => element.setAttribute("data-request-flow-active", "true"));
   }
 
   function requestFlowPath(transition) {
     if (!transition) return null;
-    const layer = transition.kind === "projection" ? graphFlowProjection : graphEdges;
-    const paths = Array.from(layer?.children ?? []);
-    const matches = (path) => {
-      if (path.tagName !== "path" || typeof path.getTotalLength !== "function"
-        || typeof path.getPointAtLength !== "function") return false;
-      if (transition.kind === "projection") {
-        return path.getAttribute("data-projection-edge-id") === transition.edgeId;
+    const pending = [graphEdges, graphNodes, graphFlowProjection].filter(Boolean);
+    const paths = [];
+    while (pending.length) {
+      const element = pending.shift();
+      if (element.tagName === "path") paths.push(element);
+      pending.push(...Array.from(element.children || []));
+    }
+    const displayModel = state.layout && state.layout.plan && state.layout.plan.displayModel;
+    if (transition.kind !== "display") return null;
+    const routing = state.layout && state.layout.plan && state.layout.plan.overviewRouting;
+    const relationIds = transition.relationIds || [transition.relationId];
+    const byId = new Map(paths.flatMap((path) =>
+      (path.getAttribute("data-segment-ids") || path.getAttribute("data-segment-id") || "")
+        .split(",").filter(Boolean).map((id) => [id, path])));
+    const segments = new Map((routing && routing.segments || []).map((segment) => [segment.id, segment]));
+    const result = [];
+    for (const relationId of relationIds) {
+      const route = routing && routing.routesByRelationId[relationId];
+      if (!route || !route.orderedSegmentIds.length) return null;
+      let current = route.sourcePort;
+      for (const id of route.orderedSegmentIds) {
+        const segment = segments.get(id);
+        const path = byId.get(id);
+        if (!segment || !path || typeof path.getTotalLength !== "function"
+          || typeof path.getPointAtLength !== "function") return null;
+        const distance = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
+        const forward = distance(current, segment.from) <= distance(current, segment.to);
+        const start = forward ? segment.from : segment.to;
+        try {
+          const renderedStart = path.getPointAtLength(0);
+          const reverse = distance(renderedStart, start) > distance(renderedStart, forward ? segment.to : segment.from);
+          const routePath = { element: path, requestFlowReverse: reverse,
+            getTotalLength: () => path.getTotalLength(), getPointAtLength: (length) => path.getPointAtLength(length) };
+          if (typeof path.getScreenCTM === "function") routePath.getScreenCTM = () => path.getScreenCTM();
+          result.push(routePath);
+        } catch { return null; }
+        current = forward ? segment.to : segment.from;
       }
-      const ids = (path.getAttribute("data-edge-ids") || path.getAttribute("data-edge-id") || "").split(",");
-      return ids.includes(transition.edgeId);
-    };
-    if (transition.kind === "projection") return paths.find(matches) || null;
-    return paths.find((path) => (path.getAttribute("class") || "").split(/\s+/).includes("graph-edge-flow-route")
-      && matches(path)) || paths.find(matches) || null;
+    }
+    return result.length ? result : null;
   }
 
   // 실제 내용이 바뀐 단계 텍스트만 DOM과 접근성 트리에 반영
@@ -325,13 +364,18 @@
     const steps = Array.isArray(currentState.steps) ? currentState.steps : state.requestFlowSteps;
     const hasSteps = steps.length > 0;
     const inDetail = isEndpointDetailView() && Boolean(state.selectedEndpointId || state.detailApiId);
-    const detailed = inDetail && Boolean(state.display.detailedFlow);
     const filterEducation = step && step.filterEducation;
     const path = currentState.phase === "EDGE_TRAVEL" ? requestFlowPath(currentState.transition) : null;
     setRequestFlowEdge(path);
-    const point = path && requestFlowClient && requestFlowClient.pathPointAt
-      ? requestFlowClient.pathPointAt(path, currentState.progress, currentState.transition.length)
-      : null;
+    const transition = currentState.transition;
+    let point = path && requestFlowClient && requestFlowClient.pathPointAt
+      ? requestFlowClient.pathPointAt(path, currentState.progress, transition.length,
+        requestFlowDot && requestFlowDot.parentNode) : null;
+    if (currentState.phase === "EDGE_TRAVEL" && transition && transition.kind === "internal") {
+      point = { x: transition.from.x + (transition.to.x - transition.from.x) * currentState.progress,
+        y: transition.from.y + (transition.to.y - transition.from.y) * currentState.progress };
+    }
+    if ((currentState.phase === "NODE_HOLD" || currentState.phase === "COMPLETE") && step) point = step.position;
     const isPathMissing = currentState.phase === "EDGE_TRAVEL" && !point;
     const pathUnavailable = currentState.phase === "PATH_UNAVAILABLE" || isPathMissing;
     const statusState = pathUnavailable ? "unavailable"
@@ -350,36 +394,41 @@
     if (requestFlowStatus && requestFlowStatus.getAttribute("data-state") !== statusState) {
       requestFlowStatus.setAttribute("data-state", statusState);
     }
-    if (requestFlowControls) requestFlowControls.dataset.detailed = String(detailed);
-    setHidden(requestFlowDetails, !detailed);
-    setHidden(requestFlowNavigation, !detailed);
-    setHidden(requestFlowFilterEducation, !detailed || !filterEducation);
-    setRequestFlowText(requestFlowStepCount, hasSteps
-      ? `${currentState.stepIndex + 1} / ${steps.length}` : `0 / ${steps.length}`);
-    setRequestFlowText(requestFlowStepKind, step
-      ? step.kind === "actual" ? "Snapshot에서 확인한 구조" : "일반적인 처리 원리" : "단계 없음");
-    setRequestFlowText(requestFlowStepTitle, step && step.label || "표시할 단계가 없습니다.");
-    setRequestFlowText(requestFlowStepDescription, step && step.description || "");
-    if (filterEducation) {
-      setRequestFlowText(requestFlowFilterStatus, filterEducation.statusLabel);
-      setRequestFlowText(requestFlowFilterName, filterEducation.name);
-      setRequestFlowText(requestFlowFilterFqcn, filterEducation.fqcn);
-      setRequestFlowText(requestFlowFilterDescription, filterEducation.description);
-      setRequestFlowText(requestFlowFilterRole, filterEducation.role);
-      setRequestFlowText(requestFlowFilterInput, filterEducation.input);
-      setRequestFlowText(requestFlowFilterCondition, filterEducation.condition);
-      setRequestFlowText(requestFlowFilterProcessing, filterEducation.processing);
-      setRequestFlowText(requestFlowFilterOutcomes, filterEducation.outcomes);
-      setRequestFlowText(requestFlowFilterCautions, filterEducation.cautions);
-      setRequestFlowText(requestFlowFilterSource, filterEducation.source);
+    if (!step && requestFlowDetailsOpen) setRequestFlowDetails(false);
+    setHidden(requestFlowDetails, !requestFlowDetailsOpen);
+    setHidden(requestFlowNavigation, !hasSteps);
+    const count = hasSteps ? `${currentState.stepIndex + 1} / ${steps.length}` : "0 / 0";
+    setRequestFlowText(requestFlowPopoverCount, count);
+    const names = { "security-chain": "보안 필터 체인", "dispatcher-servlet": "DispatcherServlet",
+      "endpoint-mapping": "API 매핑", "education-handler-mapping": "요청 매핑 탐색",
+      "education-handler-adapter": "핸들러 실행 준비" };
+    let title = step && (names[step.id] || step.label) || "표시할 단계가 없습니다.";
+    title = String(title).replace(/^(?:확인된 )?(?:Servlet Filter|Security Filter|SecurityFilterChain|API Endpoint|Handler) · /, "")
+      .replace(/\b(?:[a-z_$][\w$]*\.)+([A-Z_$][\w$]*)/g, "$1").replace(/\([^)]*\)/g, "");
+    if (title.includes("|") || /\b[0-9a-f]{32,}\b/i.test(title)) {
+      title = step && step.id.startsWith("security") ? "보안 필터 체인" : "처리 단계";
     }
+    setRequestFlowText(requestFlowStepTitle, title);
+    const processing = filterEducation && filterEducation.processing;
+    const processSentence = processing && (processing.endsWith("수 있음")
+      ? processing.replace(/수 있음$/, "수 있습니다.") : `${processing}할 수 있습니다.`);
+    const description = filterEducation && filterEducation.role && processSentence
+      ? `${filterEducation.role}하는 역할을 합니다. ${processSentence}` : step && step.description || "";
+    setRequestFlowText(requestFlowStepDescription, String(description)
+      .replace(/https?:\/\/\S+/g, "관련 정보")
+      .replace(/\b(?:[a-z_$][\w$]*\.)+([A-Z_$][\w$]*)/g, "$1")
+      .replace(/\b[\w.$-]+(?:\|[\w.$/:-]+)+/g, "해당 처리 구성")
+      .replace(/(?<![\w])\/(?:[\w{}:.-]+\/?)+/g, "요청 경로")
+      .replace(/\b[0-9a-f]{32,}\b/gi, "구성 정보"));
+    if (requestFlowDetailToggle) requestFlowDetailToggle.disabled = !step;
     if (requestFlowStart) requestFlowStart.disabled = currentState.status === "running" || !hasSteps;
     if (requestFlowPause) requestFlowPause.disabled = currentState.status !== "running";
     if (requestFlowReset) requestFlowReset.disabled = !hasSteps;
     if (requestFlowPrevious) requestFlowPrevious.disabled = !hasSteps || currentState.stepIndex <= 0;
     if (requestFlowNext) requestFlowNext.disabled = !hasSteps || currentState.stepIndex >= steps.length - 1;
-    setRequestFlowNode(inDetail && currentState.phase === "NODE_HOLD" && step ? step.anchorId : null);
-    if (!requestFlowDot || !inDetail || !step || currentState.phase !== "EDGE_TRAVEL" || !point) {
+    setRequestFlowNode(inDetail && step && ["NODE_HOLD", "COMPLETE"].includes(currentState.phase)
+      ? step.displayItemId || step.anchorId : null);
+    if (!requestFlowDot || !inDetail || !step || !point) {
       if (requestFlowDot) setHidden(requestFlowDot, true);
       return;
     }
@@ -438,25 +487,47 @@
       resetRequestFlow();
       return;
     }
+    const displayModel = state.layout.plan && state.layout.plan.displayModel;
     const positions = {
       ...(state.layout.positions || {}),
       ...Object.fromEntries((state.layout.plan && state.layout.plan.projection && state.layout.plan.projection.nodes || [])
         .map((node) => [node.id, node.position]))
     };
+    if (displayModel && displayModel.itemById) {
+      const itemPosition = (id) => {
+        const item = displayModel.itemById[id];
+        return item && item.bounds ? { x: item.bounds.x + item.bounds.width / 2,
+          y: item.bounds.y + item.bounds.height / 2 } : null;
+      };
+      Object.entries(displayModel.originalNodeToItemIds || {}).forEach(([id, itemIds]) => {
+        const position = itemIds.map(itemPosition).find(Boolean);
+        if (position) positions[id] = position;
+      });
+      Object.entries(displayModel.projectionToItemIds || {}).forEach(([id, itemIds]) => {
+        const position = itemIds.map(itemPosition).find(Boolean);
+        if (position) positions[id] = position;
+      });
+      Object.entries(displayModel.runtimeComponentToItemIds || {}).forEach(([id, itemIds]) => {
+        const position = itemIds.map(itemPosition).find(Boolean);
+        if (position) positions[id] = position;
+      });
+    }
     const steps = requestFlowClient.buildSteps({
       graph: state.viewGraph,
       index: state.flowIndex,
       endpointId: isFindingDetailView() ? state.detailApiId : state.selectedEndpointId,
       positions,
       projection: state.layout.plan && state.layout.plan.projection,
-      snapshot: state.snapshot
+      snapshot: state.snapshot,
+      displayModel
     });
     steps.forEach((step) => {
-      if (!step.transition) return;
+      if (!step.transition || step.transition.kind === "internal") return;
       const path = requestFlowPath(step.transition);
       if (!path) return;
       try {
-        const length = path.getTotalLength();
+        const paths = Array.isArray(path) ? path : [path];
+        const length = paths.reduce((total, item) => total + item.getTotalLength(), 0);
         step.transition.length = Number.isFinite(length) && length > 0 ? length : null;
       } catch {
         step.transition.length = null;
@@ -584,9 +655,6 @@
     const findingsByEndpoint = new Map();
     const endpoints = state.flowIndex && state.flowIndex.endpoints
       ? state.flowIndex.endpoints : Array.from(nodesById.values()).filter((node) => node.type === "ENDPOINT");
-    const evidence = state.snapshot && Array.isArray(state.snapshot.evidence) ? state.snapshot.evidence : [];
-    const evidenceById = state.flowIndex && state.flowIndex.evidenceById
-      ? state.flowIndex.evidenceById : new Map(evidence.filter((item) => item && item.id).map((item) => [item.id, item]));
     state.findingIndex.forEach((entry) => {
       const endpointIds = new Set();
       const addEndpoint = (id) => {
@@ -602,16 +670,16 @@
       });
       if (endpointIds.size === 0) {
         const ids = Array.isArray(entry.finding.evidenceIds) ? entry.finding.evidenceIds : [];
-        const findingEvidence = new Set(ids.filter((id) => evidenceById.has(id)));
-        const direct = endpoints.filter((endpoint) => (endpoint.evidenceIds || []).some((id) => {
-          const evidence = evidenceById.get(id);
-          const attrs = endpoint.attributes || {};
-          return findingEvidence.has(id) && evidence && evidence.source === "RUNTIME"
-            && attrs.httpMethod && attrs.path && attrs.handler
-            && evidence.summary === `등록 Endpoint: ${attrs.httpMethod} ${attrs.path}`
-            && String(evidence.location || "").endsWith(`:${attrs.handler}`);
-        }));
-        if (direct.length === 1) addEndpoint(direct[0].id);
+        const findingEvidence = new Set(ids);
+        const mappings = state.flowIndex && Array.isArray(state.flowIndex.validEdges)
+          ? state.flowIndex.validEdges : Array.from(edgesById.values());
+        const directMappings = mappings.filter((edge) => edge.type === "FLOWS_TO"
+          && nodesById.get(edge.sourceId)?.type === "ENDPOINT"
+          && nodesById.get(edge.targetId)?.type === "HANDLER"
+          && edge.confidence === "CONFIRMED"
+          && (edge.evidenceIds || []).some((id) => findingEvidence.has(id)));
+        const directEndpointIds = new Set(directMappings.map((edge) => edge.sourceId));
+        if (directEndpointIds.size === 1) addEndpoint(Array.from(directEndpointIds)[0]);
         if (endpointIds.size === 0 && ["STATE_BYPASS", "OBJECT_BINDING"].includes(entry.finding.ruleId)) {
           const type = entry.finding.ruleId === "STATE_BYPASS" ? "BUSINESS_SECURITY_STATE" : "AUTHORIZATION";
           const handlers = new Set(Array.from(nodesById.values()).filter((node) => node.type === type
@@ -622,8 +690,15 @@
             && (node.evidenceIds || []).length > 0
             && node.evidenceIds.every((id) => findingEvidence.has(id)))
             .map((node) => node.attributes.handler));
-          const matches = endpoints.filter((endpoint) => endpoint.attributes && handlers.has(endpoint.attributes.handler));
-          if (handlers.size === 1 && matches.length === 1) addEndpoint(matches[0].id);
+          const handlerIds = new Set((state.flowIndex && state.flowIndex.handlers || [])
+            .filter((handler) => handler.attributes && handlers.has(handler.attributes.handler))
+            .map((handler) => handler.id));
+          // Finding 근거 Fact의 Handler 식별자를 공통 FLOWS_TO 인덱스로 Endpoint에 투영
+          const matches = new Map(Array.from(handlerIds).flatMap((handlerId) =>
+            (state.flowIndex && state.flowIndex.endpointsForHandler
+              ? state.flowIndex.endpointsForHandler(handlerId) : [])
+              .map((mapping) => [mapping.endpoint.id, mapping.endpoint])));
+          if (handlerIds.size === 1 && matches.size === 1) addEndpoint(Array.from(matches.values())[0].id);
         }
       }
       const ids = Array.from(endpointIds);
@@ -1094,7 +1169,7 @@
     if (graphCanvas) graphCanvas.dataset.showEdgeLabels = String(state.display.edgeLabels);
     if (navigation && navigation.setMiniMapVisible) navigation.setMiniMapVisible(state.display.minimap);
     [[showAreasSetting, state.display.areas], [showEdgeLabelsSetting, state.display.edgeLabels],
-      [showMinimapSetting, state.display.minimap], [showDetailFlowSetting, state.display.detailedFlow]]
+      [showMinimapSetting, state.display.minimap]]
       .forEach(([setting, checked]) => {
         if (!setting) return;
         setting.checked = checked;
@@ -1173,7 +1248,7 @@
   }
 
   function settingsFocusableElements() {
-    return [settingsCloseButton, showAreasSetting, showEdgeLabelsSetting, showMinimapSetting, showDetailFlowSetting,
+    return [settingsCloseButton, showAreasSetting, showEdgeLabelsSetting, showMinimapSetting,
       flowNodeDurationSetting, flowSpeedSetting]
       .filter((element) => element && !element.disabled);
   }
@@ -1294,15 +1369,17 @@
       && graphNodes.has(state.detailApiId)) nodeIds.add(state.detailApiId);
 
     if (nodeIds.size === 0 && edgeIds.size === 0) {
-      const endpoint = graphNodes.get(state.detailApiId);
-      const handler = endpoint && endpoint.attributes && endpoint.attributes.handler;
+      const mapping = state.flowIndex && state.flowIndex.handlerFor(state.detailApiId);
+      const handler = mapping && mapping.status === "CONFIRMED" ? mapping.node : null;
+      const handlerName = handler && handler.attributes && handler.attributes.handler;
       const evidenceIds = new Set(Array.isArray(entry.finding.evidenceIds) ? entry.finding.evidenceIds : []);
-      if (handler && evidenceIds.size > 0 && ["STATE_BYPASS", "OBJECT_BINDING"].includes(entry.finding.ruleId)) {
+      if (handlerName && evidenceIds.size > 0 && ["STATE_BYPASS", "OBJECT_BINDING"].includes(entry.finding.ruleId)) {
         const type = entry.finding.ruleId === "STATE_BYPASS" ? "BUSINESS_SECURITY_STATE" : "AUTHORIZATION";
         const factTypes = entry.finding.ruleId === "STATE_BYPASS"
           ? ["BUSINESS_STATE_EVALUATION"] : ["OBJECT_AUTHORIZATION_REQUIREMENT", "OBJECT_ACCESS_PATH"];
+        // 선택 Endpoint의 확정 FLOWS_TO 대상 Handler와 동일한 실제 근거 Fact만 보강
         const candidates = graph.nodes.filter((node) => node.type === type
-          && node.attributes && node.attributes.handler === handler && factTypes.includes(node.attributes.factType)
+          && node.attributes && node.attributes.handler === handlerName && factTypes.includes(node.attributes.factType)
           && Array.isArray(node.evidenceIds) && node.evidenceIds.length > 0
           && node.evidenceIds.every((id) => evidenceIds.has(id)));
         if (candidates.length === 1) nodeIds.add(candidates[0].id);
@@ -1460,7 +1537,18 @@
   }
 
   function graphElement(kind, id) {
-    if (!state.graph || !id) return null;
+    if (!id) return null;
+    if (kind === "runtime-component") {
+      return state.snapshot && state.snapshot.runtimeArchitecture
+        && Array.isArray(state.snapshot.runtimeArchitecture.components)
+        ? state.snapshot.runtimeArchitecture.components.find((item) => item.id === id) || null : null;
+    }
+    if (kind === "runtime-relationship") {
+      return state.snapshot && state.snapshot.runtimeArchitecture
+        && Array.isArray(state.snapshot.runtimeArchitecture.relationships)
+        ? state.snapshot.runtimeArchitecture.relationships.find((item) => item.id === id) || null : null;
+    }
+    if (!state.graph) return null;
     if (kind === "controller-group") {
       const groups = displayGroups();
       return Array.isArray(groups) ? groups.find((group) => group.id === id) || null : null;
@@ -1472,12 +1560,17 @@
   function displayGroups() {
     const plan = state.layout && state.layout.plan;
     if (!plan || isDetailView() || isFindingDetailView()) return [];
-    return (plan.controllerGroups || []).concat(plan.displayModel ? plan.displayModel.groups : []);
+    return (plan.controllerGroups || []).concat(plan.displayModel
+      ? [...(plan.displayModel.groups || []), ...(plan.displayModel.composites || []),
+        ...(plan.displayModel.composites || []).flatMap((card) => card.items || [])]
+      : []);
   }
 
   function graphRelated(graph, focus) {
+    const plan = state.layout && state.layout.plan;
     return inspectorClient && focus
-      ? inspectorClient.related(graph, focus, displayGroups())
+      ? inspectorClient.related(graph, focus, displayGroups(), state.snapshot, plan && plan.displayModel,
+        plan && plan.overviewRouting)
       : { nodeIds: new Set(), edgeIds: new Set() };
   }
 
@@ -1507,7 +1600,7 @@
     }
   }
 
-  function selectGraphElement(kind, id, segmentEdgeIds = null) {
+  function selectGraphElement(kind, id, segmentEdgeIds = null, segmentId = null) {
     let selectedKind = kind;
     let selectedId = id;
     if (isFindingDetailView() && kind === "node") {
@@ -1527,6 +1620,7 @@
     if (selectedKind === "edge" && Array.isArray(segmentEdgeIds) && segmentEdgeIds.length > 1) {
       state.selection.segmentEdgeIds = segmentEdgeIds.slice();
     }
+    if (selectedKind === "edge" && segmentId) state.selection.segmentId = segmentId;
     state.graphHover = null;
     state.inspectorDismissed = false;
     if (inspectorClient) inspectorClient.hideHover();
@@ -1537,7 +1631,8 @@
   function showGraphHover(kind, id, anchor) {
     if (!inspectorClient || !(state.viewGraph || state.graph)) return;
     state.graphHover = { kind, id };
-    inspectorClient.showHover({ graph: state.viewGraph || state.graph, snapshot: state.snapshot, kind, id, anchor, displayIds: state.displayIds });
+    inspectorClient.showHover({ graph: state.viewGraph || state.graph, snapshot: state.snapshot, kind, id, anchor,
+      displayIds: state.displayIds, controllerGroups: displayGroups() });
   }
 
   function hideGraphHover() {
@@ -1668,14 +1763,16 @@
         ? visibleGraph.nodes.find((node) => node.id === state.selection.id)
         : state.selection.kind === "edge"
           ? visibleGraph.edges.find((edge) => edge.id === state.selection.id)
-          : graphElement("controller-group", state.selection.id);
+          : graphElement(state.selection.kind, state.selection.id);
       if (!visibleItem) {
         state.selection = null;
         if (inspectorClient) inspectorClient.hideHover();
       }
     }
     const related = inspectorClient
-      ? inspectorClient.related(viewGraph, state.selection, displayGroups())
+      ? inspectorClient.related(viewGraph, state.selection, displayGroups(), state.snapshot,
+        state.layout && state.layout.plan && state.layout.plan.displayModel,
+        state.layout && state.layout.plan && state.layout.plan.overviewRouting)
       : { nodeIds: new Set(), edgeIds: new Set() };
     const renderLayers = {
       svg: graphSvg,
@@ -1713,12 +1810,22 @@
       onNodeBlur: hideGraphHover,
       onNodeHover: (id, anchor) => showGraphHover("node", id, anchor),
       onNodeLeave: hideGraphHover,
+      onRuntimeComponentClick: (id) => selectGraphElement("runtime-component", id),
+      onRuntimeComponentFocus: (id, anchor) => showGraphHover("runtime-component", id, anchor),
+      onRuntimeComponentBlur: hideGraphHover,
+      onRuntimeComponentHover: (id, anchor) => showGraphHover("runtime-component", id, anchor),
+      onRuntimeComponentLeave: hideGraphHover,
+      onRuntimeRelationshipClick: (id) => selectGraphElement("runtime-relationship", id),
+      onRuntimeRelationshipFocus: (id, anchor) => showGraphHover("runtime-relationship", id, anchor),
+      onRuntimeRelationshipBlur: hideGraphHover,
+      onRuntimeRelationshipHover: (id, anchor) => showGraphHover("runtime-relationship", id, anchor),
+      onRuntimeRelationshipLeave: hideGraphHover,
       onControllerGroupClick: (id) => selectGraphElement("controller-group", id),
       onControllerGroupFocus: (id, anchor) => showGraphHover("controller-group", id, anchor),
       onControllerGroupBlur: hideGraphHover,
       onControllerGroupHover: (id, anchor) => showGraphHover("controller-group", id, anchor),
       onControllerGroupLeave: hideGraphHover,
-      onEdgeClick: (id, _anchor, edgeIds) => selectGraphElement("edge", id, edgeIds),
+      onEdgeClick: (id, _anchor, edgeIds, segmentId) => selectGraphElement("edge", id, edgeIds, segmentId),
       onEdgeFocus: (id, anchor) => showGraphHover("edge", id, anchor),
       onEdgeBlur: hideGraphHover,
       onEdgeHover: (id, anchor) => showGraphHover("edge", id, anchor),
@@ -1749,8 +1856,9 @@
           onShowFinding: () => selectFinding(state.selectedFindingId),
           onOpenFindingEndpoint: (endpointId) => openEndpointDetail(endpointId, state.selectedFindingId),
           controllerGroups: displayGroups(),
-          displayModel: !isDetailView() && state.layout && state.layout.plan && state.layout.plan.displayModel,
-          detailedFlow: state.display.detailedFlow,
+          displayModel: state.layout && state.layout.plan && state.layout.plan.displayModel,
+          overviewRouting: !isDetailView() && state.layout && state.layout.plan && state.layout.plan.overviewRouting,
+          detailedFlow: isEndpointDetailView(),
           endpointChainId: filterEducationChainId()
         });
       }
@@ -1768,15 +1876,15 @@
         : {};
       const fitPositions = { ...renderedPositions, ...projectionPositions };
       const layoutPlan = state.layout && state.layout.plan;
+      const detailAreas = layoutPlan && layoutPlan.detailBlueprint;
       const areaBounds = layoutPlan ? [
-        ...(layoutPlan.lanes || []).map((lane) => lane.bounds),
-        ...(layoutPlan.chainGroups || []).map((group) => ({
-          left: group.left,
-          top: group.top,
-          right: group.right,
-          bottom: group.bottom
-        })),
-        layoutPlan.educationArea,
+        ...(detailAreas ? (detailAreas.regions || []).map((region) => region.bounds) : [
+          ...(layoutPlan.lanes || []).map((lane) => lane.bounds),
+          ...(layoutPlan.chainGroups || []).map((group) => ({
+            left: group.left, top: group.top, right: group.right, bottom: group.bottom
+          })),
+          layoutPlan.educationArea
+        ]),
         ...(layoutPlan.findingSectionLayouts || []).map((section) => section.bounds)
       ].filter((bounds) => bounds && [bounds.left, bounds.top, bounds.right, bounds.bottom].every(Number.isFinite)) : [];
       areaBounds.forEach((bounds, index) => {
@@ -1789,6 +1897,7 @@
       });
       const presentationNodes = [
         ...((result && Array.isArray(result.displayNodes)) ? result.displayNodes : visibleGraph.nodes),
+        ...((result && Array.isArray(result.runtimeBlueprintNodes)) ? result.runtimeBlueprintNodes : []),
         ...projectionNodes.map((node) => ({ ...node, kind: "education" }))
       ];
       if (unchanged) navigation.apply();
@@ -1914,6 +2023,8 @@
     return `${state.snapshotGeneration}|${JSON.stringify([
       "presentation-bounds-v2",
       graph.presentationContext || "overview",
+      graph.detailEndpointId || "",
+      graph.runtimeArchitecture && graph.runtimeArchitecture.architectureFingerprint || "",
       graph.nodes.map((node) => node.id),
       graph.edges.map((edge) => edge.id),
       findingSections
@@ -1982,6 +2093,8 @@
     const layoutGraph = {
       ...viewGraph,
       presentationContext: isDetailView() || isFindingDetailView() ? "detail" : "overview",
+      detailEndpointId: isFindingDetailView() ? state.detailApiId : isDetailView() ? state.selectedEndpointId : "",
+      runtimeArchitecture: state.snapshot && state.snapshot.runtimeArchitecture || null,
       findingSections: layoutSections
     };
     const requestId = ++state.layoutRequestId;
@@ -2252,8 +2365,11 @@
   }
 
   function graphNodeTarget(id) {
-    return findUiElement(graphNodes, (element) => hasUiClass(element, "graph-node")
-      && element.getAttribute("data-node-id") === id);
+    const compositeItem = findUiElements(graphNodes, (element) => hasUiClass(element, "graph-composite-item")
+      && (element.getAttribute("data-node-ids") || "").split(",").includes(id))[0];
+    return compositeItem || findUiElement(graphNodes, (element) => hasUiClass(element, "graph-node")
+      && (element.getAttribute("data-node-id") === id
+        || (element.getAttribute("data-node-ids") || "").split(",").includes(id)));
   }
 
   function graphEdgeTarget(id) {
@@ -2509,7 +2625,8 @@
           target: () => inspector,
           title: "상세 정보 확인",
           description: "이미 선택한 Node의 Inspector에서 속성·연결·관계·Evidence를 확인합니다. 이 단계는 선택을 바꾸지 않습니다.",
-          valid: () => Boolean(state.selection && state.selection.kind === "node" && inspector && !inspector.hidden
+          valid: () => Boolean(state.selection && ["node", "controller-group"].includes(state.selection.kind)
+            && inspector && !inspector.hidden
             && inspector.getAttribute("data-selection-id") === state.selection.id)
         },
         {
@@ -2546,11 +2663,10 @@
           valid: () => Boolean(requestFlowControls && !requestFlowControls.hidden && state.requestFlowSteps.length > 0)
         },
         {
-          target: () => requestFlowFilterEducation,
-          title: "필터 처리 단계",
-          description: "상세 처리 과정에서 입력·검사 조건·대표 처리와 가능한 결과를 확인합니다. 설명은 처리 원리 참고이며 실제 요청값이나 결과를 나타내지 않습니다.",
-          valid: () => Boolean(state.display.detailedFlow && requestFlowDetails && !requestFlowDetails.hidden
-            && requestFlowFilterEducation && !requestFlowFilterEducation.hidden)
+          target: () => requestFlowDetailToggle,
+          title: "현재 단계 상세",
+          description: "상세 버튼에서 현재 단계의 설명과 이전·다음 단계를 확인합니다.",
+          valid: () => Boolean(requestFlowDetailToggle && !requestFlowDetailToggle.disabled)
         },
         {
           target: firstInspectorEvidence,
@@ -2688,13 +2804,6 @@
     state.display.minimap = showMinimapSetting.checked;
     applyDisplaySettings();
   });
-  if (showDetailFlowSetting) showDetailFlowSetting.addEventListener("change", () => {
-    state.display.detailedFlow = showDetailFlowSetting.checked;
-    applyDisplaySettings();
-    // 열린 Inspector에 상세 처리 보기 상태를 즉시 반영
-    if (state.selection) renderGraphView(state.layout ? "elk" : "initial", true);
-    if (requestFlowController) renderRequestFlowSafely(requestFlowController.state());
-  });
   if (flowNodeDurationSetting) flowNodeDurationSetting.addEventListener("change", () => {
     const nodeHoldDuration = Number(flowNodeDurationSetting.value);
     if (![500, 1000, 1500, 2000, 3000, 5000].includes(nodeHoldDuration)) return;
@@ -2792,6 +2901,11 @@
     if (findingConfidence) findingConfidence.value = "";
     applyGraphFilter();
   });
+  if (requestFlowDetailToggle) requestFlowDetailToggle.addEventListener("click", () => {
+    setRequestFlowDetails(!requestFlowDetailsOpen);
+    if (requestFlowDetailsOpen && requestFlowDetailClose && typeof requestFlowDetailClose.focus === "function") requestFlowDetailClose.focus();
+  });
+  if (requestFlowDetailClose) requestFlowDetailClose.addEventListener("click", () => setRequestFlowDetails(false, true));
   if (requestFlowStart && requestFlowController) requestFlowStart.addEventListener("click", () => requestFlowController.play());
   if (requestFlowPause && requestFlowController) requestFlowPause.addEventListener("click", () => requestFlowController.pause());
   if (requestFlowReset && requestFlowController) requestFlowReset.addEventListener("click", () => requestFlowController.reset());
@@ -2839,6 +2953,11 @@
       if (spotlight && spotlight.isActive()) {
         event.preventDefault();
         spotlight.close();
+        return;
+      }
+      if (requestFlowDetailsOpen) {
+        event.preventDefault();
+        setRequestFlowDetails(false, true);
         return;
       }
       if (isSettingsPanelOpen()) {
