@@ -8,6 +8,7 @@ import com.mapinboot.security.analyzer.AuthorizationAnalysisAdapter;
 import com.mapinboot.security.analyzer.BusinessStateAnalysisAdapter;
 import com.mapinboot.security.collector.MethodSecurityCollectorAdapter;
 import com.mapinboot.security.collector.SecurityChainCollectorAdapter;
+import com.mapinboot.security.collector.SecurityRuntimeArchitectureCollector;
 import com.mapinboot.security.collector.JwtUsageCollectorAdapter;
 import com.mapinboot.security.collector.SessionUsageCollectorAdapter;
 import com.mapinboot.security.collector.HeaderUsageCollectorAdapter;
@@ -21,6 +22,7 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Bean;
+import org.springframework.context.ApplicationContext;
 import org.springframework.security.web.FilterChainProxy;
 
 // Spring Security Runtime Collector 자동 구성
@@ -28,6 +30,12 @@ import org.springframework.security.web.FilterChainProxy;
 @ConditionalOnClass(FilterChainProxy.class)
 @ConditionalOnProperty(prefix = "mapinboot", name = "enabled", havingValue = "true", matchIfMissing = true)
 public class MapInBootSecurityAutoConfiguration {
+
+    @Bean
+    @ConditionalOnMissingBean(SecurityRuntimeArchitectureCollector.class)
+    SecurityRuntimeArchitectureCollector securityRuntimeArchitectureCollector(ApplicationContext applicationContext) {
+        return new SecurityRuntimeArchitectureCollector(applicationContext);
+    }
 
     @Bean
     @ConditionalOnMissingBean(SecurityChainCollectorAdapter.class)

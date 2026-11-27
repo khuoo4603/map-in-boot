@@ -61,11 +61,35 @@
           <li>선택 해제는 빈 영역 클릭, 닫기 버튼 또는 Escape입니다.</li>
         </ul>
       </section>
-      <section class="header-panel settings-panel" id="settings-panel" role="dialog" aria-labelledby="settings-panel-title" hidden>
-        <h2 id="settings-panel-title">설정</h2>
-        <label><input id="setting-show-areas" type="checkbox" checked> 기술 영역 표시</label>
-        <label><input id="setting-show-edge-labels" type="checkbox" checked> 관계명 표시</label>
-        <label><input id="setting-show-minimap" type="checkbox" checked> 미니맵 표시</label>
+      <section class="header-panel settings-panel" id="settings-panel" role="dialog" aria-labelledby="settings-panel-title" aria-hidden="true" data-open="false" tabindex="-1" inert hidden>
+        <div class="settings-panel-header">
+          <h2 id="settings-panel-title">화면 설정</h2>
+          <button class="settings-close" id="settings-close" type="button" aria-label="설정 닫기">닫기</button>
+        </div>
+        <fieldset class="settings-group">
+          <legend>그래프 표시</legend>
+          <label class="settings-option"><span>기술 영역 표시</span><span class="settings-switch"><input id="setting-show-areas" type="checkbox" role="switch" aria-checked="true" checked><span class="settings-switch-track" aria-hidden="true"></span></span></label>
+          <label class="settings-option"><span>관계명 표시</span><span class="settings-switch"><input id="setting-show-edge-labels" type="checkbox" role="switch" aria-checked="true" checked><span class="settings-switch-track" aria-hidden="true"></span></span></label>
+          <label class="settings-option"><span>미니맵 표시</span><span class="settings-switch"><input id="setting-show-minimap" type="checkbox" role="switch" aria-checked="true" checked><span class="settings-switch-track" aria-hidden="true"></span></span></label>
+        </fieldset>
+        <fieldset class="settings-group">
+          <legend>학습 흐름</legend>
+          <label class="settings-choice"><span>노드에서 머무는 시간</span><select id="setting-flow-node-duration" aria-label="노드에서 머무는 시간">
+            <option value="500">0.5초</option>
+            <option value="1000">1초</option>
+            <option value="1500" selected>1.5초</option>
+            <option value="2000">2초</option>
+            <option value="3000">3초</option>
+            <option value="5000">5초</option>
+          </select></label>
+          <label class="settings-choice"><span>이동 속도</span><select id="setting-flow-speed" aria-label="이동 속도">
+            <option value="0.5">0.5배</option>
+            <option value="1" selected>1배</option>
+            <option value="1.5">1.5배</option>
+            <option value="2">2배</option>
+          </select></label>
+          <p class="settings-description">기능별 상세 화면의 노드 대기 시간과 빛 점 이동 속도에 적용합니다.</p>
+        </fieldset>
       </section>
     </div>
 
@@ -94,7 +118,19 @@
                     </svg>
                     <span class="sr-only">필터</span>
                   </button>
-                  <div class="map-filter-panel" id="map-filter-panel" role="region" aria-label="Graph 필터" hidden>
+                </div>
+                <div class="toolbar-tool-group map-lock-toggle">
+                  <button class="graph-tool-button map-lock-button" id="screen-lock-toggle" type="button" aria-label="화면 이동과 확대·축소 고정" data-tooltip="화면 이동과 확대·축소 고정" aria-pressed="false" data-locked="false">
+                    <svg class="toolbar-icon lock-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                      <rect x="4.5" y="10" width="15" height="11" rx="2"></rect>
+                      <path class="lock-shackle-open" d="M8 10V7a4 4 0 0 1 7.6-1.7"></path>
+                      <path class="lock-shackle-closed" d="M8 10V7a4 4 0 0 1 8 0v3"></path>
+                      <circle cx="12" cy="15.5" r="1"></circle>
+                    </svg>
+                  </button>
+                </div>
+              </div>
+                <div class="map-filter-panel" id="map-filter-panel" role="region" aria-label="Graph 필터" hidden>
                     <label class="graph-search" id="endpoint-filter-label"><span id="endpoint-filter-label-text">Endpoint 검색</span>
                       <input id="endpoint-search" type="search" autocomplete="off" placeholder="Method·Path·Handler" aria-controls="endpoint-options" aria-expanded="false" aria-autocomplete="list">
                       <div class="endpoint-options" id="endpoint-options" role="listbox" aria-label="API 선택" hidden></div>
@@ -138,19 +174,7 @@
                     </div>
                     <button class="map-filter-reset" id="search-reset" type="button">검색 초기화</button>
                     <span class="graph-filter-status sr-only" id="graph-filter-status" role="status" aria-live="polite">Graph 없음</span>
-                  </div>
                 </div>
-                <div class="toolbar-tool-group map-lock-toggle">
-                  <button class="graph-tool-button map-lock-button" id="screen-lock-toggle" type="button" aria-label="화면 이동과 확대·축소 고정" data-tooltip="화면 이동과 확대·축소 고정" aria-pressed="false" data-locked="false">
-                    <svg class="toolbar-icon lock-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-                      <rect x="4.5" y="10" width="15" height="11" rx="2"></rect>
-                      <path class="lock-shackle-open" d="M8 10V7a4 4 0 0 1 7.6-1.7"></path>
-                      <path class="lock-shackle-closed" d="M8 10V7a4 4 0 0 1 8 0v3"></path>
-                      <circle cx="12" cy="15.5" r="1"></circle>
-                    </svg>
-                  </button>
-                </div>
-              </div>
             </div>
             <div class="shell-notice" id="shell-notice" role="status" aria-live="polite" hidden></div>
             <div class="canvas-empty" id="graph-empty">
@@ -178,14 +202,30 @@
                 </g>
               </g>
             </svg>
-            <div class="request-flow-controls" id="request-flow-controls" role="region" aria-label="내부 처리 과정" hidden>
-              <p class="request-flow-note">교육용 예시 · 실제 요청 추적 아님</p>
-              <p class="request-flow-status" id="request-flow-status" role="status" aria-live="polite">교육용 예시 · 실제 요청 추적 아님 · 시작 전</p>
-              <div class="request-flow-buttons">
-                <button id="request-flow-start" type="button">시작</button>
-                <button id="request-flow-pause" type="button">일시정지</button>
-                <button id="request-flow-reset" type="button">처음부터</button>
+            <div class="request-flow-controls" id="request-flow-controls" role="region" aria-label="요청 처리 흐름" hidden>
+              <div class="request-flow-heading">
+                <h2 class="request-flow-title">요청 처리 흐름</h2>
+                <p class="request-flow-status" id="request-flow-status" data-state="idle" role="status" aria-live="polite">시작 전</p>
               </div>
+              <div class="request-flow-buttons">
+                <button id="request-flow-start" type="button" aria-label="시작" title="시작"><svg class="toolbar-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M8 5l11 7-11 7z"></path></svg></button>
+                <button id="request-flow-pause" type="button" aria-label="일시정지" title="일시정지"><svg class="toolbar-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M9 5v14M15 5v14"></path></svg></button>
+                <button id="request-flow-reset" type="button" aria-label="처음으로" title="처음으로"><svg class="toolbar-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M4 11a8 8 0 1 1 2.2 5.5M4 5v6h6"></path></svg></button>
+                <span class="request-flow-divider" aria-hidden="true"></span>
+                <button id="request-flow-detail-toggle" type="button" aria-label="상세" title="상세" aria-expanded="false" aria-controls="request-flow-details" disabled><svg class="toolbar-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="9"></circle><path d="M12 11v5M12 8h.01"></path></svg></button>
+              </div>
+              <section class="request-flow-details" id="request-flow-details" role="dialog" aria-labelledby="request-flow-step-title" hidden>
+                <header class="request-flow-detail-header">
+                  <h3 class="request-flow-step-title" id="request-flow-step-title">표시할 단계가 없습니다.</h3>
+                  <button class="request-flow-detail-close" id="request-flow-detail-close" type="button" aria-label="상세 닫기">×</button>
+                </header>
+                <p class="request-flow-step-description" id="request-flow-step-description"></p>
+                <div class="request-flow-navigation" id="request-flow-navigation">
+                  <button id="request-flow-previous" type="button" disabled>이전</button>
+                  <button id="request-flow-next" type="button" disabled>다음</button>
+                  <span class="request-flow-popover-count" id="request-flow-popover-count" aria-live="polite">0 / 0</span>
+                </div>
+              </section>
             </div>
             <div class="graph-minimap" id="graph-minimap" hidden>
               <svg id="graph-minimap-svg" viewBox="0 0 640 360" role="img" aria-label="Graph 미니맵">
@@ -225,6 +265,7 @@
   <script src="/mapinboot/layout-client.js" defer></script>
   <script src="/mapinboot/graph-navigation.js" defer></script>
   <script src="/mapinboot/graph-inspector.js" defer></script>
+  <script src="/mapinboot/spotlight.js" defer></script>
   <script src="/mapinboot/app.js" defer></script>
 </body>
 </html>

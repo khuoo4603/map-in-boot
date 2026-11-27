@@ -36,13 +36,15 @@
       label: definition.label,
       kind: definition.kind || "education",
       anchorId: definition.anchorId || null,
+      displayItemId: definition.displayItemId || null,
       description: definition.description || "",
+      filterEducation: definition.filterEducation || null,
       position: copyPosition(definition.position),
       transition: definition.transition || null
     });
   }
 
-  function actualStep(steps, id, label, node, positions, description) {
+  function actualStep(steps, id, label, node, positions, description, filterEducation = null) {
     if (!node) return;
     appendStep(steps, {
       id,
@@ -50,19 +52,40 @@
       kind: "actual",
       anchorId: node.id,
       description,
+      filterEducation,
       position: positions && positions[node.id]
     });
   }
 
-  function educationStep(steps, projection, positions, id, label, description) {
+  function runtimeStep(steps, id, label, component, displayModel, description) {
+    if (!component || !displayModel) return;
+    const itemId = (displayModel.runtimeComponentToItemIds && displayModel.runtimeComponentToItemIds[component.id] || [])[0];
+    const item = itemId && displayModel.itemById && displayModel.itemById[itemId];
+    if (!item) return;
+    const bounds = item.bounds;
+    appendStep(steps, {
+      id,
+      label,
+      kind: "actual",
+      anchorId: component.id,
+      displayItemId: item.id,
+      description,
+      position: bounds ? { x: bounds.x + bounds.width / 2, y: bounds.y + bounds.height / 2 } : null
+    });
+  }
+
+  function educationStep(steps, projection, positions, id, label, description, displayModel) {
     const node = projection && Array.isArray(projection.nodes)
       ? projection.nodes.find((item) => item.id === id)
       : null;
+    const itemId = displayModel && displayModel.projectionToItemIds && displayModel.projectionToItemIds[id]?.[0];
+    const displayItem = itemId && displayModel.itemById && displayModel.itemById[itemId];
     appendStep(steps, {
       id,
       label,
       kind: "education",
-      anchorId: node ? node.id : null,
+      anchorId: node ? node.id : displayItem ? id : null,
+      displayItemId: displayItem ? displayItem.id : null,
       description,
       position: node ? node.position : positions && positions[id]
     });
@@ -74,36 +97,135 @@
     return candidateId ? nodes.find((node) => node.id === candidateId && node.type === "ENDPOINT") || null : null;
   }
 
-  function transitionBetween(source, target, graph, projection) {
+  function transitionBetween(source, target, graph, projection, displayModel) {
     if (!source.anchorId || !target.anchorId || source.anchorId === target.anchorId) return null;
-    const projectionEdge = projection && Array.isArray(projection.edges)
-      ? projection.edges.find((edge) => edge.sourceId === source.anchorId && edge.targetId === target.anchorId)
-      : null;
-    if (projectionEdge) {
-      return {
-        kind: "projection",
-        edgeId: projectionEdge.id,
-        sourceId: source.anchorId,
-        targetId: target.anchorId,
-        length: null
-      };
+    const itemFor = (step) => {
+      if (!displayModel || !step) return null;
+      if (step.displayItemId) return displayModel.itemById && displayModel.itemById[step.displayItemId];
+      return null;
+    };
+    const sourceItem = itemFor(source);
+    const targetItem = itemFor(target);
+    if (sourceItem && targetItem && sourceItem.cardId === targetItem.cardId) {
+      const relation = (displayModel.displayRelations || []).find((item) =>
+        !item.referenceOnly && item.sourceItemId === sourceItem.id && item.targetItemId === targetItem.id);
+      if (relation && sourceItem.bounds && targetItem.bounds) {
+        const center = (item) => ({ x: item.bounds.x + item.bounds.width / 2,
+          y: item.bounds.y + item.bounds.height / 2 });
+        const from = center(sourceItem);
+        const to = center(targetItem);
+        return { kind: "internal", from, to, sourceId: sourceItem.id, targetId: targetItem.id,
+          length: Math.hypot(to.x - from.x, to.y - from.y) };
+      }
     }
-    const actualEdge = (graph && Array.isArray(graph.edges) ? graph.edges : [])
-      .find((edge) => edge.sourceId === source.anchorId && edge.targetId === target.anchorId);
-    return actualEdge ? {
-      kind: "actual",
-      edgeId: actualEdge.id,
-      sourceId: source.anchorId,
-      targetId: target.anchorId,
+    const routedRelations = displayModel && displayModel.displayRelationToSegmentIds || {};
+    const relation = sourceItem && targetItem && (displayModel.displayRelations || []).find((item) =>
+      !item.referenceOnly && item.sourceItemId === sourceItem.id && item.targetItemId === targetItem.id
+        && (routedRelations[item.id] || []).length > 0);
+    if (relation) return {
+      kind: "display",
+      relationId: relation.id,
+      sourceId: sourceItem.id,
+      targetId: targetItem.id,
+      sourceAnchorId: source.anchorId,
+      targetAnchorId: target.anchorId,
+      originalEdgeIds: (relation.originalEdgeIds || []).slice(),
+      projectionEdgeIds: (relation.projectionEdgeIds || []).slice(),
       length: null
-    } : null;
+    };
+    if (sourceItem && targetItem) {
+      const queue = [{ itemId: sourceItem.id, relationIds: [] }];
+      const visited = new Set([sourceItem.id]);
+      while (queue.length) {
+        const current = queue.shift();
+        for (const next of displayModel.displayRelations || []) {
+          if (next.referenceOnly || next.internalCardId || next.sourceItemId !== current.itemId
+            || !(routedRelations[next.id] || []).length || visited.has(next.targetItemId)) continue;
+          const relationIds = [...current.relationIds, next.id];
+          if (next.targetItemId === targetItem.id) return { kind: "display", relationIds,
+            relationId: relationIds[0], sourceId: sourceItem.id, targetId: targetItem.id, length: null };
+          visited.add(next.targetItemId);
+          queue.push({ itemId: next.targetItemId, relationIds });
+        }
+      }
+    }
+    return null;
   }
 
-  function connectSteps(steps, graph, projection) {
-    for (let index = 0; index < steps.length - 1; index += 1) {
-      steps[index].transition = transitionBetween(steps[index], steps[index + 1], graph, projection);
-    }
-    return steps;
+  function connectSteps(steps, graph, projection, displayModel, chainId) {
+    const anchoredSteps = [];
+    steps.forEach((step, index) => {
+      if (step.anchorId || !step.id.endsWith("-uncertain")) {
+        anchoredSteps.push(step);
+        return;
+      }
+      const note = [step.label, step.description].filter(Boolean).join(": ");
+      const previous = anchoredSteps[anchoredSteps.length - 1];
+      if (previous) previous.description = [previous.description, note].filter(Boolean).join(" ");
+      else {
+        const next = steps.slice(index + 1).find((candidate) => candidate.anchorId);
+        if (next) next.description = [note, next.description].filter(Boolean).join(" ");
+        else anchoredSteps.push(step);
+      }
+    });
+    anchoredSteps.forEach((step) => {
+      if (!displayModel || step.displayItemId || !step.anchorId) return;
+      const ids = (displayModel.originalNodeToItemIds && displayModel.originalNodeToItemIds[step.anchorId])
+        || (displayModel.runtimeComponentToItemIds && displayModel.runtimeComponentToItemIds[step.anchorId])
+        || (displayModel.projectionToItemIds && displayModel.projectionToItemIds[step.anchorId]) || [];
+      const items = ids.map((id) => displayModel.itemById[id]).filter(Boolean);
+      const contextual = chainId ? items.filter((item) => item.rowId === `chain:${chainId}`
+        || (displayModel.cardById[item.cardId]?.originalNodeIds || []).includes(chainId)) : [];
+      const graphItems = items.filter((item) => (item.originalNodeIds || []).includes(step.anchorId)
+        && item.originKind !== "RUNTIME_COMPONENT");
+      const item = contextual.length === 1 ? contextual[0] : items.length === 1 ? items[0]
+        : graphItems.length === 1 ? graphItems[0] : null;
+      if (item) {
+        step.displayItemId = item.id;
+        if (item.bounds) step.position = { x: item.bounds.x + item.bounds.width / 2,
+          y: item.bounds.y + item.bounds.height / 2 };
+      }
+    });
+    const descriptions = {
+      "education-http-request": "클라이언트가 HTTP 요청을 보냅니다. 웹 서버가 요청을 받아 처리 환경으로 전달합니다.",
+      "education-web-server": "웹 서버가 연결과 HTTP 요청을 처리합니다. 요청은 웹 애플리케이션의 서블릿 처리 환경으로 전달됩니다.",
+      "education-servlet-container": "요청을 처리할 웹 애플리케이션과 Servlet을 결정합니다. 적용되는 필터와 요청 처리 환경을 구성합니다.",
+      "education-delegating-filter-proxy": "Servlet Filter에서 Spring Security의 필터 처리로 요청을 위임합니다. 보안 처리가 계속되면 이후 필터로 제어가 돌아갑니다.",
+      "education-filter-chain-proxy": "요청에 맞는 SecurityFilterChain을 선택합니다. 선택된 체인의 필터가 순서대로 보안 처리를 수행할 수 있습니다.",
+      "security-chain": "요청 조건에 맞는 보안 필터 체인을 선택합니다. 체인에 등록된 필터가 인증과 인가 처리를 담당합니다.",
+      "dispatcher-servlet": "요청에 대응하는 Handler를 찾고 MVC 처리 과정을 조정합니다. 선택된 Handler는 적절한 HandlerAdapter를 통해 호출됩니다.",
+      "education-handler-mapping": "요청 경로와 HTTP 메서드 등의 조건으로 Handler를 찾습니다. 확인된 매핑 정보를 다음 처리 단계에 전달합니다.",
+      "endpoint-mapping": "요청 경로와 HTTP 메서드에 대응하는 매핑 정보입니다. 조건에 맞는 Handler를 선택할 때 사용합니다.",
+      "education-handler-adapter": "선택된 Handler를 호출할 수 있도록 준비합니다. 필요한 인자를 구성하고 실행 결과를 처리할 수 있습니다.",
+      "handler": "선택된 Controller 메서드가 요청을 처리합니다. 처리 결과는 응답을 만드는 과정으로 전달됩니다."
+    };
+    anchoredSteps.forEach((step) => {
+      const item = step.displayItemId && displayModel?.itemById?.[step.displayItemId];
+      if (item?.bounds) step.position = { x: item.bounds.x + item.bounds.width / 2,
+        y: item.bounds.y + item.bounds.height / 2 };
+      const node = graph?.nodes?.find((candidate) => candidate.id === step.anchorId);
+      const component = displayModel?.runtimeComponents?.find((candidate) => candidate.id === step.anchorId);
+      const data = attributes(node || component);
+      const className = data.filterClass || component?.className;
+      if (node?.type === "FILTER" || component?.kind === "SERVLET_FILTER_REGISTRATION") {
+        const name = text(className || item?.label || step.label).split("|").pop().split(".").pop();
+        if (name) step.label = name;
+        if (!step.filterEducation) step.description = "요청과 응답을 다음 처리 단계로 전달하기 전에 필터의 등록된 처리를 수행합니다. 조건에 따라 이후 처리가 제한될 수 있습니다.";
+      } else if (node?.type === "HANDLER") {
+        const handler = text(data.handler || item?.label || step.label).replace(/\([^)]*\)/g, "");
+        const parts = handler.split("#");
+        step.label = parts.length > 1 ? `${parts[0].split(".").pop()}.${parts[1]}` : handler.split(".").pop();
+      } else if (node?.type === "AUTHORIZATION" && item?.label) step.label = item.label;
+      else if (item?.label && !text(item.label).includes("|") && !step.id.startsWith("education-")) step.label = item.label;
+      if (text(step.label).includes("|")) step.label = text(step.label).split("|").filter(Boolean).pop() || "처리 단계";
+      step.label = text(step.label).replace(/\b(?:[a-z_$][\w$]*\.)+([A-Z_$][\w$]*)/g, "$1");
+      if (descriptions[step.id]) step.description = descriptions[step.id];
+    });
+    anchoredSteps.forEach((step, index) => {
+      step.transition = index < anchoredSteps.length - 1
+        ? transitionBetween(step, anchoredSteps[index + 1], graph, projection, displayModel) : null;
+    });
+    return anchoredSteps;
   }
 
   function confirmedFilterSet(index, graph, chainId) {
@@ -113,84 +235,161 @@
     const result = index.securityFiltersForChain(chainId);
     const nodes = nodeMap(graph);
     const edges = edgeMap(graph);
-    const relationships = (result.edges || []).filter((edge) => {
+    const relationshipsByNode = new Map((result.edges || []).filter((edge) => {
       const filter = nodes.get(edge.targetId);
       return edges.has(edge.id)
         && edge.sourceId === chainId
         && filter
         && filter.type === "FILTER"
         && attributes(filter).registrationKind === "SECURITY";
-    });
-    if (result.orderStatus !== "CONFIRMED") return { status: result.orderStatus || "UNKNOWN", filters: [], edges: relationships };
-    const orderValues = relationships.map((edge) => {
-      const filter = nodes.get(edge.targetId);
-      const edgeOrder = attributes(edge).filterOrder;
-      return {
-        edge,
-        filter,
-        order: positiveInteger(edgeOrder === undefined ? attributes(filter).filterOrder : edgeOrder)
-      };
-    });
-    if (orderValues.some((item) => item.order === null)
-      || new Set(orderValues.map((item) => item.order)).size !== orderValues.length) {
-      return { status: "UNKNOWN", filters: [], edges: relationships };
+    }).map((edge) => [edge.targetId, edge]));
+    const filters = (result.filters || []).map((filter) => nodes.get(filter.id)).filter(Boolean);
+    const orderedEdges = filters.map((filter) => relationshipsByNode.get(filter.id)).filter(Boolean);
+    if (result.orderStatus !== "CONFIRMED" || filters.length !== (result.filters || []).length
+      || orderedEdges.length !== filters.length) {
+      return { status: result.orderStatus || "UNKNOWN", filters: [], edges: orderedEdges };
     }
-    orderValues.sort((left, right) => left.order - right.order || text(left.filter.id).localeCompare(text(right.filter.id)));
     return {
       status: "CONFIRMED",
-      filters: orderValues.map((item) => item.filter),
-      edges: orderValues.map((item) => item.edge)
+      filters,
+      edges: orderedEdges
     };
   }
 
   // 실제 Snapshot 관계와 교육 전용 개념 단계를 분리한 Request 흐름 생성
-  function buildSteps({ graph, index, endpointId, positions, projection } = {}) {
+  function buildSteps({ graph, index, endpointId, positions, projection, snapshot, displayModel } = {}) {
     const source = graph && typeof graph === "object" ? graph : { nodes: [], edges: [] };
     const sourceNodes = Array.isArray(source.nodes) ? source.nodes : [];
     const nodes = nodeMap(source);
     const edges = edgeMap(source);
-    const endpoint = endpointFor(source, endpointId);
+    const endpoint = endpointFor(source, endpointId || source.detailEndpointId);
     const selectedEndpointId = endpoint ? endpoint.id : endpointId;
     const flowIndex = index || (window.MapInBootFlow && window.MapInBootFlow.createIndex
       ? window.MapInBootFlow.createIndex(source)
       : null);
     const steps = [];
+    const runtimeComponents = displayModel && Array.isArray(displayModel.runtimeComponents)
+      ? displayModel.runtimeComponents : [];
+    const servletRegistrations = runtimeComponents.filter((component) => component.kind === "SERVLET_FILTER_REGISTRATION");
+    const servletExecution = displayModel && displayModel.servletFilterExecution || { status: "UNKNOWN", entries: [] };
+    const executionByComponentId = new Map((servletExecution.entries || []).map((entry) => [entry.componentId, entry]));
 
-    educationStep(steps, projection, positions, "education-http-request", "HTTP 요청 수신", "실제 요청 Trace가 아닌 표준 처리 원리의 교육 단계");
-    educationStep(steps, projection, positions, "education-request-prepare", "Request 준비", "HttpServletRequest·HttpServletResponse 참조 준비");
-    educationStep(steps, projection, positions, "education-thread-context", "동기 처리 스레드", "일반적인 처리 문맥이며 실제 Thread ID가 아님");
-    educationStep(steps, projection, positions, "education-servlet-filter-chain", "FilterChain 전달", "Filter#doFilter·FilterChain.doFilter의 객체 참조 전달");
-
-    const servlet = sourceNodes.find((node) => node.type === "SERVLET");
-    const servletOrder = servlet && flowIndex && typeof flowIndex.servletFiltersForServlet === "function"
-      ? flowIndex.servletFiltersForServlet(servlet.id)
-      : { orderStatus: "UNKNOWN", filters: [] };
-    if (servletOrder.orderStatus === "CONFIRMED") {
-      servletOrder.filters.forEach((filter) => actualStep(steps, `servlet-filter-${filter.id}`, `확인된 Servlet Filter · ${filter.label}`, filter, positions, "Servlet 등록 관계와 filterOrder 확인"));
-    } else {
-      educationStep(steps, projection, positions, "education-servlet-filter-chain", "Servlet Filter 순서 확인 불가", "실제 등록은 확인되지만 순서가 확정되지 않아 실제 통과 순서로 재생하지 않음");
+    educationStep(steps, projection, positions, "education-http-request", "HTTP 요청",
+      "HTTP 요청이 웹 서버와 서블릿 컨테이너로 들어옵니다.", displayModel);
+    if (displayModel && displayModel.projectionToItemIds
+      && displayModel.projectionToItemIds["education-web-server"]?.length) {
+      educationStep(steps, projection, positions, "education-web-server", "웹 서버",
+        "실제 Runtime 웹 서버 항목입니다.", displayModel);
     }
-    educationStep(steps, projection, positions, "education-delegating-filter-proxy", "DelegatingFilterProxy", "Servlet Filter에서 Spring Security로 위임하는 표준 구조");
-    educationStep(steps, projection, positions, "education-filter-chain-proxy", "FilterChainProxy", "등록된 SecurityFilterChain 목록 평가");
-    educationStep(steps, projection, positions, "education-request-matcher", "RequestMatcher 평가", "등록 순서에 따라 첫 매칭 Chain 하나를 선택하는 개념 단계");
+    educationStep(steps, projection, positions, "education-servlet-container", "서블릿 컨테이너",
+      "실제 컨테이너 항목 또는 Servlet 요청을 처리하는 일반 구조입니다.", displayModel);
+    educationStep(steps, projection, positions, "education-http-servlet-request", "요청·응답 객체",
+      "HttpServletRequest는 경로와 헤더 등 요청 정보를 제공합니다. HttpServletResponse는 응답 상태와 헤더, 본문을 설정하는 데 사용됩니다.", displayModel);
 
+    const servletFilterSteps = [];
+    const servletStepRecords = [];
+    let delegationIndex = -1;
+    const addServletFilterStep = (component, graphNode, index) => {
+      const delegation = Boolean(executionByComponentId.get(component && component.id)?.delegating)
+        || /DelegatingFilterProxy|springSecurityFilterChain/i.test(`${component && component.className || ""} ${attributes(component).filterClass || ""} ${attributes(component).registrationName || ""} ${graphNode && graphNode.label || ""} ${attributes(graphNode).filterClass || ""}`);
+      const stepId = component ? `servlet-filter-${component.id}` : `servlet-filter-${graphNode.id}`;
+      if (component) runtimeStep(servletFilterSteps, stepId,
+        `확인된 Servlet Filter · ${text(attributes(component).filterClass || component.className || component.kind).split(".").pop()}`,
+        component, displayModel, `선택 API의 FilterMap 적용 순서 ${index + 1}입니다.`);
+      else actualStep(servletFilterSteps, stepId, `확인된 Servlet Filter · ${graphNode.label}`,
+        graphNode, positions, "GraphFlow가 확인한 Servlet Filter 순서입니다.");
+      const step = servletFilterSteps[servletFilterSteps.length - 1];
+      if (!step) return;
+      servletStepRecords.push({ step, delegation });
+      if (delegation) delegationIndex = servletStepRecords.length - 1;
+    };
+    const registrationByGraphNode = new Map();
+    servletRegistrations.forEach((component) => (component.graphNodeIds || []).forEach((id) => {
+      const matches = registrationByGraphNode.get(id) || [];
+      matches.push(component);
+      registrationByGraphNode.set(id, matches);
+    }));
+    let orderedGraphFilterIds = [];
+    let servletOrderConfirmed = servletExecution.status === "CONFIRMED";
+    if (servletOrderConfirmed && servletExecution.source === "TOMCAT_FILTER_MAP") {
+      (servletExecution.orderedComponentIds || []).forEach((id, index) => {
+        const component = servletRegistrations.find((item) => item.id === id);
+        if (component) addServletFilterStep(component, null, index);
+      });
+    } else if (servletOrderConfirmed && servletExecution.source === "GRAPH_FLOW") {
+      orderedGraphFilterIds = (servletExecution.orderedGraphNodeIds || []).slice();
+    } else if (servletRegistrations.length === 0 && runtimeComponents.length === 0) {
+      const servlets = sourceNodes.filter((node) => node.type === "SERVLET");
+      const servlet = servlets.length === 1 ? servlets[0] : null;
+      const servletOrder = servlet && flowIndex && typeof flowIndex.servletFiltersForServlet === "function"
+        ? flowIndex.servletFiltersForServlet(servlet.id) : { orderStatus: "UNKNOWN", filters: [] };
+      servletOrder.filters = servletOrder.filters || [];
+      if (servletOrder.orderStatus === "CONFIRMED") {
+        servletOrder.filters.forEach((filter) => orderedGraphFilterIds.push(filter.id));
+        servletOrderConfirmed = true;
+      } else servletOrderConfirmed = false;
+    } else servletOrderConfirmed = false;
+    if ((servletExecution.source === "GRAPH_FLOW" || servletRegistrations.length === 0) && servletOrderConfirmed) {
+      orderedGraphFilterIds.forEach((id, index) => {
+        const graphNode = nodes.get(id);
+        const matches = registrationByGraphNode.get(id) || [];
+        if (matches.length === 1) addServletFilterStep(matches[0], graphNode, index);
+        else if (matches.length === 0 && graphNode && graphNode.type === "FILTER") addServletFilterStep(null, graphNode, index);
+      });
+    }
+    if (!servletOrderConfirmed) {
+      appendStep(steps, { id: "servlet-filter-order-uncertain", label: "Servlet Filter 순서 확인 불가",
+        description: "Servlet Filter 등록 정보를 표시하지만 선택 API의 적용 순서를 확정할 근거가 부족해 순차 재생하지 않습니다." });
+    }
+    servletFilterSteps.forEach((step) => steps.push(step));
+    const securityFlowAllowed = runtimeComponents.length === 0 && servletRegistrations.length === 0
+      || (servletOrderConfirmed && delegationIndex >= 0);
+    const securityStepStart = steps.length;
+    const delegationItemId = displayModel && displayModel.projectionToItemIds
+      && displayModel.projectionToItemIds["education-delegating-filter-proxy"]
+      && displayModel.projectionToItemIds["education-delegating-filter-proxy"][0];
+    if (securityFlowAllowed && !steps.some((step) => step.displayItemId && step.displayItemId === delegationItemId)) {
+      educationStep(steps, projection, positions, "education-delegating-filter-proxy", "Spring Security 위임 필터",
+        "일반적인 Spring Security 연동 흐름의 위임 단계입니다.", displayModel);
+    }
+    if (securityFlowAllowed) educationStep(steps, projection, positions, "education-filter-chain-proxy", "FilterChainProxy",
+      "확인된 FilterChainProxy 항목 또는 일반적인 위임 흐름입니다.", displayModel);
     const match = selectedEndpointId && flowIndex && typeof flowIndex.firstMatchedChain === "function"
       ? flowIndex.firstMatchedChain(selectedEndpointId)
       : { status: "UNCERTAIN", chain: null, edge: null };
     const actualMatchEdge = match.edge && edges.get(match.edge.id);
     const chain = match.status === "CONFIRMED" && match.chain && nodes.get(match.chain.id)
       && actualMatchEdge ? nodes.get(match.chain.id) : null;
-    if (chain) {
+    if (securityFlowAllowed && chain) {
       actualStep(
         steps,
         "security-chain",
         `확인된 SecurityFilterChain · ${chain.label}`,
         chain,
         positions,
-        "MATCHED_BY와 첫 적용 Chain 확인"
+        "Snapshot에서 확인된 MATCHED_BY 관계로 첫 적용 Chain을 표시하며 조건과 순서는 해당 항목에서 확인합니다."
       );
       const filters = confirmedFilterSet(flowIndex, source, chain.id);
       if (filters.status === "CONFIRMED") {
+        const standardFilterClient = window.MapInBootStandardFilters;
+        const filterEducationByClass = new Map();
+        if (standardFilterClient && standardFilterClient.list && standardFilterClient.classify) {
+          const statusGraph = snapshot || source;
+          const statusEntries = standardFilterClient.classify(
+            statusGraph,
+            statusGraph.analysisStatus || {},
+            chain.id
+          );
+          const statusByClass = new Map(statusEntries.map((entry) => [entry.fqcn, entry]));
+          standardFilterClient.list().forEach((reference) => {
+            const status = statusByClass.get(reference.fqcn);
+            filterEducationByClass.set(reference.fqcn, {
+              ...reference,
+              status: status ? status.status : "UNKNOWN",
+              statusLabel: status ? status.statusLabel : standardFilterClient.statusLabel("UNKNOWN")
+            });
+          });
+        }
         filters.filters.forEach((filter, indexInChain) => {
           const edge = filters.edges[indexInChain];
           if (!edge || !edges.has(edge.id)) return;
@@ -200,36 +399,75 @@
             `Security Filter · ${filter.label}`,
             filter,
             positions,
-            `FILTERED_BY 및 filterOrder ${attributes(edge).filterOrder || attributes(filter).filterOrder} 확인`
+            `Snapshot에서 FILTERED_BY와 filterOrder ${attributes(edge).filterOrder || attributes(filter).filterOrder}를 확인했습니다.`,
+            filterEducationByClass.get(attributes(filter).filterClass) || null
           );
         });
       } else {
         appendStep(steps, {
           id: "security-filter-order-uncertain",
           label: "Security Filter 순서 확인 불가",
-          description: "미확정·중복 순서는 실제 통과 순서로 재생하지 않음"
+          description: "순서를 확정할 근거가 부족해 확인된 통과 순서로 표시하지 않습니다."
         });
       }
-    } else {
+    } else if (securityFlowAllowed) {
       appendStep(steps, {
         id: "security-chain-uncertain",
         label: "첫 SecurityFilterChain 확인 불가",
         kind: "education",
-        anchorId: "education-request-matcher",
-        position: projection && Array.isArray(projection.nodes)
-          ? projection.nodes.find((node) => node.id === "education-request-matcher")?.position
-          : null,
-        description: "MATCHED_BY가 없거나 불확실하여 실제 Chain을 선택하지 않음"
+        description: "MATCHED_BY 관계가 없거나 불확실해 적용 Chain을 특정하지 않습니다."
       });
     }
 
-    educationStep(steps, projection, positions, "education-servlet-chain-continue", "Servlet FilterChain 계속", "인증 실패·인가 거부 시 이후 단계에 도달하지 않을 수 있음");
-    const dispatcher = sourceNodes.find((node) => node.type === "SERVLET");
-    if (dispatcher) actualStep(steps, "dispatcher-servlet", "확인된 DispatcherServlet", dispatcher, positions, "Servlet 등록 정보 확인");
-    educationStep(steps, projection, positions, "education-handler-mapping", "HandlerMapping", "요청과 Handler의 매핑 정보 조회");
+    const policyEdge = chain && projection && (projection.edges || []).find((edge) =>
+      edge.projectionKind === "authorization-policy" && edge.flowGroup === chain.id);
+    const policy = policyEdge && nodes.get(policyEdge.targetId);
+    if (policy) actualStep(steps, "authorization-policy", "인가 정책", policy, positions,
+      "선택 요청에 적용되는 접근 조건입니다. 인증 정보와 정책의 조건에 따라 요청이 제한될 수 있습니다.");
+
+    const securityStepEnd = steps.length;
+    if (servletStepRecords.length && delegationIndex >= 0 && securityFlowAllowed) {
+      const filterStart = steps.findIndex((step) => step === servletStepRecords[0].step);
+      const prefix = steps.slice(0, filterStart);
+      const securitySteps = steps.slice(securityStepStart, securityStepEnd);
+      const suffix = steps.slice(securityStepEnd);
+      steps.length = 0;
+      steps.push(...prefix,
+        ...servletStepRecords.slice(0, delegationIndex).map((record) => record.step),
+        servletStepRecords[delegationIndex].step,
+        ...securitySteps,
+        ...servletStepRecords.slice(delegationIndex + 1).map((record) => record.step),
+        ...suffix);
+    }
+
+    if ((!chain || match.status !== "CONFIRMED") && servletRegistrations.length === 0) appendStep(steps, {
+      id: "servlet-next-target-uncertain",
+      label: "다음 Servlet 처리 대상 확인 불가",
+      description: "등록 순서와 실제 위임 관계가 확인되지 않아 다음 처리 대상을 연결하지 않습니다."
+    });
+    const runtimeDispatchers = runtimeComponents.filter((component) => ["SERVLET", "DISPATCHER_SERVLET"].includes(component.kind)
+      && /DispatcherServlet/.test(`${component.className || ""} ${attributes(component).servletClass || ""}`));
+    const graphDispatchers = sourceNodes.filter((node) => node.type === "SERVLET"
+      && (attributes(node).servletKind === "DISPATCHER"
+        || /DispatcherServlet/.test(text(attributes(node).servletClass))
+        || text(attributes(node).servletName).toLowerCase() === "dispatcherservlet"));
+    const runtimeDispatcher = runtimeDispatchers.length === 1 ? runtimeDispatchers[0] : null;
+    const mappedDispatcher = runtimeDispatcher && (runtimeDispatcher.graphNodeIds || []).map((id) => nodes.get(id))
+      .find((node) => node && node.type === "SERVLET");
+    if (mappedDispatcher) actualStep(steps, "dispatcher-servlet", "확인된 DispatcherServlet",
+      mappedDispatcher, positions, "Runtime DispatcherServlet과 연결된 Graph Node를 표시합니다.");
+    else if (runtimeDispatcher) runtimeStep(steps, "dispatcher-servlet", "확인된 DispatcherServlet",
+      runtimeDispatcher, displayModel, "Runtime에서 DispatcherServlet 구현을 확인했습니다.");
+    else if (graphDispatchers.length === 1) actualStep(steps, "dispatcher-servlet", "확인된 DispatcherServlet",
+      graphDispatchers[0], positions, "Snapshot에서 DispatcherServlet 식별 정보를 확인했습니다.");
+    else appendStep(steps, { id: "dispatcher-servlet-uncertain", label: "DispatcherServlet 확인 불가",
+      description: "Servlet 구성만으로 DispatcherServlet 실행 대상을 특정하지 않습니다." });
+    educationStep(steps, projection, positions, "education-handler-mapping", "HandlerMapping",
+      "실제 HandlerMapping Runtime 객체를 표시하며, 요청별 매핑은 원본 FLOWS_TO 관계에서 확인합니다.", displayModel);
     const actualEndpoint = endpoint && nodes.get(endpoint.id);
-    if (actualEndpoint) actualStep(steps, "endpoint-mapping", `확인된 API Endpoint · ${actualEndpoint.label}`, actualEndpoint, positions, "Endpoint는 Servlet 실행 객체가 아닌 매핑 정보");
-    educationStep(steps, projection, positions, "education-handler-adapter", "HandlerAdapter", "확인된 Controller·Handler 호출 준비");
+    if (actualEndpoint) actualStep(steps, "endpoint-mapping", `확인된 API Endpoint · ${actualEndpoint.label}`, actualEndpoint, positions, "Endpoint는 Servlet 실행 객체가 아니라 Handler 매핑 정보입니다.");
+    educationStep(steps, projection, positions, "education-handler-adapter", "HandlerAdapter",
+      "실제 HandlerAdapter Runtime 객체가 확인된 경우 해당 항목에서 구현을 확인합니다.", displayModel);
 
     const handler = selectedEndpointId && flowIndex && typeof flowIndex.handlerFor === "function"
       ? flowIndex.handlerFor(selectedEndpointId)
@@ -243,28 +481,71 @@
         `확인된 Handler · ${actualHandler.label}`,
         actualHandler,
         positions,
-        "Endpoint attributes.handler와 기존 Handler Node 대응"
+        "Snapshot의 명시적 FLOWS_TO 관계로 Endpoint와 Handler를 연결합니다."
       );
     } else {
       appendStep(steps, {
         id: "handler-uncertain",
         label: "Handler 대응 확인 불가",
-        description: "속성 대응이 확인되지 않아 Handler 호출을 실제 사실로 표시하지 않음"
+        description: "Snapshot에서 Endpoint와 Handler를 연결할 근거를 확인하지 못했습니다."
       });
     }
 
-    return connectSteps(steps, source, projection);
+    educationStep(steps, projection, positions, "education-http-response", "HTTP 응답",
+      "일반적인 동기 처리에서 Handler 결과가 호출자 방향으로 반환됩니다. 비동기·ERROR·FORWARD는 다른 흐름일 수 있습니다.",
+      displayModel);
+
+    return connectSteps(steps, source, projection, displayModel, chain && chain.id);
   }
 
-  function pathPointAt(path, progress, cachedLength) {
+  function pointInFrame(path, point, targetFrame) {
+    if (!targetFrame || typeof path.getScreenCTM !== "function"
+      || typeof targetFrame.getScreenCTM !== "function") return point;
+    const source = path.getScreenCTM();
+    const target = targetFrame.getScreenCTM();
+    if (!source || !target) return point;
+    const screenX = source.a * point.x + source.c * point.y + source.e;
+    const screenY = source.b * point.x + source.d * point.y + source.f;
+    const offsetX = screenX - target.e;
+    const offsetY = screenY - target.f;
+    const determinant = target.a * target.d - target.b * target.c;
+    if (!Number.isFinite(determinant) || determinant === 0) return null;
+    const x = (target.d * offsetX - target.c * offsetY) / determinant;
+    const y = (-target.b * offsetX + target.a * offsetY) / determinant;
+    return Number.isFinite(x) && Number.isFinite(y) ? { x, y } : null;
+  }
+
+  function pathPointAt(path, progress, cachedLength, targetFrame) {
+    if (Array.isArray(path)) {
+      const measured = path.map((item) => {
+        try {
+          return item && typeof item.getTotalLength === "function" ? item.getTotalLength() : 0;
+        } catch {
+          return 0;
+        }
+      });
+      const totalLength = measured.reduce((sum, length) => sum + (Number.isFinite(length) && length > 0 ? length : 0), 0);
+      if (!totalLength) return null;
+      const ratio = Math.max(0, Math.min(1, Number.isFinite(progress) ? progress : 0));
+      let distance = totalLength * ratio;
+      for (let index = 0; index < path.length; index += 1) {
+        const length = measured[index];
+        if (!Number.isFinite(length) || length <= 0) continue;
+        if (distance <= length || index === path.length - 1) {
+          return pathPointAt(path[index], distance / length, length, targetFrame);
+        }
+        distance -= length;
+      }
+      return null;
+    }
     if (!path || typeof path.getTotalLength !== "function" || typeof path.getPointAtLength !== "function") return null;
     try {
       const length = Number.isFinite(cachedLength) && cachedLength > 0 ? cachedLength : path.getTotalLength();
       if (!Number.isFinite(length) || length <= 0) return null;
       const ratio = Math.max(0, Math.min(1, Number.isFinite(progress) ? progress : 0));
-      const point = path.getPointAtLength(length * ratio);
+      const point = path.getPointAtLength(length * (path.requestFlowReverse ? 1 - ratio : ratio));
       return point && Number.isFinite(point.x) && Number.isFinite(point.y)
-        ? { x: point.x, y: point.y }
+        ? pointInFrame(path, { x: point.x, y: point.y }, targetFrame)
         : null;
     } catch {
       return null;
@@ -287,13 +568,15 @@
   function createController(options = {}) {
     const clock = options.clock || defaultClock();
     const duration = (value, fallback) => Number.isFinite(value) && value > 0 ? value : fallback;
-    const nodeHoldDuration = duration(options.nodeHoldDuration, 280);
+    let nodeHoldDuration = duration(options.nodeHoldDuration, 280);
+    let playbackSpeed = duration(options.speed, 1);
     const minimumEdgeDuration = duration(options.minimumEdgeDuration, 450);
     const maximumEdgeDuration = Math.max(minimumEdgeDuration, duration(options.maximumEdgeDuration, 1000));
     const durationPerLength = duration(options.durationPerLength, 0.65);
     const unavailablePathDuration = duration(options.unavailablePathDuration, 280);
     const stepNoticeDuration = duration(options.stepNoticeDuration, 260);
     const reducedMotion = Boolean(options.reducedMotion);
+    const reducedMotionStepDuration = duration(options.reducedMotionStepDuration, 650);
     const onUpdate = typeof options.onUpdate === "function" ? options.onUpdate : () => {};
     const onStateChange = typeof options.onStateChange === "function" ? options.onStateChange : () => {};
     let steps = [];
@@ -347,10 +630,12 @@
     function edgeDuration(step) {
       const length = step && step.transition && step.transition.length;
       if (!Number.isFinite(length) || length <= 0) return null;
-      return Math.min(maximumEdgeDuration, Math.max(minimumEdgeDuration, length * durationPerLength));
+      const baseDuration = Math.min(maximumEdgeDuration, Math.max(minimumEdgeDuration, length * durationPerLength));
+      return baseDuration / playbackSpeed;
     }
 
     function phaseDuration() {
+      if (reducedMotion) return phase === "NODE_HOLD" ? nodeHoldDuration : reducedMotionStepDuration;
       if (phase === "NODE_HOLD") return nodeHoldDuration;
       if (phase === "EDGE_TRAVEL") return edgeDuration(steps[stepIndex]);
       if (phase === "PATH_UNAVAILABLE") return unavailablePathDuration;
@@ -410,18 +695,20 @@
         }
         if (elapsed < currentDuration) {
           phaseElapsed = elapsed;
-          progress = elapsed / currentDuration;
-          emitUpdate();
+          progress = reducedMotion ? 0 : elapsed / currentDuration;
+          if (!reducedMotion) emitUpdate();
           return true;
         }
         elapsed -= currentDuration;
         startedAt += currentDuration;
         phaseElapsed = 0;
         progress = 0;
-        advancePhase();
+        if (reducedMotion) nextStep();
+        else advancePhase();
         if (status !== "running") return false;
+        if (reducedMotion) emitUpdate();
         if (elapsed === 0) {
-          emitUpdate();
+          if (!reducedMotion) emitUpdate();
           return true;
         }
       }
@@ -449,20 +736,6 @@
 
     function play() {
       if (destroyed || steps.length === 0 || status === "running") return;
-      if (reducedMotion) {
-        cancelFrame();
-        let lastAnchored = -1;
-        for (let index = 0; index < steps.length; index += 1) {
-          if (steps[index] && steps[index].anchorId) lastAnchored = index;
-        }
-        stepIndex = lastAnchored >= 0 ? lastAnchored : steps.length - 1;
-        phase = phaseForStep(steps[stepIndex]);
-        progress = 1;
-        phaseElapsed = phaseDuration() || 0;
-        setStatus("complete");
-        emitUpdate();
-        return;
-      }
       if (status === "complete" || status === "idle") {
         stepIndex = 0;
         phase = phaseForStep(steps[stepIndex]);
@@ -480,6 +753,46 @@
       advance(clock.now());
       cancelFrame();
       if (status === "running") setStatus("paused");
+      emitUpdate();
+    }
+
+    // 재생 프레임을 정리하고 Controller가 소유한 현재 단계를 직접 선택
+    function seekToStep(index) {
+      if (destroyed || !Number.isInteger(index) || index < 0 || index >= steps.length) return false;
+      cancelFrame();
+      stepIndex = index;
+      phase = phaseForStep(steps[stepIndex]);
+      progress = 0;
+      startedAt = clock.now();
+      phaseElapsed = 0;
+      setStatus("paused");
+      emitUpdate();
+      return true;
+    }
+
+    function setPlaybackSettings(settings = {}) {
+      if (destroyed) return;
+      const now = clock.now();
+      const wasRunning = status === "running";
+      if (wasRunning) advance(now);
+      if (wasRunning && status !== "running") cancelFrame();
+
+      const previousDuration = phaseDuration();
+      const progressRatio = Number.isFinite(previousDuration) && previousDuration > 0
+        ? Math.max(0, Math.min(1, phaseElapsed / previousDuration))
+        : 0;
+      if (Number.isFinite(settings.nodeHoldDuration) && settings.nodeHoldDuration > 0) {
+        nodeHoldDuration = settings.nodeHoldDuration;
+      }
+      if (Number.isFinite(settings.speed) && settings.speed > 0) playbackSpeed = settings.speed;
+
+      const nextDuration = phaseDuration();
+      if (Number.isFinite(previousDuration) && previousDuration > 0
+        && Number.isFinite(nextDuration) && nextDuration > 0) {
+        phaseElapsed = nextDuration * progressRatio;
+        if (status === "running") startedAt = now - phaseElapsed;
+        progress = reducedMotion ? 0 : progressRatio;
+      }
       emitUpdate();
     }
 
@@ -504,8 +817,10 @@
 
     return {
       setSteps,
+      setPlaybackSettings,
       play,
       pause,
+      seekToStep,
       reset,
       destroy,
       state: snapshot,

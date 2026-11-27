@@ -15,6 +15,7 @@ public final class WebAccessGuard {
             "/mapinboot/index.html",
             "/mapinboot/app.css",
             "/mapinboot/app.js",
+            "/mapinboot/spotlight.js",
             "/mapinboot/graph-flow.js",
             "/mapinboot/request-flow-animation.js",
             "/mapinboot/graph-standard-filters.js",

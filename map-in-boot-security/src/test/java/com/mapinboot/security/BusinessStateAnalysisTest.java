@@ -78,8 +78,8 @@ class BusinessStateAnalysisTest {
                     .filter(edge -> edge.type() == EdgeType.SECURITY_STATE)
                     .count());
 
-            Snapshot snapshot = new SnapshotAssembler(List.of(), "1")
-                    .assemble(analysis, "fixture", "instance", "test");
+            Snapshot snapshot = new SnapshotAssembler(List.of())
+                    .assemble(analysis, "fixture", "instance", "test", com.mapinboot.core.snapshot.runtime.RuntimeArchitectureAssembler.unknown());
             assertEquals(2, snapshot.edges().stream()
                     .filter(edge -> edge.type() == EdgeType.SECURITY_STATE)
                     .count());
@@ -132,8 +132,8 @@ class BusinessStateAnalysisTest {
                     .filter(finding -> "STATE_BYPASS".equals(finding.ruleId()))
                     .count());
 
-            Snapshot snapshot = new SnapshotAssembler(List.of(new SecurityRuleEngine()), "1")
-                    .assemble(analysis, "fixture", "instance", "test");
+            Snapshot snapshot = new SnapshotAssembler(List.of(new SecurityRuleEngine()))
+                    .assemble(analysis, "fixture", "instance", "test", com.mapinboot.core.snapshot.runtime.RuntimeArchitectureAssembler.unknown());
             assertEquals(1, snapshot.findings().stream()
                     .filter(finding -> "STATE_BYPASS".equals(finding.ruleId()))
                     .count());

@@ -10,6 +10,7 @@
   const title = document.querySelector("#view-title");
   const viewState = document.querySelector("#view-state");
   const graphCanvas = document.querySelector("#graph-canvas");
+  const mapToolbar = document.querySelector(".map-toolbar");
   const graphEmpty = document.querySelector("#graph-empty");
   const graphStateMessage = document.querySelector("#graph-state-message");
   const graphSvg = document.querySelector("#graph-svg");
@@ -26,6 +27,7 @@
   const findingModalTitle = document.querySelector("#finding-modal-title");
   const findingModalClose = document.querySelector("#finding-modal-close");
   const graphPopover = document.querySelector("#graph-popover");
+  const graphMinimap = document.querySelector("#graph-minimap");
   const endpointSearch = document.querySelector("#endpoint-search");
   const endpointFilter = document.querySelector("#endpoint-filter-label");
   const endpointFilterLabel = document.querySelector("#endpoint-filter-label-text");
@@ -52,10 +54,14 @@
   const helpButton = document.querySelector("#help-button");
   const settingsButton = document.querySelector("#settings-button");
   const helpPanel = document.querySelector("#help-panel");
+  const spotlight = window.MapInBootSpotlight;
   const settingsPanel = document.querySelector("#settings-panel");
+  const settingsCloseButton = document.querySelector("#settings-close");
   const showAreasSetting = document.querySelector("#setting-show-areas");
   const showEdgeLabelsSetting = document.querySelector("#setting-show-edge-labels");
   const showMinimapSetting = document.querySelector("#setting-show-minimap");
+  const flowNodeDurationSetting = document.querySelector("#setting-flow-node-duration");
+  const flowSpeedSetting = document.querySelector("#setting-flow-speed");
   const flowClient = window.MapInBootFlow;
   const requestFlowClient = window.MapInBootRequestFlow;
   const graphRenderer = window.MapInBootGraph;
@@ -84,9 +90,19 @@
   const requestFlowPause = document.querySelector("#request-flow-pause");
   const requestFlowReset = document.querySelector("#request-flow-reset");
   const requestFlowStatus = document.querySelector("#request-flow-status");
+  const requestFlowDetailToggle = document.querySelector("#request-flow-detail-toggle");
+  const requestFlowDetailClose = document.querySelector("#request-flow-detail-close");
+  const requestFlowPopoverCount = document.querySelector("#request-flow-popover-count");
+  const requestFlowDetails = document.querySelector("#request-flow-details");
+  const requestFlowStepTitle = document.querySelector("#request-flow-step-title");
+  const requestFlowStepDescription = document.querySelector("#request-flow-step-description");
+  const requestFlowNavigation = document.querySelector("#request-flow-navigation");
+  const requestFlowPrevious = document.querySelector("#request-flow-previous");
+  const requestFlowNext = document.querySelector("#request-flow-next");
   const requestFlowEducation = document.querySelector("#request-flow-education");
   const requestFlowDot = document.querySelector("#request-flow-dot");
   let noticeTimer = null;
+  let settingsPanelTimer = null;
   const state = {
     view: "all-flow",
     status: null,
@@ -116,10 +132,12 @@
     featureEndpointQuery: "",
     featureEndpointOptionIndex: -1,
     display: { areas: true, edgeLabels: true, minimap: true },
+    requestFlowSettings: { nodeHoldDuration: 1500, speed: 1 },
     loading: false,
     selection: null,
     inspectorDismissed: false,
     hoverEdgeId: null,
+    graphHover: null,
     selectedEndpointId: null,
     viewVersion: 0,
     snapshotGeneration: 0,
@@ -131,15 +149,19 @@
     findingModalTrigger: null,
     requestFlowSteps: [],
     requestFlowPositions: {},
+    requestFlowSignature: null,
     navigation: null
   };
   let requestFlowActiveNodeId = null;
   let requestFlowActiveNode = null;
-  let requestFlowActiveRender = null;
+  let requestFlowActiveEdges = [];
   let handlingRequestFlowFailure = false;
+  let requestFlowDetailsOpen = false;
 
   const requestFlowController = requestFlowClient && requestFlowControls
     ? requestFlowClient.createController({
+      nodeHoldDuration: state.requestFlowSettings.nodeHoldDuration,
+      speed: state.requestFlowSettings.speed,
       reducedMotion: Boolean(window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches),
       onUpdate: renderRequestFlowSafely
     })
@@ -195,6 +217,14 @@
     else element.removeAttribute("hidden");
   }
 
+  // 재생 상태와 독립적인 상세 팝오버 표시
+  function setRequestFlowDetails(open, returnFocus = false) {
+    requestFlowDetailsOpen = Boolean(open && requestFlowController && requestFlowController.state().step);
+    setHidden(requestFlowDetails, !requestFlowDetailsOpen);
+    if (requestFlowDetailToggle) requestFlowDetailToggle.setAttribute("aria-expanded", String(requestFlowDetailsOpen));
+    if (returnFocus && requestFlowDetailToggle && typeof requestFlowDetailToggle.focus === "function") requestFlowDetailToggle.focus();
+  }
+
   function setRequestFlowVisibility(visible) {
     const nextVisible = Boolean(visible);
     if (requestFlowControls) requestFlowControls.hidden = !nextVisible;
@@ -203,88 +233,202 @@
       requestFlowEducation.setAttribute("aria-hidden", String(!nextVisible));
     }
     if (!nextVisible) {
+      setRequestFlowDetails(false);
       setRequestFlowNode(null);
+      setRequestFlowEdge(null);
       if (requestFlowDot) setHidden(requestFlowDot, true);
     }
   }
 
   function findRequestFlowNode(anchorId) {
-    const candidates = [
-      ...(graphNodes && graphNodes.children ? graphNodes.children : []),
-      ...(graphFlowProjection && graphFlowProjection.children ? graphFlowProjection.children : [])
+    const pending = [
+      ...(graphNodes && graphNodes.children ? Array.from(graphNodes.children) : []),
+      ...(graphFlowProjection && graphFlowProjection.children ? Array.from(graphFlowProjection.children) : [])
     ];
-    return candidates.find((element) => {
+    const candidates = [];
+    while (pending.length) {
+      const element = pending.shift();
+      candidates.push(element);
+      pending.push(...Array.from(element.children || []));
+    }
+    const directMatch = candidates.find((element) => [
+      element.getAttribute("data-node-id"),
+      element.getAttribute("data-projection-id"),
+      element.getAttribute("data-composite-item-id"),
+      ...(element.getAttribute("data-projection-node-ids") || "").split(",")
+    ].includes(anchorId));
+    if (directMatch) return directMatch;
+    const includesAnchor = (element) => {
       const identifiers = [
-        element.getAttribute("data-node-id"),
-        element.getAttribute("data-projection-id"),
         ...(element.getAttribute("data-node-ids") || "").split(","),
         ...(element.getAttribute("data-handler-ids") || "").split(","),
-        ...(element.getAttribute("data-endpoint-ids") || "").split(",")
+        ...(element.getAttribute("data-endpoint-ids") || "").split(","),
+        ...(element.getAttribute("data-runtime-component-ids") || "").split(",")
       ];
       return identifiers.includes(anchorId);
-    }) || null;
+    };
+    return candidates.find((element) => (element.getAttribute("class") || "").split(/\s+/)
+      .includes("graph-composite-item") && includesAnchor(element))
+      || candidates.find(includesAnchor) || null;
   }
 
   // 재생 단계에 맞는 실제 또는 교육용 표시 Node만 부분 갱신
   function setRequestFlowNode(anchorId) {
-    const render = state.graphRender;
     const nextId = anchorId || null;
-    if (requestFlowActiveNodeId === nextId && requestFlowActiveRender === render) return;
     if (requestFlowActiveNode) requestFlowActiveNode.removeAttribute("data-request-flow-active");
     requestFlowActiveNodeId = nextId;
     requestFlowActiveNode = null;
-    requestFlowActiveRender = render;
     if (!nextId) return;
     requestFlowActiveNode = findRequestFlowNode(nextId);
     if (requestFlowActiveNode) requestFlowActiveNode.setAttribute("data-request-flow-active", "true");
   }
 
-  function requestFlowPath(transition) {
-    if (!transition) return null;
-    const layer = transition.kind === "projection" ? graphFlowProjection : graphEdges;
-    const paths = Array.from(layer?.children ?? []);
-    return paths.find((path) => {
-      if (path.tagName !== "path" || typeof path.getTotalLength !== "function"
-        || typeof path.getPointAtLength !== "function") return false;
-      if (transition.kind === "projection") {
-        return path.getAttribute("data-projection-edge-id") === transition.edgeId;
-      }
-      const ids = (path.getAttribute("data-edge-ids") || path.getAttribute("data-edge-id") || "").split(",");
-      return ids.includes(transition.edgeId);
-    }) || null;
+  function setRequestFlowEdge(path) {
+    requestFlowActiveEdges.forEach((element) => element.removeAttribute("data-request-flow-active"));
+    requestFlowActiveEdges = [];
+    if (!path) return;
+    const paths = Array.isArray(path) ? path : [path];
+    const classNames = (element) => (element.getAttribute("class") || "").split(/\s+/);
+    paths.forEach((entry) => {
+      const item = entry.element || entry;
+      requestFlowActiveEdges.push(item);
+      if (!classNames(item).includes("graph-edge-flow-route")) return;
+      const edgeIds = new Set((item.getAttribute("data-edge-ids") || item.getAttribute("data-edge-id") || "")
+        .split(",").filter(Boolean));
+      Array.from(graphEdges && graphEdges.children || []).forEach((element) => {
+        if (!classNames(element).some((name) => name === "graph-edge-branch" || name === "graph-edge-trunk")) return;
+        const ids = (element.getAttribute("data-edge-ids") || element.getAttribute("data-edge-id") || "")
+          .split(",").filter(Boolean);
+        if (ids.some((id) => edgeIds.has(id))) requestFlowActiveEdges.push(element);
+      });
+    });
+    requestFlowActiveEdges = Array.from(new Set(requestFlowActiveEdges));
+    requestFlowActiveEdges.forEach((element) => element.setAttribute("data-request-flow-active", "true"));
   }
 
-  // 교육용 빛 점과 현재 상태를 SVG Edge 경로에 맞춰 갱신
+  function requestFlowPath(transition) {
+    if (!transition) return null;
+    const pending = [graphEdges, graphNodes, graphFlowProjection].filter(Boolean);
+    const paths = [];
+    while (pending.length) {
+      const element = pending.shift();
+      if (element.tagName === "path") paths.push(element);
+      pending.push(...Array.from(element.children || []));
+    }
+    const displayModel = state.layout && state.layout.plan && state.layout.plan.displayModel;
+    if (transition.kind !== "display") return null;
+    const routing = state.layout && state.layout.plan && state.layout.plan.overviewRouting;
+    const relationIds = transition.relationIds || [transition.relationId];
+    const byId = new Map(paths.flatMap((path) =>
+      (path.getAttribute("data-segment-ids") || path.getAttribute("data-segment-id") || "")
+        .split(",").filter(Boolean).map((id) => [id, path])));
+    const segments = new Map((routing && routing.segments || []).map((segment) => [segment.id, segment]));
+    const result = [];
+    for (const relationId of relationIds) {
+      const route = routing && routing.routesByRelationId[relationId];
+      if (!route || !route.orderedSegmentIds.length) return null;
+      let current = route.sourcePort;
+      for (const id of route.orderedSegmentIds) {
+        const segment = segments.get(id);
+        const path = byId.get(id);
+        if (!segment || !path || typeof path.getTotalLength !== "function"
+          || typeof path.getPointAtLength !== "function") return null;
+        const distance = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
+        const forward = distance(current, segment.from) <= distance(current, segment.to);
+        const start = forward ? segment.from : segment.to;
+        try {
+          const renderedStart = path.getPointAtLength(0);
+          const reverse = distance(renderedStart, start) > distance(renderedStart, forward ? segment.to : segment.from);
+          const routePath = { element: path, requestFlowReverse: reverse,
+            getTotalLength: () => path.getTotalLength(), getPointAtLength: (length) => path.getPointAtLength(length) };
+          if (typeof path.getScreenCTM === "function") routePath.getScreenCTM = () => path.getScreenCTM();
+          result.push(routePath);
+        } catch { return null; }
+        current = forward ? segment.to : segment.from;
+      }
+    }
+    return result.length ? result : null;
+  }
+
+  // 실제 내용이 바뀐 단계 텍스트만 DOM과 접근성 트리에 반영
+  function setRequestFlowText(element, value) {
+    if (!element) return;
+    const nextText = value === null || value === undefined ? "" : String(value);
+    if (element.textContent !== nextText) element.textContent = nextText;
+  }
+
+  // 학습 흐름 빛 점과 현재 상태를 SVG Edge 경로에 맞춰 갱신
   function renderRequestFlowUpdate(flowState) {
     const currentState = flowState || { status: "idle", stepIndex: 0, progress: 0, step: null };
     const step = currentState.step;
-    const nextStep = currentState.nextStep;
-    const path = currentState.phase === "EDGE_TRAVEL" ? requestFlowPath(currentState.transition) : null;
-    const point = path && requestFlowClient && requestFlowClient.pathPointAt
-      ? requestFlowClient.pathPointAt(path, currentState.progress, currentState.transition.length)
-      : null;
-    const isPathMissing = currentState.phase === "EDGE_TRAVEL" && !point;
-    const statusLabel = currentState.status === "running"
-      ? currentState.phase === "NODE_HOLD" ? `진행 중 · ${step && step.label || "단계"}`
-        : currentState.phase === "EDGE_TRAVEL" ? isPathMissing ? `경로 확인 불가 · ${nextStep && nextStep.label || "다음 단계"}`
-          : `이동 중 · ${nextStep && nextStep.label || "다음 단계"}`
-          : currentState.phase === "PATH_UNAVAILABLE" ? `경로 확인 불가 · ${nextStep && nextStep.label || "다음 단계"}`
-            : currentState.phase === "STEP_NOTICE" ? `진행 중 · ${step && step.label || "확인 단계"}` : "진행 중"
-      : currentState.status === "paused"
-        ? currentState.phase === "EDGE_TRAVEL" && isPathMissing
-          ? `일시정지 · 경로 확인 불가 · ${nextStep && nextStep.label || "다음 단계"}`
-          : `일시정지 · ${currentState.phase === "EDGE_TRAVEL" ? nextStep && nextStep.label || "다음 단계" : step && step.label || "현재 단계"}`
-        : currentState.status === "complete"
-          ? `완료${step && step.label ? ` · ${step.label}` : ""}`
-          : "시작 전";
-    const message = `교육용 예시 · 실제 요청 추적 아님 · ${statusLabel}`;
-    if (requestFlowStatus && requestFlowStatus.textContent !== message) requestFlowStatus.textContent = message;
-    if (requestFlowStart) requestFlowStart.disabled = currentState.status === "running";
-    if (requestFlowPause) requestFlowPause.disabled = currentState.status !== "running";
-    if (requestFlowReset) requestFlowReset.disabled = state.requestFlowSteps.length === 0;
+    const steps = Array.isArray(currentState.steps) ? currentState.steps : state.requestFlowSteps;
+    const hasSteps = steps.length > 0;
     const inDetail = isEndpointDetailView() && Boolean(state.selectedEndpointId || state.detailApiId);
-    setRequestFlowNode(inDetail && currentState.phase === "NODE_HOLD" && step ? step.anchorId : null);
-    if (!requestFlowDot || !inDetail || !step || currentState.phase !== "EDGE_TRAVEL" || !point) {
+    const filterEducation = step && step.filterEducation;
+    const path = currentState.phase === "EDGE_TRAVEL" ? requestFlowPath(currentState.transition) : null;
+    setRequestFlowEdge(path);
+    const transition = currentState.transition;
+    let point = path && requestFlowClient && requestFlowClient.pathPointAt
+      ? requestFlowClient.pathPointAt(path, currentState.progress, transition.length,
+        requestFlowDot && requestFlowDot.parentNode) : null;
+    if (currentState.phase === "EDGE_TRAVEL" && transition && transition.kind === "internal") {
+      point = { x: transition.from.x + (transition.to.x - transition.from.x) * currentState.progress,
+        y: transition.from.y + (transition.to.y - transition.from.y) * currentState.progress };
+    }
+    if ((currentState.phase === "NODE_HOLD" || currentState.phase === "COMPLETE") && step) point = step.position;
+    const isPathMissing = currentState.phase === "EDGE_TRAVEL" && !point;
+    const pathUnavailable = currentState.phase === "PATH_UNAVAILABLE" || isPathMissing;
+    const statusState = pathUnavailable ? "unavailable"
+      : currentState.status === "running" ? currentState.phase === "EDGE_TRAVEL" ? "moving" : "running"
+        : currentState.status === "paused" ? "paused"
+          : currentState.status === "complete" ? "complete" : "idle";
+    const statusLabels = {
+      idle: "시작 전",
+      running: "진행 중",
+      moving: "이동 중",
+      paused: "일시정지",
+      complete: "완료",
+      unavailable: "경로 확인 불가"
+    };
+    setRequestFlowText(requestFlowStatus, statusLabels[statusState]);
+    if (requestFlowStatus && requestFlowStatus.getAttribute("data-state") !== statusState) {
+      requestFlowStatus.setAttribute("data-state", statusState);
+    }
+    if (!step && requestFlowDetailsOpen) setRequestFlowDetails(false);
+    setHidden(requestFlowDetails, !requestFlowDetailsOpen);
+    setHidden(requestFlowNavigation, !hasSteps);
+    const count = hasSteps ? `${currentState.stepIndex + 1} / ${steps.length}` : "0 / 0";
+    setRequestFlowText(requestFlowPopoverCount, count);
+    const names = { "security-chain": "보안 필터 체인", "dispatcher-servlet": "DispatcherServlet",
+      "endpoint-mapping": "API 매핑", "education-handler-mapping": "요청 매핑 탐색",
+      "education-handler-adapter": "핸들러 실행 준비" };
+    let title = step && (names[step.id] || step.label) || "표시할 단계가 없습니다.";
+    title = String(title).replace(/^(?:확인된 )?(?:Servlet Filter|Security Filter|SecurityFilterChain|API Endpoint|Handler) · /, "")
+      .replace(/\b(?:[a-z_$][\w$]*\.)+([A-Z_$][\w$]*)/g, "$1").replace(/\([^)]*\)/g, "");
+    if (title.includes("|") || /\b[0-9a-f]{32,}\b/i.test(title)) {
+      title = step && step.id.startsWith("security") ? "보안 필터 체인" : "처리 단계";
+    }
+    setRequestFlowText(requestFlowStepTitle, title);
+    const processing = filterEducation && filterEducation.processing;
+    const processSentence = processing && (processing.endsWith("수 있음")
+      ? processing.replace(/수 있음$/, "수 있습니다.") : `${processing}할 수 있습니다.`);
+    const description = filterEducation && filterEducation.role && processSentence
+      ? `${filterEducation.role}하는 역할을 합니다. ${processSentence}` : step && step.description || "";
+    setRequestFlowText(requestFlowStepDescription, String(description)
+      .replace(/https?:\/\/\S+/g, "관련 정보")
+      .replace(/\b(?:[a-z_$][\w$]*\.)+([A-Z_$][\w$]*)/g, "$1")
+      .replace(/\b[\w.$-]+(?:\|[\w.$/:-]+)+/g, "해당 처리 구성")
+      .replace(/(?<![\w])\/(?:[\w{}:.-]+\/?)+/g, "요청 경로")
+      .replace(/\b[0-9a-f]{32,}\b/gi, "구성 정보"));
+    if (requestFlowDetailToggle) requestFlowDetailToggle.disabled = !step;
+    if (requestFlowStart) requestFlowStart.disabled = currentState.status === "running" || !hasSteps;
+    if (requestFlowPause) requestFlowPause.disabled = currentState.status !== "running";
+    if (requestFlowReset) requestFlowReset.disabled = !hasSteps;
+    if (requestFlowPrevious) requestFlowPrevious.disabled = !hasSteps || currentState.stepIndex <= 0;
+    if (requestFlowNext) requestFlowNext.disabled = !hasSteps || currentState.stepIndex >= steps.length - 1;
+    setRequestFlowNode(inDetail && step && ["NODE_HOLD", "COMPLETE"].includes(currentState.phase)
+      ? step.displayItemId || step.anchorId : null);
+    if (!requestFlowDot || !inDetail || !step || !point) {
       if (requestFlowDot) setHidden(requestFlowDot, true);
       return;
     }
@@ -296,6 +440,7 @@
   function reportRequestFlowFailure(error) {
     state.requestFlowSteps = [];
     state.requestFlowPositions = {};
+    state.requestFlowSignature = null;
     let cause = error && error.message ? error.message : String(error || "원인 확인 불가");
     if (!handlingRequestFlowFailure) {
       handlingRequestFlowFailure = true;
@@ -303,7 +448,7 @@
         if (requestFlowController) requestFlowController.setSteps([]);
       } catch (resetError) {
         const resetCause = resetError && resetError.message ? resetError.message : String(resetError);
-        cause = `${cause}; 교육용 흐름 정리 실패: ${resetCause}`;
+        cause = `${cause}; 학습 흐름 정리 실패: ${resetCause}`;
       } finally {
         handlingRequestFlowFailure = false;
       }
@@ -313,9 +458,9 @@
       setRequestFlowVisibility(false);
     } catch (hideError) {
       const hideCause = hideError && hideError.message ? hideError.message : String(hideError);
-      cause = `${cause}; 교육용 흐름 숨김 실패: ${hideCause}`;
+      cause = `${cause}; 학습 흐름 숨김 실패: ${hideCause}`;
     }
-    showNotice(`교육용 흐름 준비 실패: ${cause}`, "error");
+    showNotice(`학습 흐름 준비 실패: ${cause}`, "error");
   }
 
   function renderRequestFlowSafely(flowState) {
@@ -330,6 +475,7 @@
   function resetRequestFlow() {
     state.requestFlowSteps = [];
     state.requestFlowPositions = {};
+    state.requestFlowSignature = null;
     if (requestFlowController) requestFlowController.setSteps([]);
     setRequestFlowNode(null);
     setRequestFlowVisibility(false);
@@ -341,34 +487,65 @@
       resetRequestFlow();
       return;
     }
+    const displayModel = state.layout.plan && state.layout.plan.displayModel;
     const positions = {
       ...(state.layout.positions || {}),
       ...Object.fromEntries((state.layout.plan && state.layout.plan.projection && state.layout.plan.projection.nodes || [])
         .map((node) => [node.id, node.position]))
     };
+    if (displayModel && displayModel.itemById) {
+      const itemPosition = (id) => {
+        const item = displayModel.itemById[id];
+        return item && item.bounds ? { x: item.bounds.x + item.bounds.width / 2,
+          y: item.bounds.y + item.bounds.height / 2 } : null;
+      };
+      Object.entries(displayModel.originalNodeToItemIds || {}).forEach(([id, itemIds]) => {
+        const position = itemIds.map(itemPosition).find(Boolean);
+        if (position) positions[id] = position;
+      });
+      Object.entries(displayModel.projectionToItemIds || {}).forEach(([id, itemIds]) => {
+        const position = itemIds.map(itemPosition).find(Boolean);
+        if (position) positions[id] = position;
+      });
+      Object.entries(displayModel.runtimeComponentToItemIds || {}).forEach(([id, itemIds]) => {
+        const position = itemIds.map(itemPosition).find(Boolean);
+        if (position) positions[id] = position;
+      });
+    }
     const steps = requestFlowClient.buildSteps({
       graph: state.viewGraph,
       index: state.flowIndex,
       endpointId: isFindingDetailView() ? state.detailApiId : state.selectedEndpointId,
       positions,
-      projection: state.layout.plan && state.layout.plan.projection
+      projection: state.layout.plan && state.layout.plan.projection,
+      snapshot: state.snapshot,
+      displayModel
     });
     steps.forEach((step) => {
-      if (!step.transition) return;
+      if (!step.transition || step.transition.kind === "internal") return;
       const path = requestFlowPath(step.transition);
       if (!path) return;
       try {
-        const length = path.getTotalLength();
+        const paths = Array.isArray(path) ? path : [path];
+        const length = paths.reduce((total, item) => total + item.getTotalLength(), 0);
         step.transition.length = Number.isFinite(length) && length > 0 ? length : null;
       } catch {
         step.transition.length = null;
       }
     });
-    state.requestFlowSteps = steps;
+    const signature = JSON.stringify({
+      view: state.view,
+      endpointId: isFindingDetailView() ? state.detailApiId : state.selectedEndpointId,
+      steps
+    });
+    const currentFlow = requestFlowController.state();
+    const sameFlow = state.requestFlowSignature === signature && currentFlow.steps.length === steps.length;
+    state.requestFlowSteps = sameFlow ? currentFlow.steps : steps;
     state.requestFlowPositions = positions;
-    requestFlowController.setSteps(steps);
+    state.requestFlowSignature = signature;
+    if (!sameFlow) requestFlowController.setSteps(steps);
     setRequestFlowVisibility(true);
-    renderRequestFlowSafely(requestFlowController.state());
+    renderRequestFlowSafely(sameFlow ? currentFlow : requestFlowController.state());
   }
 
   function requestMessage(status, resource) {
@@ -478,9 +655,6 @@
     const findingsByEndpoint = new Map();
     const endpoints = state.flowIndex && state.flowIndex.endpoints
       ? state.flowIndex.endpoints : Array.from(nodesById.values()).filter((node) => node.type === "ENDPOINT");
-    const evidence = state.snapshot && Array.isArray(state.snapshot.evidence) ? state.snapshot.evidence : [];
-    const evidenceById = state.flowIndex && state.flowIndex.evidenceById
-      ? state.flowIndex.evidenceById : new Map(evidence.filter((item) => item && item.id).map((item) => [item.id, item]));
     state.findingIndex.forEach((entry) => {
       const endpointIds = new Set();
       const addEndpoint = (id) => {
@@ -496,16 +670,16 @@
       });
       if (endpointIds.size === 0) {
         const ids = Array.isArray(entry.finding.evidenceIds) ? entry.finding.evidenceIds : [];
-        const findingEvidence = new Set(ids.filter((id) => evidenceById.has(id)));
-        const direct = endpoints.filter((endpoint) => (endpoint.evidenceIds || []).some((id) => {
-          const evidence = evidenceById.get(id);
-          const attrs = endpoint.attributes || {};
-          return findingEvidence.has(id) && evidence && evidence.source === "RUNTIME"
-            && attrs.httpMethod && attrs.path && attrs.handler
-            && evidence.summary === `등록 Endpoint: ${attrs.httpMethod} ${attrs.path}`
-            && String(evidence.location || "").endsWith(`:${attrs.handler}`);
-        }));
-        if (direct.length === 1) addEndpoint(direct[0].id);
+        const findingEvidence = new Set(ids);
+        const mappings = state.flowIndex && Array.isArray(state.flowIndex.validEdges)
+          ? state.flowIndex.validEdges : Array.from(edgesById.values());
+        const directMappings = mappings.filter((edge) => edge.type === "FLOWS_TO"
+          && nodesById.get(edge.sourceId)?.type === "ENDPOINT"
+          && nodesById.get(edge.targetId)?.type === "HANDLER"
+          && edge.confidence === "CONFIRMED"
+          && (edge.evidenceIds || []).some((id) => findingEvidence.has(id)));
+        const directEndpointIds = new Set(directMappings.map((edge) => edge.sourceId));
+        if (directEndpointIds.size === 1) addEndpoint(Array.from(directEndpointIds)[0]);
         if (endpointIds.size === 0 && ["STATE_BYPASS", "OBJECT_BINDING"].includes(entry.finding.ruleId)) {
           const type = entry.finding.ruleId === "STATE_BYPASS" ? "BUSINESS_SECURITY_STATE" : "AUTHORIZATION";
           const handlers = new Set(Array.from(nodesById.values()).filter((node) => node.type === type
@@ -516,8 +690,15 @@
             && (node.evidenceIds || []).length > 0
             && node.evidenceIds.every((id) => findingEvidence.has(id)))
             .map((node) => node.attributes.handler));
-          const matches = endpoints.filter((endpoint) => endpoint.attributes && handlers.has(endpoint.attributes.handler));
-          if (handlers.size === 1 && matches.length === 1) addEndpoint(matches[0].id);
+          const handlerIds = new Set((state.flowIndex && state.flowIndex.handlers || [])
+            .filter((handler) => handler.attributes && handlers.has(handler.attributes.handler))
+            .map((handler) => handler.id));
+          // Finding 근거 Fact의 Handler 식별자를 공통 FLOWS_TO 인덱스로 Endpoint에 투영
+          const matches = new Map(Array.from(handlerIds).flatMap((handlerId) =>
+            (state.flowIndex && state.flowIndex.endpointsForHandler
+              ? state.flowIndex.endpointsForHandler(handlerId) : [])
+              .map((mapping) => [mapping.endpoint.id, mapping.endpoint])));
+          if (handlerIds.size === 1 && matches.size === 1) addEndpoint(Array.from(matches.values())[0].id);
         }
       }
       const ids = Array.from(endpointIds);
@@ -904,9 +1085,20 @@
     return match.status === "CONFIRMED" ? match.chain.id : null;
   }
 
+  // 교육 상태 판정에 사용할 현재 상세 Endpoint의 확인된 첫 매칭 Chain
+  function filterEducationChainId() {
+    const endpointId = isFindingDetailView() ? state.detailApiId
+      : isDetailView() ? state.selectedEndpointId : null;
+    if (!endpointId || !state.flowIndex || !state.flowIndex.firstMatchedChain) return null;
+    const match = state.flowIndex.firstMatchedChain(endpointId);
+    return match && match.status === "CONFIRMED" && match.chain ? match.chain.id : null;
+  }
+
   function selectView(view, preserveFeatureSelection = false) {
     if (!viewNames[view]) return;
     const viewChanged = state.view !== view;
+    if (viewChanged) state.graphHover = null;
+    if (viewChanged && spotlight && spotlight.isActive()) spotlight.close({ restoreFocus: false });
     if (viewChanged && navigation) navigation.setLocked(false);
     if (viewChanged) state.inspectorDismissed = false;
     if (view !== "security-detail") closeFindingModal(false);
@@ -973,10 +1165,16 @@
 
   function applyDisplaySettings() {
     if (graphAreas) setHidden(graphAreas, !state.display.areas);
-    if (graphFlowProjection) setHidden(graphFlowProjection, !state.display.areas);
     if (graphGuides) setHidden(graphGuides, !state.display.areas);
     if (graphCanvas) graphCanvas.dataset.showEdgeLabels = String(state.display.edgeLabels);
     if (navigation && navigation.setMiniMapVisible) navigation.setMiniMapVisible(state.display.minimap);
+    [[showAreasSetting, state.display.areas], [showEdgeLabelsSetting, state.display.edgeLabels],
+      [showMinimapSetting, state.display.minimap]]
+      .forEach(([setting, checked]) => {
+        if (!setting) return;
+        setting.checked = checked;
+        setting.setAttribute("aria-checked", String(checked));
+      });
   }
 
   function setPanel(panel, button, open) {
@@ -985,15 +1183,83 @@
     button.setAttribute("aria-expanded", String(open));
   }
 
+  function isSettingsPanelOpen() {
+    return Boolean(settingsPanel && settingsPanel.dataset.open === "true");
+  }
+
+  function finishSettingsPanelClose() {
+    if (isSettingsPanelOpen() || !settingsPanel) return;
+    if (settingsPanelTimer !== null) {
+      clearTimeout(settingsPanelTimer);
+      settingsPanelTimer = null;
+    }
+    settingsPanel.hidden = true;
+  }
+
+  function setSettingsPanel(open, restoreFocus = true) {
+    if (!settingsPanel || !settingsButton) return;
+    if (open && spotlight && spotlight.isActive()) spotlight.close({ restoreFocus: false });
+    const wasOpen = isSettingsPanelOpen();
+    if (settingsPanelTimer !== null) {
+      clearTimeout(settingsPanelTimer);
+      settingsPanelTimer = null;
+    }
+    settingsButton.setAttribute("aria-expanded", String(open));
+    if (open) {
+      settingsPanel.hidden = false;
+      settingsPanel.inert = false;
+      settingsPanel.dataset.open = "true";
+      settingsPanel.setAttribute("aria-hidden", "false");
+      if (settingsCloseButton && settingsCloseButton.focus) settingsCloseButton.focus();
+      return;
+    }
+
+    settingsPanel.dataset.open = "false";
+    settingsPanel.inert = true;
+    settingsPanel.setAttribute("aria-hidden", "true");
+    const reducedMotion = window.matchMedia
+      && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    if (wasOpen && !reducedMotion) settingsPanelTimer = setTimeout(finishSettingsPanelClose, 180);
+    else settingsPanel.hidden = true;
+    if (wasOpen && restoreFocus && settingsButton.focus) settingsButton.focus();
+  }
+
+  function closeSettingsPanel() {
+    if (isSettingsPanelOpen()) setSettingsPanel(false, false);
+    else if (settingsPanel) {
+      settingsPanel.inert = true;
+      settingsPanel.setAttribute("aria-hidden", "true");
+    }
+    if (settingsButton) settingsButton.setAttribute("aria-expanded", "false");
+    finishSettingsPanelClose();
+  }
+
   function closeHeaderPanels() {
     setPanel(helpPanel, helpButton, false);
-    setPanel(settingsPanel, settingsButton, false);
+    setSettingsPanel(false, false);
   }
 
   function toggleHeaderPanel(panel, button, otherPanel, otherButton) {
-    const open = Boolean(panel && panel.hidden);
-    setPanel(otherPanel, otherButton, false);
-    setPanel(panel, button, open);
+    const open = panel === settingsPanel ? !isSettingsPanelOpen() : Boolean(panel && panel.hidden);
+    if (otherPanel === settingsPanel) setSettingsPanel(false, false);
+    else setPanel(otherPanel, otherButton, false);
+    if (panel === settingsPanel) setSettingsPanel(open);
+    else setPanel(panel, button, open);
+  }
+
+  function settingsFocusableElements() {
+    return [settingsCloseButton, showAreasSetting, showEdgeLabelsSetting, showMinimapSetting,
+      flowNodeDurationSetting, flowSpeedSetting]
+      .filter((element) => element && !element.disabled);
+  }
+
+  function isWithinElement(element, container) {
+    let current = element;
+    while (current) {
+      if (current === container) return true;
+      current = current.parentNode;
+    }
+    return false;
   }
 
   function capturedTime(value) {
@@ -1058,6 +1324,7 @@
     state.graphRender = null;
     state.visibleGraph = null;
     state.selection = null;
+    state.graphHover = null;
     state.selectedEndpointId = null;
     state.viewVersion += 1;
     state.layoutRequestId += 1;
@@ -1102,15 +1369,17 @@
       && graphNodes.has(state.detailApiId)) nodeIds.add(state.detailApiId);
 
     if (nodeIds.size === 0 && edgeIds.size === 0) {
-      const endpoint = graphNodes.get(state.detailApiId);
-      const handler = endpoint && endpoint.attributes && endpoint.attributes.handler;
+      const mapping = state.flowIndex && state.flowIndex.handlerFor(state.detailApiId);
+      const handler = mapping && mapping.status === "CONFIRMED" ? mapping.node : null;
+      const handlerName = handler && handler.attributes && handler.attributes.handler;
       const evidenceIds = new Set(Array.isArray(entry.finding.evidenceIds) ? entry.finding.evidenceIds : []);
-      if (handler && evidenceIds.size > 0 && ["STATE_BYPASS", "OBJECT_BINDING"].includes(entry.finding.ruleId)) {
+      if (handlerName && evidenceIds.size > 0 && ["STATE_BYPASS", "OBJECT_BINDING"].includes(entry.finding.ruleId)) {
         const type = entry.finding.ruleId === "STATE_BYPASS" ? "BUSINESS_SECURITY_STATE" : "AUTHORIZATION";
         const factTypes = entry.finding.ruleId === "STATE_BYPASS"
           ? ["BUSINESS_STATE_EVALUATION"] : ["OBJECT_AUTHORIZATION_REQUIREMENT", "OBJECT_ACCESS_PATH"];
+        // 선택 Endpoint의 확정 FLOWS_TO 대상 Handler와 동일한 실제 근거 Fact만 보강
         const candidates = graph.nodes.filter((node) => node.type === type
-          && node.attributes && node.attributes.handler === handler && factTypes.includes(node.attributes.factType)
+          && node.attributes && node.attributes.handler === handlerName && factTypes.includes(node.attributes.factType)
           && Array.isArray(node.evidenceIds) && node.evidenceIds.length > 0
           && node.evidenceIds.every((id) => evidenceIds.has(id)));
         if (candidates.length === 1) nodeIds.add(candidates[0].id);
@@ -1195,6 +1464,7 @@
   function openFindingModal(id, trigger = null, focus = true) {
     const entry = state.findingIndex.find((item) => item.finding.id === id);
     if (!findingModal || !inspectorClient || !entry) return null;
+    if (spotlight && spotlight.isActive()) spotlight.close({ restoreFocus: false });
     state.findingModalId = id;
     state.findingModalTrigger = trigger && trigger.parentNode ? trigger : findingTrigger(id) || state.findingModalTrigger || null;
     const scope = findingImpact(entry, isFindingDetailView() ? state.viewGraph : state.graph);
@@ -1267,7 +1537,18 @@
   }
 
   function graphElement(kind, id) {
-    if (!state.graph || !id) return null;
+    if (!id) return null;
+    if (kind === "runtime-component") {
+      return state.snapshot && state.snapshot.runtimeArchitecture
+        && Array.isArray(state.snapshot.runtimeArchitecture.components)
+        ? state.snapshot.runtimeArchitecture.components.find((item) => item.id === id) || null : null;
+    }
+    if (kind === "runtime-relationship") {
+      return state.snapshot && state.snapshot.runtimeArchitecture
+        && Array.isArray(state.snapshot.runtimeArchitecture.relationships)
+        ? state.snapshot.runtimeArchitecture.relationships.find((item) => item.id === id) || null : null;
+    }
+    if (!state.graph) return null;
     if (kind === "controller-group") {
       const groups = displayGroups();
       return Array.isArray(groups) ? groups.find((group) => group.id === id) || null : null;
@@ -1279,11 +1560,31 @@
   function displayGroups() {
     const plan = state.layout && state.layout.plan;
     if (!plan || isDetailView() || isFindingDetailView()) return [];
-    return (plan.controllerGroups || []).concat(plan.displayModel ? plan.displayModel.groups : []);
+    return (plan.controllerGroups || []).concat(plan.displayModel
+      ? [...(plan.displayModel.groups || []), ...(plan.displayModel.composites || []),
+        ...(plan.displayModel.composites || []).flatMap((card) => card.items || [])]
+      : []);
+  }
+
+  function graphRelated(graph, focus) {
+    const plan = state.layout && state.layout.plan;
+    return inspectorClient && focus
+      ? inspectorClient.related(graph, focus, displayGroups(), state.snapshot, plan && plan.displayModel,
+        plan && plan.overviewRouting)
+      : { nodeIds: new Set(), edgeIds: new Set() };
+  }
+
+  function updateGraphEmphasis() {
+    const graph = state.visibleGraph || state.viewGraph || state.graph;
+    const focus = state.selection;
+    if (!graphRenderer || !state.graphRender || !graph || !graphRenderer.updateEmphasis) return;
+    const related = graphRelated(graph, focus);
+    graphRenderer.updateEmphasis(state.graphRender, graph, focus, related);
   }
 
   function clearSelection() {
     state.selection = null;
+    state.graphHover = null;
     state.inspectorDismissed = true;
     if (inspectorClient) inspectorClient.hideHover();
     if (inspectorClient && inspectorClient.close) inspectorClient.close();
@@ -1299,7 +1600,7 @@
     }
   }
 
-  function selectGraphElement(kind, id) {
+  function selectGraphElement(kind, id, segmentEdgeIds = null, segmentId = null) {
     let selectedKind = kind;
     let selectedId = id;
     if (isFindingDetailView() && kind === "node") {
@@ -1312,9 +1613,15 @@
     }
     const item = graphElement(selectedKind, selectedId);
     if (!item) return null;
+    state.graphHover = null;
     if (selectedKind === "node" && item.type === "ENDPOINT" && isDetailView()
       && state.selectedEndpointId !== item.id) return openEndpointDetail(item.id);
     state.selection = { kind: selectedKind, id: selectedId };
+    if (selectedKind === "edge" && Array.isArray(segmentEdgeIds) && segmentEdgeIds.length > 1) {
+      state.selection.segmentEdgeIds = segmentEdgeIds.slice();
+    }
+    if (selectedKind === "edge" && segmentId) state.selection.segmentId = segmentId;
+    state.graphHover = null;
     state.inspectorDismissed = false;
     if (inspectorClient) inspectorClient.hideHover();
     renderGraphView(state.layout ? "elk" : "initial", true);
@@ -1323,10 +1630,13 @@
 
   function showGraphHover(kind, id, anchor) {
     if (!inspectorClient || !(state.viewGraph || state.graph)) return;
-    inspectorClient.showHover({ graph: state.viewGraph || state.graph, snapshot: state.snapshot, kind, id, anchor, displayIds: state.displayIds });
+    state.graphHover = { kind, id };
+    inspectorClient.showHover({ graph: state.viewGraph || state.graph, snapshot: state.snapshot, kind, id, anchor,
+      displayIds: state.displayIds, controllerGroups: displayGroups() });
   }
 
   function hideGraphHover() {
+    state.graphHover = null;
     if (inspectorClient) inspectorClient.hideHover();
   }
 
@@ -1453,14 +1763,16 @@
         ? visibleGraph.nodes.find((node) => node.id === state.selection.id)
         : state.selection.kind === "edge"
           ? visibleGraph.edges.find((edge) => edge.id === state.selection.id)
-          : graphElement("controller-group", state.selection.id);
+          : graphElement(state.selection.kind, state.selection.id);
       if (!visibleItem) {
         state.selection = null;
         if (inspectorClient) inspectorClient.hideHover();
       }
     }
     const related = inspectorClient
-      ? inspectorClient.related(viewGraph, state.selection, displayGroups())
+      ? inspectorClient.related(viewGraph, state.selection, displayGroups(), state.snapshot,
+        state.layout && state.layout.plan && state.layout.plan.displayModel,
+        state.layout && state.layout.plan && state.layout.plan.overviewRouting)
       : { nodeIds: new Set(), edgeIds: new Set() };
     const renderLayers = {
       svg: graphSvg,
@@ -1481,6 +1793,7 @@
       detailMode: isDetailView() || isFindingDetailView(),
       findingDetailMode: isFindingDetailView(),
       flowIndex: state.flowIndex,
+      view: state.view,
       layoutMode,
       edgeLabelMode: isDetailView() || isFindingDetailView() ? "detail" : "overview",
       displayEdgeLabels: state.display.edgeLabels,
@@ -1497,12 +1810,22 @@
       onNodeBlur: hideGraphHover,
       onNodeHover: (id, anchor) => showGraphHover("node", id, anchor),
       onNodeLeave: hideGraphHover,
+      onRuntimeComponentClick: (id) => selectGraphElement("runtime-component", id),
+      onRuntimeComponentFocus: (id, anchor) => showGraphHover("runtime-component", id, anchor),
+      onRuntimeComponentBlur: hideGraphHover,
+      onRuntimeComponentHover: (id, anchor) => showGraphHover("runtime-component", id, anchor),
+      onRuntimeComponentLeave: hideGraphHover,
+      onRuntimeRelationshipClick: (id) => selectGraphElement("runtime-relationship", id),
+      onRuntimeRelationshipFocus: (id, anchor) => showGraphHover("runtime-relationship", id, anchor),
+      onRuntimeRelationshipBlur: hideGraphHover,
+      onRuntimeRelationshipHover: (id, anchor) => showGraphHover("runtime-relationship", id, anchor),
+      onRuntimeRelationshipLeave: hideGraphHover,
       onControllerGroupClick: (id) => selectGraphElement("controller-group", id),
       onControllerGroupFocus: (id, anchor) => showGraphHover("controller-group", id, anchor),
       onControllerGroupBlur: hideGraphHover,
       onControllerGroupHover: (id, anchor) => showGraphHover("controller-group", id, anchor),
       onControllerGroupLeave: hideGraphHover,
-      onEdgeClick: (id) => selectGraphElement("edge", id),
+      onEdgeClick: (id, _anchor, edgeIds, segmentId) => selectGraphElement("edge", id, edgeIds, segmentId),
       onEdgeFocus: (id, anchor) => showGraphHover("edge", id, anchor),
       onEdgeBlur: hideGraphHover,
       onEdgeHover: (id, anchor) => showGraphHover("edge", id, anchor),
@@ -1533,7 +1856,10 @@
           onShowFinding: () => selectFinding(state.selectedFindingId),
           onOpenFindingEndpoint: (endpointId) => openEndpointDetail(endpointId, state.selectedFindingId),
           controllerGroups: displayGroups(),
-          displayModel: !isDetailView() && state.layout && state.layout.plan && state.layout.plan.displayModel
+          displayModel: state.layout && state.layout.plan && state.layout.plan.displayModel,
+          overviewRouting: !isDetailView() && state.layout && state.layout.plan && state.layout.plan.overviewRouting,
+          detailedFlow: isEndpointDetailView(),
+          endpointChainId: filterEducationChainId()
         });
       }
     }
@@ -1550,15 +1876,15 @@
         : {};
       const fitPositions = { ...renderedPositions, ...projectionPositions };
       const layoutPlan = state.layout && state.layout.plan;
+      const detailAreas = layoutPlan && layoutPlan.detailBlueprint;
       const areaBounds = layoutPlan ? [
-        ...(layoutPlan.lanes || []).map((lane) => lane.bounds),
-        ...(layoutPlan.chainGroups || []).map((group) => ({
-          left: group.left,
-          top: group.top,
-          right: group.right,
-          bottom: group.bottom
-        })),
-        layoutPlan.educationArea,
+        ...(detailAreas ? (detailAreas.regions || []).map((region) => region.bounds) : [
+          ...(layoutPlan.lanes || []).map((lane) => lane.bounds),
+          ...(layoutPlan.chainGroups || []).map((group) => ({
+            left: group.left, top: group.top, right: group.right, bottom: group.bottom
+          })),
+          layoutPlan.educationArea
+        ]),
         ...(layoutPlan.findingSectionLayouts || []).map((section) => section.bounds)
       ].filter((bounds) => bounds && [bounds.left, bounds.top, bounds.right, bounds.bottom].every(Number.isFinite)) : [];
       areaBounds.forEach((bounds, index) => {
@@ -1571,6 +1897,7 @@
       });
       const presentationNodes = [
         ...((result && Array.isArray(result.displayNodes)) ? result.displayNodes : visibleGraph.nodes),
+        ...((result && Array.isArray(result.runtimeBlueprintNodes)) ? result.runtimeBlueprintNodes : []),
         ...projectionNodes.map((node) => ({ ...node, kind: "education" }))
       ];
       if (unchanged) navigation.apply();
@@ -1656,6 +1983,7 @@
     }
     state.selectedEndpointId = null;
     state.selection = null;
+    state.graphHover = null;
     state.viewVersion += 1;
     state.layoutRequestId += 1;
     state.viewGraph = null;
@@ -1695,6 +2023,8 @@
     return `${state.snapshotGeneration}|${JSON.stringify([
       "presentation-bounds-v2",
       graph.presentationContext || "overview",
+      graph.detailEndpointId || "",
+      graph.runtimeArchitecture && graph.runtimeArchitecture.architectureFingerprint || "",
       graph.nodes.map((node) => node.id),
       graph.edges.map((edge) => edge.id),
       findingSections
@@ -1740,9 +2070,12 @@
     const displayCause = displayError && displayError.message ? displayError.message : "원인 확인 불가";
     const flowCause = flowError && flowError.message ? flowError.message : "원인 확인 불가";
     if (displayError && flowError) {
-      showNotice(`Graph 표시 실패: ${displayCause} · 교육용 흐름 준비 실패: ${flowCause}`, "error");
+      showNotice(`Graph 표시 실패: ${displayCause} · 학습 흐름 준비 실패: ${flowCause}`, "error");
     } else if (displayError) {
       showNotice(`Graph 표시 실패: ${displayCause}`, "error");
+    } else if (!flowError && layout.plan && layout.plan.overviewRouting
+      && layout.plan.overviewRouting.unresolved.length > 0) {
+      showNotice(`표시할 수 없는 관계 ${layout.plan.overviewRouting.unresolved.length}건 · Inspector에서 원본 근거 확인`, "error");
     } else if (!flowError && showLayoutNotice) {
       showNotice("Graph 자동 배치 완료", "success");
     }
@@ -1760,6 +2093,8 @@
     const layoutGraph = {
       ...viewGraph,
       presentationContext: isDetailView() || isFindingDetailView() ? "detail" : "overview",
+      detailEndpointId: isFindingDetailView() ? state.detailApiId : isDetailView() ? state.selectedEndpointId : "",
+      runtimeArchitecture: state.snapshot && state.snapshot.runtimeArchitecture || null,
       findingSections: layoutSections
     };
     const requestId = ++state.layoutRequestId;
@@ -1973,6 +2308,7 @@
     findingModal.addEventListener("keydown", (event) => {
       if (event.key === "Escape") {
         event.preventDefault();
+        event.stopPropagation();
         closeFindingModal();
         return;
       }
@@ -1994,11 +2330,463 @@
       }
     });
   }
-  helpButton.addEventListener("click", () => {
-    toggleHeaderPanel(helpPanel, helpButton, settingsPanel, settingsButton);
+  function findUiElement(roots, predicate) {
+    const candidates = Array.isArray(roots) ? roots : [roots];
+    for (const root of candidates) {
+      if (!root) continue;
+      const visit = (element) => {
+        if (predicate(element)) return element;
+        for (const child of Array.from(element.children || [])) {
+          const match = visit(child);
+          if (match) return match;
+        }
+        return null;
+      };
+      const match = visit(root);
+      if (match) return match;
+    }
+    return null;
+  }
+
+  function findUiElements(root, predicate) {
+    const found = [];
+    if (!root) return found;
+    const visit = (element) => {
+      if (predicate(element)) found.push(element);
+      Array.from(element.children || []).forEach(visit);
+    };
+    visit(root);
+    return found;
+  }
+
+  function hasUiClass(element, className) {
+    return Boolean(element && element.getAttribute && (element.getAttribute("class") || "")
+      .split(/\s+/).includes(className));
+  }
+
+  function graphNodeTarget(id) {
+    const compositeItem = findUiElements(graphNodes, (element) => hasUiClass(element, "graph-composite-item")
+      && (element.getAttribute("data-node-ids") || "").split(",").includes(id))[0];
+    return compositeItem || findUiElement(graphNodes, (element) => hasUiClass(element, "graph-node")
+      && (element.getAttribute("data-node-id") === id
+        || (element.getAttribute("data-node-ids") || "").split(",").includes(id)));
+  }
+
+  function graphEdgeTarget(id) {
+    return findUiElement(graphEdges, (element) => hasUiClass(element, "graph-edge")
+      && (element.getAttribute("data-edge-id") === id
+        || (element.getAttribute("data-edge-ids") || "").split(",").includes(id)));
+  }
+
+  function firstTutorialGraphNode() {
+    const nodes = state.visibleGraph && state.visibleGraph.nodes || [];
+    const preferred = ["ENDPOINT", "SECURITY_CHAIN", "FILTER"];
+    const ordered = [...nodes.filter((node) => preferred.includes(node.type)), ...nodes];
+    return ordered.map((node) => graphNodeTarget(node.id)).find(Boolean) || null;
+  }
+
+  function firstInspectorEvidence() {
+    if (!inspector || inspector.hidden || !state.selection || !state.graph
+      || !["node", "edge"].includes(state.selection.kind)) return null;
+    const collection = state.selection.kind === "node" ? state.graph.nodes : state.graph.edges;
+    const item = collection.find((candidate) => candidate.id === state.selection.id);
+    const ids = item && Array.isArray(item.evidenceIds) ? item.evidenceIds : [];
+    const evidence = new Set((state.snapshot && Array.isArray(state.snapshot.evidence) ? state.snapshot.evidence : [])
+      .map((item) => item && item.id).filter((id) => id !== undefined && id !== null).map(String));
+    const index = ids.findIndex((id) => evidence.has(String(id)));
+    if (index < 0) return null;
+    return findUiElements(inspector, (element) => hasUiClass(element, "inspector-evidence"))[index] || null;
+  }
+
+  function temporaryFilterHooks(target) {
+    let wasOpen = null;
+    let previousScrollTop = null;
+    return {
+      target,
+      prepare: ({ target: element }) => {
+        if (!filterPanel || !isWithinElement(element, filterPanel)) return true;
+        wasOpen = !filterPanel.hidden;
+        previousScrollTop = filterPanel.scrollTop || 0;
+        if (!wasOpen) {
+          // 상세 화면의 검색 목록·입력·선택 위치를 임시 패널 개방 전 상태로 복원
+          const endpointState = isDetailView() && endpointOptions && endpointSearch ? {
+            hidden: endpointOptions.hidden,
+            expanded: endpointSearch.getAttribute("aria-expanded"),
+            value: endpointSearch.value,
+            optionIndex: state.featureEndpointOptionIndex,
+            options: Array.from(endpointOptions.children || [])
+          } : null;
+          setFilterPanel(true, false);
+          if (endpointState) {
+            endpointOptions.replaceChildren(...endpointState.options);
+            setHidden(endpointOptions, endpointState.hidden);
+            if (endpointState.expanded === null) endpointSearch.removeAttribute("aria-expanded");
+            else endpointSearch.setAttribute("aria-expanded", endpointState.expanded);
+            endpointSearch.value = endpointState.value;
+            state.featureEndpointOptionIndex = endpointState.optionIndex;
+          }
+        }
+        if (element !== filterPanel) {
+          const panelRect = filterPanel.getBoundingClientRect();
+          const targetRect = element.getBoundingClientRect();
+          const visibleTop = panelRect.top + (Number(filterPanel.clientTop) || 0);
+          const visibleBottom = visibleTop + (Number(filterPanel.clientHeight) || panelRect.height);
+
+          // 좁은 화면에서 패널 내부의 하단 대상도 Spotlight 프레임 안에 들어오도록 스크롤
+          if (targetRect.height > visibleBottom - visibleTop) {
+            filterPanel.scrollTop += targetRect.top - visibleTop;
+          } else if (targetRect.top < visibleTop) {
+            filterPanel.scrollTop -= visibleTop - targetRect.top;
+          } else if (targetRect.bottom > visibleBottom) {
+            filterPanel.scrollTop += targetRect.bottom - visibleBottom;
+          }
+        }
+        return !filterPanel.hidden;
+      },
+      cleanup: () => {
+        if (wasOpen === null) return;
+        setFilterPanel(wasOpen, false);
+        if (previousScrollTop !== null) filterPanel.scrollTop = previousScrollTop;
+        wasOpen = null;
+        previousScrollTop = null;
+      }
+    };
+  }
+
+  function selectedTutorialFinding() {
+    return state.findingIndex.find((entry) => entry.finding.id === state.selectedFindingId) || null;
+  }
+
+  function findingHasEvidence(entry) {
+    const evidence = new Set((state.snapshot && Array.isArray(state.snapshot.evidence) ? state.snapshot.evidence : [])
+      .map((item) => item && item.id).filter((id) => id !== undefined && id !== null).map(String));
+    return Boolean(entry && Array.isArray(entry.finding.evidenceIds)
+      && entry.finding.evidenceIds.some((id) => evidence.has(String(id))));
+  }
+
+  function findingHasLocation(entry) {
+    if (!entry || !state.graph) return false;
+    const nodeIds = new Set(state.graph.nodes.map((node) => node.id));
+    const edgeIds = new Set(state.graph.edges.map((edge) => edge.id));
+    return entry.nodeIds.some((id) => nodeIds.has(id)) || entry.edgeIds.some((id) => edgeIds.has(id));
+  }
+
+  function findingInspectorAvailable(entry) {
+    if (!entry || !isFindingDetailView() || state.inspectorDismissed) return false;
+    if (!state.selection) return true;
+    if (state.selection.kind === "node") return entry.nodeIds.includes(state.selection.id);
+    if (state.selection.kind === "edge") return entry.edgeIds.includes(state.selection.id);
+    return false;
+  }
+
+  // 실제 Finding Inspector를 임시 표시하고 학습 단계 이탈 시 기존 화면 복원
+  function findingInspectorStep(titleText, description, targetRegion, isAvailable) {
+    let previewOpened = false;
+    let previousScroll = 0;
+    const entry = () => selectedTutorialFinding();
+    const isCurrentFinding = (current) => current && inspector
+      && inspector.getAttribute("data-selection-kind") === "finding"
+      && inspector.getAttribute("data-selection-id") === current.finding.id;
+    const regionTarget = (current) => {
+      if (!isCurrentFinding(current)) return inspector;
+      if (targetRegion === "header") return findUiElement(inspector, (element) => hasUiClass(element, "inspector-header"));
+      if (targetRegion === "evidence") {
+        const ids = current.finding.evidenceIds || [];
+        const evidence = new Set((state.snapshot && Array.isArray(state.snapshot.evidence) ? state.snapshot.evidence : [])
+          .map((item) => item && item.id).filter((id) => id !== undefined && id !== null).map(String));
+        const index = ids.findIndex((id) => evidence.has(String(id)));
+        return index < 0 ? null : findUiElements(inspector, (element) => hasUiClass(element, "inspector-evidence"))[index] || null;
+      }
+      if (targetRegion === "guide") {
+        const guides = findUiElements(inspector, (element) => hasUiClass(element, "inspector-help"));
+        return guides[guides.length - 1] || null;
+      }
+      if (targetRegion === "location") {
+        return findUiElement(inspector, (element) => (hasUiClass(element, "inspector-link")
+          && (element.getAttribute("data-node-id") || element.getAttribute("data-edge-id")))
+          || (hasUiClass(element, "inspector-detail-action") && element.getAttribute("data-endpoint-id")));
+      }
+      return inspector;
+    };
+    return {
+      title: titleText,
+      description,
+      target: () => regionTarget(entry()),
+      valid: () => findingInspectorAvailable(entry()) && isAvailable(entry()),
+      prepare: () => {
+        const current = entry();
+        if (!current || !inspectorClient || !inspector) return false;
+        if (isCurrentFinding(current)) return true;
+        if (!findingInspectorAvailable(current)) return false;
+        previousScroll = inspector.scrollTop;
+        inspectorClient.renderFinding({
+          graph: state.graph,
+          snapshot: state.snapshot,
+          entry: current,
+          displayIds: state.displayIds,
+          onReturn: () => selectView("security-flow"),
+          onOpenEndpoint: (endpointId) => openEndpointDetail(endpointId, current.finding.id)
+        });
+        previewOpened = true;
+        return !inspector.hidden;
+      },
+      cleanup: () => {
+        if (!previewOpened) return;
+        previewOpened = false;
+        if (isFindingDetailView()) renderGraphView(state.layout ? "elk" : "initial", true);
+        if (inspector) inspector.scrollTop = previousScroll;
+      }
+    };
+  }
+
+  function findingMarker(entry) {
+    if (!entry) return null;
+    return findUiElement([graphFindingSections, graphFindingSectionTitles, graphNodes, graphEdges], (element) =>
+      hasUiClass(element, "finding-marker") && element.getAttribute("data-finding-id") === entry.finding.id);
+  }
+
+  function findingListItem(entry) {
+    if (!entry) return null;
+    return findUiElement(findingList, (element) => element.tagName === "button"
+      && element.getAttribute("data-finding-id") === entry.finding.id);
+  }
+
+  function firstVisibleFinding() {
+    return state.findingIndex.find((entry) => findingMarker(entry) || findingListItem(entry)) || null;
+  }
+
+  function findingAreaTarget(entry) {
+    if (!entry) return null;
+    const nodeIds = new Set(entry.nodeIds);
+    const relatedNode = findUiElement(graphNodes, (element) => hasUiClass(element, "graph-node")
+      && element.getAttribute("data-has-finding") === "true" && nodeIds.has(element.getAttribute("data-node-id")));
+    return relatedNode || findingMarker(entry) || findingListItem(entry);
+  }
+
+  function findingRelatedGraphTarget(entry) {
+    if (!entry || !state.visibleGraph) return null;
+    for (const id of entry.nodeIds) {
+      if (state.visibleGraph.nodes.some((node) => node.id === id)) {
+        const target = graphNodeTarget(id);
+        if (target) return target;
+      }
+    }
+    for (const id of entry.edgeIds) {
+      if (state.visibleGraph.edges.some((edge) => edge.id === id)) {
+        const target = graphEdgeTarget(id);
+        if (target) return target;
+      }
+    }
+    return null;
+  }
+
+  function confirmedChainTarget() {
+    if (!isDetailView() || !state.selectedEndpointId || !state.flowIndex
+      || typeof state.flowIndex.firstMatchedChain !== "function") return null;
+    const match = state.flowIndex.firstMatchedChain(state.selectedEndpointId);
+    if (!match || match.status !== "CONFIRMED" || !match.chain) return null;
+    const chain = graphNodeTarget(match.chain.id);
+    if (chain) return chain;
+    if (!state.flowIndex.securityFiltersForChain) return null;
+    const registered = state.flowIndex.securityFiltersForChain(match.chain.id);
+    for (const edge of registered && registered.edges || []) {
+      const filter = state.flowIndex.nodeById.get(edge.targetId);
+      if (filter && filter.type === "FILTER" && filter.attributes.registrationKind === "SECURITY") {
+        const target = graphNodeTarget(filter.id);
+        if (target) return target;
+      }
+    }
+    return null;
+  }
+
+  // 현재 화면과 실제 데이터에 존재하는 Spotlight 단계 구성
+  function currentScreenTutorial() {
+    if (state.view === "all-flow") {
+      const filterHooks = temporaryFilterHooks(() => filterPanel);
+      return [
+        {
+          target: () => mapToolbar,
+          title: "그래프 탐색",
+          description: "축소·확대, 전체 맞춤, 보기 초기화, 필터로 Graph를 탐색합니다. Canvas를 드래그해 화면을 이동할 수 있습니다."
+        },
+        {
+          ...filterHooks,
+          title: "검색과 필터",
+          description: "Endpoint 검색, 노드 유형, 관계 유형으로 표시 대상을 좁히고 검색 초기화로 조건을 되돌립니다.",
+          valid: () => Boolean(filterPanel && endpointSearch && nodeFilter && edgeFilter)
+        },
+        {
+          target: firstTutorialGraphNode,
+          title: "보안 구성 요소",
+          description: "Endpoint는 API, Chain은 보안 체인, Filter는 등록된 필터 Node입니다. 미등록 표준 필터 참고 항목은 실제 등록 Node와 구분합니다.",
+          valid: () => Boolean(firstTutorialGraphNode())
+        },
+        {
+          target: () => inspector,
+          title: "상세 정보 확인",
+          description: "이미 선택한 Node의 Inspector에서 속성·연결·관계·Evidence를 확인합니다. 이 단계는 선택을 바꾸지 않습니다.",
+          valid: () => Boolean(state.selection && ["node", "controller-group"].includes(state.selection.kind)
+            && inspector && !inspector.hidden
+            && inspector.getAttribute("data-selection-id") === state.selection.id)
+        },
+        {
+          target: () => graphMinimap,
+          title: "전체 위치 파악",
+          description: "미니맵의 사각형은 현재 화면 위치이고 배경은 전체 Graph입니다. 표시 설정은 이 안내에서 바꾸지 않습니다.",
+          valid: () => Boolean(state.display.minimap && state.visibleGraph && state.visibleGraph.nodes.length > 0
+            && graphMinimap && !graphMinimap.hidden)
+        }
+      ];
+    }
+    if (state.view === "feature-flow") {
+      const filterHooks = temporaryFilterHooks(() => endpointSearch);
+      const endpointDescription = sortedEndpoints().length > 0
+        ? "필터 패널에서 Endpoint를 검색하고 실제 Snapshot 목록에서 선택합니다. 현재 선택된 API는 안내가 임의로 변경하지 않습니다."
+        : "현재 Snapshot에 선택 가능한 Endpoint가 없습니다. Endpoint 검색·선택 UI는 그대로 두며 임의의 API를 지정하지 않습니다.";
+      return [
+        {
+          ...filterHooks,
+          title: "분석할 API",
+          description: endpointDescription,
+          valid: () => isDetailView() && Boolean(endpointSearch)
+        },
+        {
+          target: confirmedChainTarget,
+          title: "적용된 보안 체인",
+          description: "확인된 첫 매칭 SecurityFilterChain과 등록된 Security Filter만 안내합니다. Servlet Filter 등록과 SecurityFilterChain 내부 Filter 구성은 구분하며, 미확인 순서는 확정 결과가 아닙니다.",
+          valid: () => Boolean(confirmedChainTarget())
+        },
+        {
+          target: () => requestFlowControls,
+          title: "요청 전달 과정",
+          description: "SecurityContext에는 현재 Authentication이 담기고, HttpServletRequest는 HTTP 요청 객체입니다. Snapshot에서 확인한 관계와 일반적인 Servlet 처리 원리를 함께 보여주며, 실제 요청별 Trace나 처리 결과를 나타내지 않습니다.",
+          valid: () => Boolean(requestFlowControls && !requestFlowControls.hidden && state.requestFlowSteps.length > 0)
+        },
+        {
+          target: () => requestFlowDetailToggle,
+          title: "현재 단계 상세",
+          description: "상세 버튼에서 현재 단계의 설명과 이전·다음 단계를 확인합니다.",
+          valid: () => Boolean(requestFlowDetailToggle && !requestFlowDetailToggle.disabled)
+        },
+        {
+          target: firstInspectorEvidence,
+          title: "판단 근거",
+          description: "Evidence 카드에서 저장된 표시 ID(있을 때), 출처와 확인 위치를 확인합니다. 인증정보 조회 근거만으로 USES_FOR_AUTHORIZATION 인가 관계를 판단하지 않습니다.",
+          valid: () => Boolean(isDetailView() && state.selection && ["node", "edge"].includes(state.selection.kind)
+            && firstInspectorEvidence())
+        }
+      ];
+    }
+    if (state.view === "security-flow") {
+      const filterHooks = temporaryFilterHooks(() => findingFields);
+      const firstFinding = () => firstVisibleFinding();
+      const hasRuleAndConfidenceFilters = () => Boolean(findingRule && findingConfidence && findingFields && !findingFields.hidden);
+      return [
+        {
+          ...temporaryFilterHooks(() => {
+            const entry = firstFinding();
+            return entry && findingAreaTarget(entry);
+          }),
+          title: "발견된 보안 문제",
+          description: "실제 Finding 목록과 Graph 표시는 Snapshot 참조를 기준으로 확인합니다. 연결 위치가 없으면 별도 마커를 만들지 않습니다.",
+          valid: () => Boolean(firstFinding() && findingAreaTarget(firstFinding()))
+        },
+        {
+          ...filterHooks,
+          title: "판단 상태 구분",
+          description: "유형 7개와 CONFIRMED·LIKELY·UNKNOWN 필터를 사용합니다. CONFIRMED는 근거가 확인된 분석 판단, LIKELY는 검토 필요, UNKNOWN은 근거 부족이며 심각도나 실시간 탐지 수치가 아닙니다.",
+          valid: hasRuleAndConfidenceFilters
+        },
+        {
+          ...temporaryFilterHooks(() => {
+            const entry = firstFinding();
+            return findingMarker(entry) || findingListItem(entry);
+          }),
+          title: "취약점 선택",
+          description: "실제 Finding 항목을 선택하면 해당 Finding의 판단과 영향 대상을 확인할 수 있습니다. 이 안내는 항목을 대신 선택하지 않습니다.",
+          valid: () => Boolean(firstFinding() && (findingMarker(firstFinding()) || findingListItem(firstFinding())))
+        },
+        {
+          target: () => findingRelatedGraphTarget(firstFinding()),
+          title: "관계 확인",
+          description: "선택 Finding이 실제로 참조하는 Node 또는 Edge만 강조합니다. 연결이 없거나 현재 Graph에서 확인되지 않으면 이 단계는 제외됩니다.",
+          valid: () => Boolean(findingRelatedGraphTarget(firstFinding()))
+        }
+      ];
+    }
+    if (state.view === "security-detail") {
+      if (state.findingIndex.length === 0) {
+        return [{
+          target: () => inspector,
+          title: "보존된 취약점 없음",
+          description: "현재 Snapshot에는 Finding이 없습니다. 보안 MAP에서 저장된 진단 결과를 확인할 수 있으며, 이 안내는 임의의 Finding을 만들지 않습니다.",
+          valid: () => isFindingDetailView() && Boolean(inspector && !inspector.hidden)
+        }];
+      }
+      const hasGuide = (entry) => typeof entry.finding.guide === "string" && entry.finding.guide.trim().length > 0;
+      return [
+        findingInspectorStep("판단 내용", "실제 Finding의 제목·Rule ID·판단 신뢰도를 확인합니다. Confidence는 근거에 따른 판단 상태입니다.", "header", () => true),
+        findingInspectorStep("확인된 근거", "Evidence 카드의 저장된 표시 ID(있을 때), 출처와 코드·설정 위치를 확인합니다. 표시 ID를 임의로 만들지 않습니다.", "evidence", findingHasEvidence),
+        findingInspectorStep("개발자 점검 가이드", "Finding에 저장된 점검 가이드입니다. 안내만 제공하며 보안 정책이나 설정을 자동으로 바꾸지 않습니다.", "guide", hasGuide),
+        findingInspectorStep("관련 위치 이동", "실제 Finding이 참조하는 Node·Edge 또는 Endpoint 이동 항목을 확인합니다. 근거로 연결되지 않은 Graph 요소는 표시하지 않습니다.", "location", findingHasLocation)
+      ];
+    }
+    return [];
+  }
+
+  helpButton.addEventListener("click", (event) => {
+    if (spotlight && spotlight.isActive()) {
+      event.stopPropagation();
+      spotlight.restart();
+      return;
+    }
+    if (event && event.stopPropagation) event.stopPropagation();
+    if (helpPanel && !helpPanel.hidden) setPanel(helpPanel, helpButton, false);
+    if (!spotlight) {
+      showNotice("화면 안내를 불러오지 못했습니다. 페이지를 새로고침해 주세요.", "error");
+      return;
+    }
+    try {
+      if (!spotlight.start(currentScreenTutorial(), { trigger: helpButton })) {
+        showNotice("현재 화면에서 안내할 수 있는 항목이 없습니다.", "info");
+      }
+    } catch (error) {
+      const cause = error && error.message ? error.message : "원인 확인 불가";
+      showNotice(`화면 안내를 시작하지 못했습니다: ${cause}`, "error");
+    }
   });
   settingsButton.addEventListener("click", () => {
+    if (spotlight && spotlight.isActive()) spotlight.close({ restoreFocus: false });
     toggleHeaderPanel(settingsPanel, settingsButton, helpPanel, helpButton);
+  });
+  if (settingsCloseButton) settingsCloseButton.addEventListener("click", () => setSettingsPanel(false));
+  if (settingsPanel) settingsPanel.addEventListener("transitionend", (event) => {
+    if (event.propertyName === "transform") finishSettingsPanelClose();
+  });
+  // Drawer 내부의 Escape와 Tab 순환을 다른 Graph 단축키와 분리
+  if (settingsPanel) settingsPanel.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      event.stopPropagation();
+      setSettingsPanel(false);
+      return;
+    }
+    if (event.key !== "Tab") return;
+    const focusable = settingsFocusableElements();
+    if (focusable.length === 0) {
+      event.preventDefault();
+      if (settingsPanel.focus) settingsPanel.focus();
+      return;
+    }
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    if (event.shiftKey && event.target === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && event.target === last) {
+      event.preventDefault();
+      first.focus();
+    }
   });
   refreshButton.addEventListener("click", loadStatus);
   if (filterToggle && filterPanel) filterToggle.addEventListener("click", () => {
@@ -2015,6 +2803,18 @@
   if (showMinimapSetting) showMinimapSetting.addEventListener("change", () => {
     state.display.minimap = showMinimapSetting.checked;
     applyDisplaySettings();
+  });
+  if (flowNodeDurationSetting) flowNodeDurationSetting.addEventListener("change", () => {
+    const nodeHoldDuration = Number(flowNodeDurationSetting.value);
+    if (![500, 1000, 1500, 2000, 3000, 5000].includes(nodeHoldDuration)) return;
+    state.requestFlowSettings.nodeHoldDuration = nodeHoldDuration;
+    if (requestFlowController) requestFlowController.setPlaybackSettings({ nodeHoldDuration });
+  });
+  if (flowSpeedSetting) flowSpeedSetting.addEventListener("change", () => {
+    const speed = Number(flowSpeedSetting.value);
+    if (![0.5, 1, 1.5, 2].includes(speed)) return;
+    state.requestFlowSettings.speed = speed;
+    if (requestFlowController) requestFlowController.setPlaybackSettings({ speed });
   });
   if (endpointSearch) endpointSearch.addEventListener("input", () => {
     if (!isDetailView()) {
@@ -2101,9 +2901,22 @@
     if (findingConfidence) findingConfidence.value = "";
     applyGraphFilter();
   });
+  if (requestFlowDetailToggle) requestFlowDetailToggle.addEventListener("click", () => {
+    setRequestFlowDetails(!requestFlowDetailsOpen);
+    if (requestFlowDetailsOpen && requestFlowDetailClose && typeof requestFlowDetailClose.focus === "function") requestFlowDetailClose.focus();
+  });
+  if (requestFlowDetailClose) requestFlowDetailClose.addEventListener("click", () => setRequestFlowDetails(false, true));
   if (requestFlowStart && requestFlowController) requestFlowStart.addEventListener("click", () => requestFlowController.play());
   if (requestFlowPause && requestFlowController) requestFlowPause.addEventListener("click", () => requestFlowController.pause());
   if (requestFlowReset && requestFlowController) requestFlowReset.addEventListener("click", () => requestFlowController.reset());
+  if (requestFlowPrevious && requestFlowController) requestFlowPrevious.addEventListener("click", () => {
+    const current = requestFlowController.state();
+    requestFlowController.seekToStep(current.stepIndex - 1);
+  });
+  if (requestFlowNext && requestFlowController) requestFlowNext.addEventListener("click", () => {
+    const current = requestFlowController.state();
+    requestFlowController.seekToStep(current.stepIndex + 1);
+  });
   if (document.addEventListener && requestFlowController) document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "hidden") requestFlowController.pause();
   });
@@ -2116,6 +2929,12 @@
     if (isDetailView()) requestFlowController.pause();
   });
   if (document.addEventListener) document.addEventListener("click", (event) => {
+    if (isSettingsPanelOpen()) {
+      const target = event && event.target;
+      if (!isWithinElement(target, settingsButton) && !isWithinElement(target, settingsPanel)) {
+        setSettingsPanel(false);
+      }
+    }
     if (!filterPanel || filterPanel.hidden) return;
     const target = event && event.target;
     if (target && target.closest
@@ -2131,6 +2950,21 @@
   });
   if (document.addEventListener) document.addEventListener("keydown", (event) => {
     if (event.key === "Escape") {
+      if (spotlight && spotlight.isActive()) {
+        event.preventDefault();
+        spotlight.close();
+        return;
+      }
+      if (requestFlowDetailsOpen) {
+        event.preventDefault();
+        setRequestFlowDetails(false, true);
+        return;
+      }
+      if (isSettingsPanelOpen()) {
+        event.preventDefault();
+        setSettingsPanel(false);
+        return;
+      }
       closeHeaderPanels();
       hideGraphHover();
       clearSelection();
@@ -2164,6 +2998,8 @@
     hideNotice,
     setInspectorTab,
     focusEndpoint: (nodeId) => navigation && navigation.focusNode(nodeId),
+    setFilterPanel,
+    closeSettingsPanel,
     navigation,
     inspector: inspectorClient
   };

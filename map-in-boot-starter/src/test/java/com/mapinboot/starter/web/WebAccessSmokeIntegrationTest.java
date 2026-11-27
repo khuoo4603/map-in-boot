@@ -95,6 +95,10 @@ class WebAccessSmokeIntegrationTest {
             mvc.perform(get("/mapinboot/app.js"))
                     .andExpect(status().isOk())
                     .andExpect(content().contentTypeCompatibleWith(MediaType.valueOf("text/javascript")));
+            mvc.perform(get("/mapinboot/spotlight.js"))
+                    .andExpect(status().isOk())
+                    .andExpect(content().contentTypeCompatibleWith(MediaType.valueOf("text/javascript")))
+                    .andExpect(content().string(org.hamcrest.Matchers.containsString("MapInBootSpotlight")));
             mvc.perform(get("/mapinboot/graph-flow.js"))
                     .andExpect(status().isOk())
                     .andExpect(content().contentTypeCompatibleWith(MediaType.valueOf("text/javascript")));
@@ -275,7 +279,7 @@ class WebAccessSmokeIntegrationTest {
                         "mapinboot.web.enabled", "true",
                         "mapinboot.snapshot.directory", directory.toString()))) {
             MapInBootBootstrap bootstrap = context.getBean(MapInBootBootstrap.class);
-            await(() -> bootstrap.analysisReport() != null || bootstrap.failureCode() != null);
+            await(() -> bootstrap.snapshot() != null || bootstrap.failureCode() != null);
             MockMvc mvc = MockMvcBuilders.webAppContextSetup((WebApplicationContext) context).build();
 
             mvc.perform(get("/mapinboot/api/status").with(principal(true)))
@@ -536,12 +540,12 @@ class WebAccessSmokeIntegrationTest {
         AnalysisResult result = new AnalysisResult("analyzer", List.of(), List.of(), AnalysisStatus.READY, List.of());
         com.mapinboot.core.analysis.model.AnalysisReport analysis = new com.mapinboot.core.analysis.model.AnalysisReport(
                 collection, result.relations(), List.of(evidence), Map.of("analyzer", AnalysisStatus.READY), List.of());
-        Snapshot assembled = new SnapshotAssembler(List.of(), "1")
-                .assemble(analysis, "partial-host", "previous-instance", "test");
+        Snapshot assembled = new SnapshotAssembler(List.of())
+                .assemble(analysis, "partial-host", "previous-instance", "test", com.mapinboot.core.snapshot.runtime.RuntimeArchitectureAssembler.unknown());
         return new Snapshot(assembled.snapshotId(), Instant.parse("2026-10-30T00:00:00Z"), assembled.schemaVersion(),
                 assembled.sdkVersion(), assembled.serviceId(), assembled.instanceId(), assembled.applicationVersion(),
                 assembled.graphFingerprint(), assembled.nodes(), assembled.edges(), assembled.evidence(), assembled.findings(),
-                assembled.analysisStatus(), assembled.evidenceDisplayCodes());
+                assembled.analysisStatus(), assembled.evidenceDisplayCodes(), assembled.runtimeArchitecture());
     }
 
     @FunctionalInterface

@@ -15,6 +15,8 @@ import com.mapinboot.core.common.error.MapInBootException;
 import com.mapinboot.core.common.status.AnalysisStatus;
 import com.mapinboot.core.finding.FindingEvaluator;
 import com.mapinboot.core.snapshot.Snapshot;
+import com.mapinboot.core.snapshot.runtime.RuntimeArchitectureAssembler;
+import com.mapinboot.core.snapshot.runtime.RuntimeArchitectureCollector;
 import com.mapinboot.starter.snapshot.LocalSnapshotStore;
 import com.mapinboot.starter.snapshot.SnapshotAssembler;
 import com.mapinboot.starter.snapshot.SnapshotJsonCodec;
@@ -45,6 +47,8 @@ public class MapInBootBootstrap implements ApplicationListener<ApplicationReadyE
     private final SnapshotAssembler snapshotAssembler;
     private final SnapshotJsonCodec snapshotJsonCodec;
     private final LocalSnapshotStore snapshotStore;
+    private final RuntimeArchitectureAssembler runtimeArchitectureAssembler;
+    private final List<RuntimeArchitectureCollector> runtimeArchitectureCollectors;
     private final String instanceId = UUID.randomUUID().toString();
     private final AtomicBoolean started = new AtomicBoolean();
     private final AtomicReference<CollectionReport> collectionReport = new AtomicReference<>();
@@ -63,36 +67,12 @@ public class MapInBootBootstrap implements ApplicationListener<ApplicationReadyE
             AnalysisProvider analysisProvider,
             List<CollectorAdapter> collectorAdapters,
             List<AnalysisAdapter> analysisAdapters,
-            Executor executor
-    ) {
-        this(applicationContext, collectionProvider, analysisProvider, collectorAdapters, analysisAdapters, executor,
-                new SnapshotAssembler(List.<FindingEvaluator>of(), "1"), new SnapshotJsonCodec(), null);
-    }
-
-    public MapInBootBootstrap(
-            ApplicationContext applicationContext,
-            CollectionProvider collectionProvider,
-            AnalysisProvider analysisProvider,
-            List<CollectorAdapter> collectorAdapters,
-            List<AnalysisAdapter> analysisAdapters,
-            Executor executor,
-            SnapshotAssembler snapshotAssembler,
-            SnapshotJsonCodec snapshotJsonCodec
-    ) {
-        this(applicationContext, collectionProvider, analysisProvider, collectorAdapters, analysisAdapters, executor,
-                snapshotAssembler, snapshotJsonCodec, null);
-    }
-
-    public MapInBootBootstrap(
-            ApplicationContext applicationContext,
-            CollectionProvider collectionProvider,
-            AnalysisProvider analysisProvider,
-            List<CollectorAdapter> collectorAdapters,
-            List<AnalysisAdapter> analysisAdapters,
             Executor executor,
             SnapshotAssembler snapshotAssembler,
             SnapshotJsonCodec snapshotJsonCodec,
-            LocalSnapshotStore snapshotStore
+            LocalSnapshotStore snapshotStore,
+            RuntimeArchitectureAssembler runtimeArchitectureAssembler,
+            List<RuntimeArchitectureCollector> runtimeArchitectureCollectors
     ) {
         this.applicationContext = applicationContext;
         this.collectionProvider = collectionProvider;
@@ -103,6 +83,8 @@ public class MapInBootBootstrap implements ApplicationListener<ApplicationReadyE
         this.snapshotAssembler = snapshotAssembler;
         this.snapshotJsonCodec = snapshotJsonCodec;
         this.snapshotStore = snapshotStore;
+        this.runtimeArchitectureAssembler = runtimeArchitectureAssembler;
+        this.runtimeArchitectureCollectors = List.copyOf(runtimeArchitectureCollectors);
     }
 
     // ApplicationReady 이후 단일 비동기 실행 위임
@@ -141,8 +123,10 @@ public class MapInBootBootstrap implements ApplicationListener<ApplicationReadyE
             collectionReport.set(collected);
             AnalysisReport analyzed = analysisProvider.execute(new AnalysisContext(collected, serviceId), analysisAdapters);
             analysisReport.set(analyzed);
+            var runtimeArchitecture = runtimeArchitectureAssembler.assemble(
+                    serviceId, collected, runtimeArchitectureCollectors);
             Snapshot assembled = snapshotAssembler.assemble(
-                    analyzed, serviceId, instanceId, applicationVersion());
+                    analyzed, serviceId, instanceId, applicationVersion(), runtimeArchitecture);
             boolean complete = isComplete(collected, analyzed);
             currentExecutionComplete.set(complete);
             snapshotJsonCodec.encode(assembled);

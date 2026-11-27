@@ -79,9 +79,10 @@ class CoreContractsTest {
         findings.add(finding);
         SecurityGraph graph = new SecurityGraph(nodes, edges);
         Snapshot snapshot = new Snapshot(
-                "snapshot-1", Instant.parse("2026-10-31T00:00:00Z"), "1", "0.1.0-SNAPSHOT",
+                "snapshot-1", Instant.parse("2026-10-31T00:00:00Z"), "2", "0.1.0-SNAPSHOT",
                 "service", "instance", "1.0.0", "fingerprint", nodes, edges,
-                evidence, findings, statusByAdapter);
+                evidence, findings, statusByAdapter, Map.of(),
+                com.mapinboot.core.snapshot.runtime.RuntimeArchitectureAssembler.unknown());
 
         evidenceIds.add("evidence-2");
         attributes.put("method", "GET");

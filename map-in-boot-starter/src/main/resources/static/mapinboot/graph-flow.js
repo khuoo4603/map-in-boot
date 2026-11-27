@@ -73,6 +73,13 @@
     });
     const endpoints = nodes.filter((node) => node.type === NODE_TYPES.ENDPOINT);
     const handlers = nodes.filter((node) => node.type === NODE_TYPES.HANDLER);
+    const handlerToEndpoints = new Map(handlers.map((handler) => [handler.id, []]));
+    validEdges.filter((edge) => edge.type === EDGE_TYPES.FLOWS_TO
+      && nodeById.get(edge.sourceId)?.type === NODE_TYPES.ENDPOINT
+      && nodeById.get(edge.targetId)?.type === NODE_TYPES.HANDLER)
+      .forEach((edge) => handlerToEndpoints.get(edge.targetId).push({
+        endpoint: nodeById.get(edge.sourceId), edge
+      }));
     const chains = nodes.filter((node) => node.type === NODE_TYPES.SECURITY_CHAIN);
     const servlets = nodes.filter((node) => node.type === NODE_TYPES.SERVLET);
     const securityFilters = nodes.filter((node) => node.type === NODE_TYPES.FILTER
@@ -94,8 +101,9 @@
     }
 
     function filtersFor(sourceId, registrationKind) {
-      const relationships = (outgoingByNode.get(sourceId) || [])
-        .filter((edge) => edge.type === EDGE_TYPES.FILTERED_BY)
+      const memberships = (outgoingByNode.get(sourceId) || [])
+        .filter((edge) => edge.type === EDGE_TYPES.FILTERED_BY);
+      const relationships = memberships
         .map((edge) => ({ edge, node: nodeById.get(edge.targetId) }))
         .filter((item) => item.node && item.node.type === NODE_TYPES.FILTER
           && attributes(item.node).registrationKind === registrationKind
@@ -110,9 +118,12 @@
         orderStatus: "UNKNOWN"
       };
       const orderValues = items.map((item) => orderInfo[item.id]);
-      if (orderValues.some((item) => item.status === "MISMATCHED")) result.orderStatus = "UNKNOWN";
+      if (relationships.length === 0 || memberships.length !== relationships.length
+        || relationships.some((item) => text(item.edge.confidence) !== "CONFIRMED")) result.orderStatus = "UNKNOWN";
+      else if (orderValues.some((item) => item.status === "MISMATCHED")) result.orderStatus = "UNKNOWN";
       else if (orderValues.some((item) => item.status === "UNKNOWN")) result.orderStatus = "UNKNOWN";
-      else if (new Set(orderValues.map((item) => item.order)).size !== orderValues.length) result.orderStatus = "AMBIGUOUS";
+      else if (new Set(items.map((item) => item.id)).size !== items.length
+        || new Set(orderValues.map((item) => item.order)).size !== orderValues.length) result.orderStatus = "AMBIGUOUS";
       else result.orderStatus = "CONFIRMED";
       result.filters.sort((left, right) => {
         const leftOrder = orderInfo[left.id].order === null ? Number.POSITIVE_INFINITY : orderInfo[left.id].order;
@@ -132,12 +143,22 @@
 
     function handlerFor(endpointId) {
       const endpoint = nodeById.get(endpointId);
-      const handlerKey = attributes(endpoint).handler;
-      const candidates = handlers.filter((handler) => text(attributes(handler).handler) === text(handlerKey));
-      if (!handlerKey || candidates.length !== 1) {
-        return { status: "UNCERTAIN", reason: candidates.length === 0 ? "MISSING" : "MULTIPLE", node: null };
+      if (!endpoint || endpoint.type !== NODE_TYPES.ENDPOINT) {
+        return { status: "UNCERTAIN", reason: "MISSING", node: null, edge: null };
       }
-      return { status: "CONFIRMED", reason: "", node: candidates[0] };
+      const mappings = (outgoingByNode.get(endpointId) || []).filter((edge) => edge.type === EDGE_TYPES.FLOWS_TO
+        && nodeById.get(edge.targetId)?.type === NODE_TYPES.HANDLER);
+      const confirmed = mappings.filter((edge) => text(edge.confidence) === "CONFIRMED");
+      if (mappings.length !== 1 || confirmed.length !== 1) {
+        const reason = mappings.length === 0 ? "MISSING"
+          : mappings.length > 1 ? "MULTIPLE" : "UNCONFIRMED";
+        return { status: "UNCERTAIN", reason, node: null, edge: null };
+      }
+      return { status: "CONFIRMED", reason: "", node: nodeById.get(confirmed[0].targetId), edge: confirmed[0] };
+    }
+
+    function endpointsForHandler(handlerId) {
+      return (handlerToEndpoints.get(handlerId) || []).filter((mapping) => text(mapping.edge.confidence) === "CONFIRMED");
     }
 
     function summary() {
@@ -166,6 +187,7 @@
       validEdges,
       endpoints,
       handlers,
+      handlerToEndpoints,
       chains,
       servlets,
       securityFilters,
@@ -175,6 +197,7 @@
       servletFiltersForServlet,
       filterOrderInfo,
       handlerFor,
+      endpointsForHandler,
       summary
     };
   }

@@ -279,6 +279,63 @@ class EndpointChainMatchingAnalysisAdapterTest {
     }
 
     @Test
+    void provesFixedPrefixMismatchForDynamicEndpointsBeforeSelectingLaterChain() {
+        Fact endpoint = endpoint("account", "GET", "/api/accounts/{accountId}");
+        Fact internal = chain("internal", 1, "PATH", "/internal/**");
+        Fact fallback = chain("fallback", 2, "ANY", "ANY");
+
+        AnalysisReport report = execute(List.of(endpoint, internal, fallback), readyStatuses());
+
+        assertEquals(1, report.relations().size());
+        assertEquals(fallback.subjectKey(), report.relations().get(0).targetKey());
+        assertEquals(AnalysisStatus.READY, status(report));
+    }
+
+    @Test
+    void recognizesEquivalentSimpleDynamicPathPatterns() {
+        Fact endpoint = endpoint("account", "GET", "/api/accounts/{accountId}");
+        Fact sameShape = chain("same-shape", 1, "PATH", "/api/accounts/{id}");
+
+        AnalysisReport sameShapeReport = execute(List.of(endpoint, sameShape), readyStatuses());
+
+        assertEquals(1, sameShapeReport.relations().size());
+        assertEquals(sameShape.subjectKey(), sameShapeReport.relations().get(0).targetKey());
+        assertEquals(AnalysisStatus.READY, status(sameShapeReport));
+
+        Fact wildcard = chain("wildcard", 1, "PATH", "/api/*/*");
+        AnalysisReport wildcardReport = execute(List.of(endpoint, wildcard), readyStatuses());
+
+        assertEquals(1, wildcardReport.relations().size());
+        assertEquals(wildcard.subjectKey(), wildcardReport.relations().get(0).targetKey());
+        assertEquals(AnalysisStatus.READY, status(wildcardReport));
+    }
+
+    @Test
+    void provesDifferentFixedSegmentCountsDoNotMatchDynamicEndpoints() {
+        Fact endpoint = endpoint("account", "GET", "/api/{accountId}");
+        Fact extraSegment = chain("extra-segment", 1, "PATH", "/api/{id}/details");
+        Fact fallback = chain("fallback", 2, "ANY", "ANY");
+
+        AnalysisReport report = execute(List.of(endpoint, extraSegment, fallback), readyStatuses());
+
+        assertEquals(1, report.relations().size());
+        assertEquals(fallback.subjectKey(), report.relations().get(0).targetKey());
+        assertEquals(AnalysisStatus.READY, status(report));
+    }
+
+    @Test
+    void keepsPartialStaticPathCoverageFromSelectingALaterChain() {
+        Fact endpoint = endpoint("account", "GET", "/api/accounts/{accountId}");
+        Fact partial = chain("partial", 1, "PATH", "/api/accounts/admin");
+        Fact fallback = chain("fallback", 2, "ANY", "ANY");
+
+        AnalysisReport report = execute(List.of(endpoint, partial, fallback), readyStatuses());
+
+        assertTrue(report.relations().isEmpty());
+        assertEquals(AnalysisStatus.PARTIAL, status(report));
+    }
+
+    @Test
     void keepsOnlyTheFirstRelationWhenSeveralChainsMatch() {
         Fact endpoint = endpoint("orders", "GET", "/api/orders");
         Fact first = chain("api", 1, "PATH", "/api/**");
@@ -373,18 +430,18 @@ class EndpointChainMatchingAnalysisAdapterTest {
     @Test
     void preservesUnknownThroughCompositeAndNegatedMatchers() {
         Fact endpoint = endpoint("dynamic", "GET", "/api/{id}");
-        Fact and = chain("and", 1, "AND", "AND(GET /api/{id},/other/**)");
+        Fact and = chain("and", 1, "AND", "AND(GET /api/{id:[0-9]+},GET /api/{id})");
         Fact any = chain("any", 2, "ANY", "ANY");
         AnalysisReport andReport = execute(List.of(endpoint, and, any), readyStatuses());
         assertTrue(andReport.relations().isEmpty());
         assertEquals(AnalysisStatus.PARTIAL, status(andReport));
 
-        Fact or = chain("or", 1, "OR", "OR(GET /api/{other},/other/**)");
+        Fact or = chain("or", 1, "OR", "OR(GET /api/{id:[0-9]+},/other/**)");
         AnalysisReport orReport = execute(List.of(endpoint, or, any), readyStatuses());
         assertTrue(orReport.relations().isEmpty());
         assertEquals(AnalysisStatus.PARTIAL, status(orReport));
 
-        Fact negated = chain("negated", 1, "NEGATED", "NOT(/api/{other})");
+        Fact negated = chain("negated", 1, "NEGATED", "NOT(/api/{id:[0-9]+})");
         AnalysisReport negatedReport = execute(List.of(endpoint, negated, any), readyStatuses());
         assertTrue(negatedReport.relations().isEmpty());
         assertEquals(AnalysisStatus.PARTIAL, status(negatedReport));
@@ -514,8 +571,9 @@ class EndpointChainMatchingAnalysisAdapterTest {
         assertEquals(Confidence.CONFIRMED, first.relations().get(0).confidence());
 
         SecurityGraph graph = new GraphBuilder().build("main", first);
-        assertEquals(1, graph.edges().size());
-        assertEquals(EdgeType.MATCHED_BY, graph.edges().get(0).type());
+        assertEquals(2, graph.edges().size());
+        assertTrue(graph.edges().stream().anyMatch(edge -> edge.type() == EdgeType.MATCHED_BY));
+        assertTrue(graph.edges().stream().anyMatch(edge -> edge.type() == EdgeType.FLOWS_TO));
     }
 
     private AnalysisReport execute(List<Fact> facts, Map<String, AnalysisStatus> statuses) {

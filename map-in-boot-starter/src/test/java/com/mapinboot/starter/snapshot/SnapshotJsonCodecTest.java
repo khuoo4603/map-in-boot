@@ -36,8 +36,8 @@ class SnapshotJsonCodecTest {
 
     @Test
     void assemblerPersistsDisplayCodesForFinalEvidence() {
-        Snapshot snapshot = new SnapshotAssembler(List.of(), "1", sdkVersion())
-                .assemble(report(), "service", "instance", "1.2.3");
+        Snapshot snapshot = new SnapshotAssembler(List.of(), sdkVersion())
+                .assemble(report(), "service", "instance", "1.2.3", com.mapinboot.core.snapshot.runtime.RuntimeArchitectureAssembler.unknown());
 
         String encoded = new SnapshotJsonCodec().encode(snapshot);
 
@@ -60,7 +60,7 @@ class SnapshotJsonCodecTest {
                 source.sdkVersion(), source.serviceId(), source.instanceId(), source.applicationVersion(),
                 source.graphFingerprint(), source.nodes(), source.edges(), List.of(source.evidence().get(0), second),
                 source.findings(), source.analysisStatus(),
-                Map.of("evidence-1", "EP-MAPPING-001", second.id(), "EP-MAPPING-001"));
+                Map.of("evidence-1", "EP-MAPPING-001", second.id(), "EP-MAPPING-001"), source.runtimeArchitecture());
 
         MapInBootException exception = assertThrows(MapInBootException.class,
                 () -> new SnapshotJsonCodec().encode(invalid));
@@ -115,8 +115,8 @@ class SnapshotJsonCodecTest {
             metadata.load(input);
         }
 
-        Snapshot snapshot = new SnapshotAssembler(List.of(), "1")
-                .assemble(report(), "service", "instance", "UNKNOWN");
+        Snapshot snapshot = new SnapshotAssembler(List.of(), sdkVersion())
+                .assemble(report(), "service", "instance", "UNKNOWN", com.mapinboot.core.snapshot.runtime.RuntimeArchitectureAssembler.unknown());
 
         String projectVersion = System.getProperty("mapinboot.project.version");
         assertNotNull(projectVersion);
@@ -129,13 +129,13 @@ class SnapshotJsonCodecTest {
         AnalysisReport report = report();
         Finding finding = finding();
         SnapshotAssembler assembler = new SnapshotAssembler(
-                List.of(ignored -> List.of(finding)), "1", sdkVersion());
+                List.of(ignored -> List.of(finding)), sdkVersion());
 
-        Snapshot snapshot = assembler.assemble(report, "service", "instance", "1.2.3");
+        Snapshot snapshot = assembler.assemble(report, "service", "instance", "1.2.3", com.mapinboot.core.snapshot.runtime.RuntimeArchitectureAssembler.unknown());
 
         assertNotNull(snapshot.snapshotId());
         assertNotNull(snapshot.capturedAt());
-        assertEquals("1", snapshot.schemaVersion());
+        assertEquals("2", snapshot.schemaVersion());
         assertEquals(System.getProperty("mapinboot.project.version"), snapshot.sdkVersion());
         assertEquals("service", snapshot.serviceId());
         assertEquals("instance", snapshot.instanceId());
@@ -154,10 +154,10 @@ class SnapshotJsonCodecTest {
         Finding second = new Finding("finding-second", "RULE-2", "title", "description", Confidence.UNKNOWN,
                 List.of(), List.of(), List.of("evidence-1"), "guide");
 
-        Snapshot firstSnapshot = new SnapshotAssembler(List.of(ignored -> List.of(first)), "1", sdkVersion())
-                .assemble(report(), "service", "instance", "1.2.3");
-        Snapshot secondSnapshot = new SnapshotAssembler(List.of(ignored -> List.of(second)), "1", sdkVersion())
-                .assemble(report(), "service", "instance", "1.2.3");
+        Snapshot firstSnapshot = new SnapshotAssembler(List.of(ignored -> List.of(first)), sdkVersion())
+                .assemble(report(), "service", "instance", "1.2.3", com.mapinboot.core.snapshot.runtime.RuntimeArchitectureAssembler.unknown());
+        Snapshot secondSnapshot = new SnapshotAssembler(List.of(ignored -> List.of(second)), sdkVersion())
+                .assemble(report(), "service", "instance", "1.2.3", com.mapinboot.core.snapshot.runtime.RuntimeArchitectureAssembler.unknown());
 
         assertEquals(firstSnapshot.graphFingerprint(), secondSnapshot.graphFingerprint());
     }
@@ -166,13 +166,13 @@ class SnapshotJsonCodecTest {
     void assemblerAllowsNoEvaluatorAndRejectsMultipleEvaluators() {
         AnalysisReport report = report();
 
-        Snapshot snapshot = new SnapshotAssembler(List.of(), "1", sdkVersion())
-                .assemble(report, "service", "instance", "UNKNOWN");
+        Snapshot snapshot = new SnapshotAssembler(List.of(), sdkVersion())
+                .assemble(report, "service", "instance", "UNKNOWN", com.mapinboot.core.snapshot.runtime.RuntimeArchitectureAssembler.unknown());
         assertEquals(List.of(), snapshot.findings());
 
         MapInBootException exception = assertThrows(MapInBootException.class,
-                () -> new SnapshotAssembler(List.of(ignored -> List.of(), ignored -> List.of()), "1", sdkVersion())
-                        .assemble(report, "service", "instance", "UNKNOWN"));
+                () -> new SnapshotAssembler(List.of(ignored -> List.of(), ignored -> List.of()), sdkVersion())
+                        .assemble(report, "service", "instance", "UNKNOWN", com.mapinboot.core.snapshot.runtime.RuntimeArchitectureAssembler.unknown()));
         assertEquals(ErrorCode.INVALID_CONFIG, exception.getErrorCode());
     }
 
@@ -181,8 +181,8 @@ class SnapshotJsonCodecTest {
         Finding invalid = new Finding("finding-1", "RULE-1", "title", "description", Confidence.LIKELY,
                 List.of("missing-node"), List.of(), List.of("evidence-1"), "guide");
         MapInBootException exception = assertThrows(MapInBootException.class,
-                () -> new SnapshotAssembler(List.of(ignored -> List.of(invalid)), "1", sdkVersion())
-                        .assemble(report(), "service", "instance", "UNKNOWN"));
+                () -> new SnapshotAssembler(List.of(ignored -> List.of(invalid)), sdkVersion())
+                        .assemble(report(), "service", "instance", "UNKNOWN", com.mapinboot.core.snapshot.runtime.RuntimeArchitectureAssembler.unknown()));
 
         assertEquals(ErrorCode.INVALID_SNAPSHOT, exception.getErrorCode());
     }
@@ -197,13 +197,13 @@ class SnapshotJsonCodecTest {
         AnalysisReport report = new AnalysisReport(collection, List.of(), List.of(invalidEvidence),
                 Map.of("analyzer", AnalysisStatus.READY), List.of());
         MapInBootException evidenceException = assertThrows(MapInBootException.class,
-                () -> new SnapshotAssembler(List.of(), "1", sdkVersion())
-                        .assemble(report, "service", "instance", "UNKNOWN"));
+                () -> new SnapshotAssembler(List.of(), sdkVersion())
+                        .assemble(report, "service", "instance", "UNKNOWN", com.mapinboot.core.snapshot.runtime.RuntimeArchitectureAssembler.unknown()));
         Finding invalidFinding = new Finding("finding-1", "", "title", "description", Confidence.UNKNOWN,
                 List.of(), List.of(), List.of("evidence-1"), "guide");
         MapInBootException findingException = assertThrows(MapInBootException.class,
-                () -> new SnapshotAssembler(List.of(ignored -> List.of(invalidFinding)), "1", sdkVersion())
-                        .assemble(report(), "service", "instance", "UNKNOWN"));
+                () -> new SnapshotAssembler(List.of(ignored -> List.of(invalidFinding)), sdkVersion())
+                        .assemble(report(), "service", "instance", "UNKNOWN", com.mapinboot.core.snapshot.runtime.RuntimeArchitectureAssembler.unknown()));
 
         assertEquals(ErrorCode.INVALID_SNAPSHOT, evidenceException.getErrorCode());
         assertEquals(ErrorCode.INVALID_SNAPSHOT, findingException.getErrorCode());
@@ -214,8 +214,8 @@ class SnapshotJsonCodecTest {
         Finding finding = new Finding("finding-1", "RULE-1", "title", "description", Confidence.UNKNOWN,
                 List.of(), List.of(), List.of("evidence-1"), "guide");
 
-        Snapshot snapshot = new SnapshotAssembler(List.of(ignored -> List.of(finding)), "1", sdkVersion())
-                .assemble(report(), "service", "instance", "UNKNOWN");
+        Snapshot snapshot = new SnapshotAssembler(List.of(ignored -> List.of(finding)), sdkVersion())
+                .assemble(report(), "service", "instance", "UNKNOWN", com.mapinboot.core.snapshot.runtime.RuntimeArchitectureAssembler.unknown());
 
         assertEquals(Confidence.UNKNOWN, snapshot.findings().get(0).confidence());
         assertEquals(List.of(), snapshot.findings().get(0).nodeIds());
@@ -233,10 +233,11 @@ class SnapshotJsonCodecTest {
         Finding finding = new Finding("finding-1", "RULE-1", "title", "description", Confidence.LIKELY,
                 List.of(node.id()), List.of(edge.id()), List.of(evidence.id()), "guide");
         String fingerprint = new GraphFingerprintGenerator().generate(new SecurityGraph(List.of(node, handler), List.of(edge)));
-        Snapshot snapshot = new Snapshot("snapshot-1", Instant.parse("2026-10-31T00:00:00Z"), "1",
+        Snapshot snapshot = new Snapshot("snapshot-1", Instant.parse("2026-10-31T00:00:00Z"), "2",
                 sdkVersion(), "service", "instance", "1.2.3", fingerprint,
                 List.of(node, handler), List.of(edge), List.of(evidence), List.of(finding),
-                Map.of("collector", AnalysisStatus.READY), Map.of(evidence.id(), "EP-MAPPING-001"));
+                Map.of("collector", AnalysisStatus.READY), Map.of(evidence.id(), "EP-MAPPING-001"),
+                com.mapinboot.core.snapshot.runtime.RuntimeArchitectureAssembler.unknown());
         SnapshotJsonCodec codec = new SnapshotJsonCodec();
 
         String encoded = codec.encode(snapshot);
@@ -253,20 +254,6 @@ class SnapshotJsonCodecTest {
         assertEquals(snapshot.graphFingerprint(), decoded.graphFingerprint());
         assertEquals(snapshot.capturedAt(), decoded.capturedAt());
         assertEquals(Confidence.UNKNOWN, decoded.edges().get(0).confidence());
-    }
-
-    @Test
-    void jackson3CodecReadsLegacySnapshotWithoutDisplayCodes() {
-        Snapshot snapshot = validSnapshot();
-        String encoded = new SnapshotJsonCodec().encode(snapshot);
-        int displayCodesField = encoded.indexOf(",\"evidenceDisplayCodes\":");
-        String legacyJson = encoded.substring(0, displayCodesField) + encoded.substring(encoded.lastIndexOf('}'));
-
-        Snapshot decoded = new SnapshotJsonCodec().decode(legacyJson);
-
-        assertEquals(Map.of(), decoded.evidenceDisplayCodes());
-        assertEquals(snapshot.evidence(), decoded.evidence());
-        assertEquals(snapshot.findings().get(0).evidenceIds(), decoded.findings().get(0).evidenceIds());
     }
 
     @Test
@@ -321,9 +308,10 @@ class SnapshotJsonCodecTest {
 
     @Test
     void jackson3CodecRejectsInvalidSnapshotBeforeEncoding() {
-        Snapshot snapshot = new Snapshot("snapshot-1", Instant.parse("2026-10-31T00:00:00Z"), "1",
+        Snapshot snapshot = new Snapshot("snapshot-1", Instant.parse("2026-10-31T00:00:00Z"), "2",
                 sdkVersion(), "service", "instance", "1.2.3", "wrong",
-                List.of(), List.of(), List.of(), List.of(), Map.of());
+                List.of(), List.of(), List.of(), List.of(), Map.of(), Map.of(),
+                com.mapinboot.core.snapshot.runtime.RuntimeArchitectureAssembler.unknown());
 
         MapInBootException exception = assertThrows(MapInBootException.class,
                 () -> new SnapshotJsonCodec().encode(snapshot));
@@ -333,8 +321,8 @@ class SnapshotJsonCodecTest {
 
     @Test
     void jackson3CodecRejectsFingerprintMismatchDuringDecoding() {
-        Snapshot snapshot = new SnapshotAssembler(List.of(), "1", sdkVersion())
-                .assemble(report(), "service", "instance", "1.2.3");
+        Snapshot snapshot = new SnapshotAssembler(List.of(), sdkVersion())
+                .assemble(report(), "service", "instance", "1.2.3", com.mapinboot.core.snapshot.runtime.RuntimeArchitectureAssembler.unknown());
         SnapshotJsonCodec codec = new SnapshotJsonCodec();
         String tampered = codec.encode(snapshot).replace(snapshot.graphFingerprint(), "wrong");
 
@@ -371,10 +359,11 @@ class SnapshotJsonCodecTest {
         Finding finding = new Finding("finding-1", "RULE-1", "title", "description", Confidence.LIKELY,
                 List.of(node.id()), List.of(edge.id()), List.of(evidence.id()), "guide");
         String fingerprint = new GraphFingerprintGenerator().generate(new SecurityGraph(List.of(node, handler), List.of(edge)));
-        return new Snapshot("snapshot-1", Instant.parse("2026-10-31T00:00:00Z"), "1",
+        return new Snapshot("snapshot-1", Instant.parse("2026-10-31T00:00:00Z"), "2",
                 sdkVersion(), "service", "instance", "1.2.3", fingerprint,
                 List.of(node, handler), List.of(edge), List.of(evidence), List.of(finding),
-                Map.of("collector", AnalysisStatus.READY), Map.of(evidence.id(), "EP-MAPPING-001"));
+                Map.of("collector", AnalysisStatus.READY), Map.of(evidence.id(), "EP-MAPPING-001"),
+                com.mapinboot.core.snapshot.runtime.RuntimeArchitectureAssembler.unknown());
     }
 
     private Snapshot withGraph(Snapshot source, List<GraphNode> nodes, List<GraphEdge> edges) {
@@ -382,19 +371,21 @@ class SnapshotJsonCodecTest {
         return new Snapshot(source.snapshotId(), source.capturedAt(), source.schemaVersion(), source.sdkVersion(),
                 source.serviceId(), source.instanceId(), source.applicationVersion(), fingerprint,
                 nodes, edges, source.evidence(), source.findings(), source.analysisStatus(),
-                source.evidenceDisplayCodes());
+                source.evidenceDisplayCodes(), source.runtimeArchitecture());
     }
 
     private Snapshot withoutDisplayCodes(Snapshot source) {
         return new Snapshot(source.snapshotId(), source.capturedAt(), source.schemaVersion(), source.sdkVersion(),
                 source.serviceId(), source.instanceId(), source.applicationVersion(), source.graphFingerprint(),
-                source.nodes(), source.edges(), source.evidence(), source.findings(), source.analysisStatus());
+                source.nodes(), source.edges(), source.evidence(), source.findings(), source.analysisStatus(),
+                Map.of(), source.runtimeArchitecture());
     }
 
     private Snapshot withDisplayCodes(Snapshot source, Map<String, String> displayCodes) {
         return new Snapshot(source.snapshotId(), source.capturedAt(), source.schemaVersion(), source.sdkVersion(),
                 source.serviceId(), source.instanceId(), source.applicationVersion(), source.graphFingerprint(),
-                source.nodes(), source.edges(), source.evidence(), source.findings(), source.analysisStatus(), displayCodes);
+                source.nodes(), source.edges(), source.evidence(), source.findings(), source.analysisStatus(), displayCodes,
+                source.runtimeArchitecture());
     }
 
     private String sdkVersion() {

@@ -559,15 +559,11 @@ public class EndpointChainMatchingAnalysisAdapter extends AbstractAnalysisAdapte
             return matcherPattern.matches(PathContainer.parsePath(endpointPath))
                     ? Coverage.ALL : Coverage.NONE;
         }
-        String catchAllPrefix = catchAllPrefix(matcherPath);
-        if (catchAllPrefix != null && endpointWithinPrefix(endpointPath, catchAllPrefix)) {
-            return Coverage.ALL;
-        }
         if (!matcherPattern.hasPatternSyntax()) {
             return endpointPattern.matches(PathContainer.parsePath(matcherPath))
                     ? Coverage.PARTIAL : Coverage.NONE;
         }
-        return Coverage.UNKNOWN;
+        return comparePathShapes(pathShape(matcherPath), pathShape(endpointPath));
     }
 
     private PathPattern parsePathPattern(String path) {
@@ -578,27 +574,221 @@ public class EndpointChainMatchingAnalysisAdapter extends AbstractAnalysisAdapte
         }
     }
 
-    private String catchAllPrefix(String path) {
-        String prefix = null;
-        if (path.endsWith("/**")) {
-            prefix = path.substring(0, path.length() - 3);
-        } else {
-            int captureStart = path.lastIndexOf("/{*");
-            if (captureStart >= 0 && path.endsWith("}")) {
-                prefix = path.substring(0, captureStart);
-            }
-        }
-        if (prefix == null) {
+    private PathShape pathShape(String path) {
+        List<String> rawSegments = splitPathSegments(path);
+        if (rawSegments == null) {
             return null;
         }
-        String normalizedPrefix = prefix.isEmpty() ? "/" : prefix;
-        PathPattern prefixPattern = parsePathPattern(normalizedPrefix);
-        return prefixPattern != null && !prefixPattern.hasPatternSyntax() ? prefix : null;
+        boolean catchAll = !rawSegments.isEmpty()
+                && ("**".equals(rawSegments.get(rawSegments.size() - 1))
+                        || isPathRestVariable(rawSegments.get(rawSegments.size() - 1)));
+        if (catchAll) {
+            rawSegments.remove(rawSegments.size() - 1);
+        }
+        return new PathShape(rawSegments.stream().map(this::pathSegment).toList(), catchAll);
     }
 
-    private boolean endpointWithinPrefix(String endpointPath, String prefix) {
-        return prefix.isEmpty() || "/".equals(prefix)
-                || endpointPath.equals(prefix) || endpointPath.startsWith(prefix + "/");
+    private List<String> splitPathSegments(String path) {
+        if (!path.startsWith("/")) {
+            return null;
+        }
+        if ("/".equals(path)) {
+            return new ArrayList<>();
+        }
+        List<String> segments = new ArrayList<>();
+        StringBuilder segment = new StringBuilder();
+        int braceDepth = 0;
+        for (int index = 1; index < path.length(); index++) {
+            char character = path.charAt(index);
+            if (character == '/' && braceDepth > 0) {
+                return null;
+            }
+            if (character == '/' && braceDepth == 0) {
+                segments.add(segment.toString());
+                segment.setLength(0);
+                continue;
+            }
+            if (character == '{') {
+                braceDepth++;
+            } else if (character == '}') {
+                braceDepth--;
+                if (braceDepth < 0) {
+                    return null;
+                }
+            }
+            segment.append(character);
+        }
+        if (braceDepth != 0) {
+            return null;
+        }
+        segments.add(segment.toString());
+        return segments;
+    }
+
+    private PathSegment pathSegment(String value) {
+        if ("*".equals(value) || isPathVariable(value)) {
+            return new PathSegment(PathSegmentKind.ANY, value, "", "");
+        }
+        int wildcard = value.indexOf('*');
+        if (wildcard >= 0 && value.indexOf('*', wildcard + 1) < 0
+                && !containsUnsupportedSegmentSyntax(value)) {
+            return new PathSegment(PathSegmentKind.GLOB, value,
+                    value.substring(0, wildcard), value.substring(wildcard + 1));
+        }
+        if (containsUnsupportedSegmentSyntax(value)) {
+            return new PathSegment(PathSegmentKind.UNKNOWN, value, "", "");
+        }
+        return new PathSegment(PathSegmentKind.LITERAL, value, "", "");
+    }
+
+    private boolean containsUnsupportedSegmentSyntax(String value) {
+        return value.indexOf('?') >= 0 || value.indexOf('{') >= 0 || value.indexOf('}') >= 0
+                || value.indexOf('[') >= 0 || value.indexOf(']') >= 0 || value.indexOf('\\') >= 0
+                || value.indexOf('*') >= 0 && value.indexOf('*') != value.lastIndexOf('*');
+    }
+
+    private boolean isPathVariable(String segment) {
+        return segment.length() > 2 && segment.charAt(0) == '{' && segment.charAt(segment.length() - 1) == '}'
+                && isPathIdentifier(segment.substring(1, segment.length() - 1));
+    }
+
+    private boolean isPathRestVariable(String segment) {
+        return segment.length() > 3 && segment.startsWith("{*") && segment.endsWith("}")
+                && isPathIdentifier(segment.substring(2, segment.length() - 1));
+    }
+
+    private boolean isPathIdentifier(String value) {
+        if (value.isEmpty() || !(Character.isLetter(value.charAt(0)) || value.charAt(0) == '_')) {
+            return false;
+        }
+        for (int index = 1; index < value.length(); index++) {
+            char character = value.charAt(index);
+            if (!Character.isLetterOrDigit(character) && character != '_') {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private Coverage comparePathShapes(PathShape matcher, PathShape endpoint) {
+        if (matcher == null || endpoint == null) {
+            return Coverage.UNKNOWN;
+        }
+        int matcherSize = matcher.segments().size();
+        int endpointSize = endpoint.segments().size();
+        if (!matcher.catchAll() && !endpoint.catchAll() && matcherSize != endpointSize) {
+            return Coverage.NONE;
+        }
+        if (matcher.catchAll() && !endpoint.catchAll() && endpointSize < matcherSize) {
+            return Coverage.NONE;
+        }
+        if (!matcher.catchAll() && endpoint.catchAll() && matcherSize < endpointSize) {
+            return Coverage.NONE;
+        }
+
+        Coverage result = Coverage.ALL;
+        int commonSize = Math.min(matcherSize, endpointSize);
+        for (int index = 0; index < commonSize; index++) {
+            result = combinePathCoverage(result,
+                    segmentCoverage(matcher.segments().get(index), endpoint.segments().get(index)));
+            if (result == Coverage.NONE) {
+                return Coverage.NONE;
+            }
+        }
+
+        if (matcher.catchAll() && endpoint.catchAll() && endpointSize < matcherSize) {
+            // Endpoint catch-all이 Matcher의 추가 Prefix를 만족할 경로와 더 짧은 경로를 함께 허용함.
+            for (int index = endpointSize; index < matcherSize; index++) {
+                result = combinePathCoverage(result,
+                        segmentCoverage(matcher.segments().get(index), new PathSegment(PathSegmentKind.ANY, "*", "", "")));
+                if (result == Coverage.NONE) {
+                    return Coverage.NONE;
+                }
+            }
+            return result == Coverage.UNKNOWN ? Coverage.UNKNOWN : Coverage.PARTIAL;
+        }
+
+        if (!matcher.catchAll() && endpoint.catchAll()) {
+            // Finite Matcher가 Endpoint의 최소 경로를 포함해도 Endpoint catch-all의 긴 경로는 포함하지 못함.
+            for (int index = endpointSize; index < matcherSize; index++) {
+                result = combinePathCoverage(result,
+                        segmentCoverage(matcher.segments().get(index), new PathSegment(PathSegmentKind.ANY, "*", "", "")));
+                if (result == Coverage.NONE) {
+                    return Coverage.NONE;
+                }
+            }
+            return result == Coverage.UNKNOWN ? Coverage.UNKNOWN : Coverage.PARTIAL;
+        }
+        return result;
+    }
+
+    private Coverage segmentCoverage(PathSegment matcher, PathSegment endpoint) {
+        if (matcher.kind() == PathSegmentKind.ANY) {
+            return Coverage.ALL;
+        }
+        if (endpoint.kind() == PathSegmentKind.ANY) {
+            return matcher.kind() == PathSegmentKind.UNKNOWN ? Coverage.UNKNOWN : Coverage.PARTIAL;
+        }
+        if (matcher.kind() == PathSegmentKind.UNKNOWN || endpoint.kind() == PathSegmentKind.UNKNOWN) {
+            return Coverage.UNKNOWN;
+        }
+        if (endpoint.kind() == PathSegmentKind.LITERAL) {
+            return matchesSegment(matcher, endpoint.value()) ? Coverage.ALL : Coverage.NONE;
+        }
+        if (matcher.kind() == PathSegmentKind.LITERAL) {
+            return matchesSegment(endpoint, matcher.value()) ? Coverage.PARTIAL : Coverage.NONE;
+        }
+        if (matcher.kind() == PathSegmentKind.GLOB && endpoint.kind() == PathSegmentKind.GLOB) {
+            if (matcher.value().equals(endpoint.value())) {
+                return Coverage.ALL;
+            }
+            if (globPatternsDisjoint(matcher, endpoint)) {
+                return Coverage.NONE;
+            }
+            if (globSubset(endpoint, matcher)) {
+                return Coverage.ALL;
+            }
+            if (globSubset(matcher, endpoint)) {
+                return Coverage.PARTIAL;
+            }
+            return Coverage.PARTIAL;
+        }
+        return Coverage.UNKNOWN;
+    }
+
+    private boolean matchesSegment(PathSegment pattern, String value) {
+        return switch (pattern.kind()) {
+            case ANY -> true;
+            case LITERAL -> pattern.value().equals(value);
+            case GLOB -> value.length() >= pattern.prefix().length() + pattern.suffix().length()
+                    && value.startsWith(pattern.prefix()) && value.endsWith(pattern.suffix());
+            case UNKNOWN -> false;
+        };
+    }
+
+    private boolean globPatternsDisjoint(PathSegment first, PathSegment second) {
+        boolean prefixesOverlap = first.prefix().startsWith(second.prefix())
+                || second.prefix().startsWith(first.prefix());
+        boolean suffixesOverlap = first.suffix().endsWith(second.suffix())
+                || second.suffix().endsWith(first.suffix());
+        return !prefixesOverlap || !suffixesOverlap;
+    }
+
+    private boolean globSubset(PathSegment subset, PathSegment superset) {
+        return subset.prefix().startsWith(superset.prefix()) && subset.suffix().endsWith(superset.suffix());
+    }
+
+    private Coverage combinePathCoverage(Coverage first, Coverage second) {
+        if (first == Coverage.NONE || second == Coverage.NONE) {
+            return Coverage.NONE;
+        }
+        if (first == Coverage.UNKNOWN || second == Coverage.UNKNOWN) {
+            return Coverage.UNKNOWN;
+        }
+        if (first == Coverage.PARTIAL || second == Coverage.PARTIAL) {
+            return Coverage.PARTIAL;
+        }
+        return Coverage.ALL;
     }
 
     private Coverage combine(Coverage first, Coverage second) {
@@ -770,6 +960,19 @@ public class EndpointChainMatchingAnalysisAdapter extends AbstractAnalysisAdapte
         NONE,
         PARTIAL,
         UNKNOWN
+    }
+
+    private enum PathSegmentKind {
+        LITERAL,
+        ANY,
+        GLOB,
+        UNKNOWN
+    }
+
+    private record PathShape(List<PathSegment> segments, boolean catchAll) {
+    }
+
+    private record PathSegment(PathSegmentKind kind, String value, String prefix, String suffix) {
     }
 
     private record EndpointRequest(String method, String path, String mvcPathPatternSettings) {

@@ -5,8 +5,12 @@ import com.mapinboot.core.analysis.AnalysisProvider;
 import com.mapinboot.core.collection.CollectionProvider;
 import com.mapinboot.core.collection.CollectorAdapter;
 import com.mapinboot.core.finding.FindingEvaluator;
+import com.mapinboot.core.snapshot.runtime.RuntimeArchitectureAssembler;
 import com.mapinboot.starter.bootstrap.MapInBootBootstrap;
 import com.mapinboot.starter.collector.EndpointMappingCollectorAdapter;
+import com.mapinboot.starter.collector.HostRuntimeArchitectureCollector;
+import com.mapinboot.starter.collector.MvcRuntimeArchitectureCollector;
+import com.mapinboot.starter.collector.ServletRuntimeArchitectureCollector;
 import com.mapinboot.starter.collector.ServletFilterCollectorAdapter;
 import com.mapinboot.starter.collector.ServletRegistrationCollectorAdapter;
 import com.mapinboot.starter.snapshot.LocalSnapshotStore;
@@ -76,8 +80,28 @@ public class MapInBootAutoConfiguration {
 
         @Bean
         @ConditionalOnMissingBean
+        RuntimeArchitectureAssembler runtimeArchitectureAssembler() {
+            return new RuntimeArchitectureAssembler();
+        }
+
+        @Bean
+        @ConditionalOnMissingBean(HostRuntimeArchitectureCollector.class)
+        HostRuntimeArchitectureCollector hostRuntimeArchitectureCollector(ApplicationContext applicationContext) {
+            return new HostRuntimeArchitectureCollector(applicationContext);
+        }
+
+        @Bean
+        @ConditionalOnWebApplication(type = ConditionalOnWebApplication.Type.SERVLET)
+        @ConditionalOnClass(name = "jakarta.servlet.ServletContext")
+        @ConditionalOnMissingBean(ServletRuntimeArchitectureCollector.class)
+        ServletRuntimeArchitectureCollector servletRuntimeArchitectureCollector(ApplicationContext applicationContext) {
+            return new ServletRuntimeArchitectureCollector(applicationContext);
+        }
+
+        @Bean
+        @ConditionalOnMissingBean
         SnapshotAssembler snapshotAssembler(List<FindingEvaluator> findingEvaluators) {
-            return new SnapshotAssembler(findingEvaluators, "1");
+            return new SnapshotAssembler(findingEvaluators);
         }
 
         @Bean
@@ -116,11 +140,14 @@ public class MapInBootAutoConfiguration {
                 @Qualifier("mapInBootExecutor") ExecutorService executor,
                 SnapshotAssembler snapshotAssembler,
                 SnapshotJsonCodec snapshotJsonCodec,
-                LocalSnapshotStore localSnapshotStore
+                LocalSnapshotStore localSnapshotStore,
+                RuntimeArchitectureAssembler runtimeArchitectureAssembler,
+                List<com.mapinboot.core.snapshot.runtime.RuntimeArchitectureCollector> runtimeArchitectureCollectors
         ) {
             return new MapInBootBootstrap(
                     applicationContext, collectionProvider, analysisProvider, collectorAdapters, analysisAdapters, executor,
-                    snapshotAssembler, snapshotJsonCodec, localSnapshotStore);
+                    snapshotAssembler, snapshotJsonCodec, localSnapshotStore,
+                    runtimeArchitectureAssembler, runtimeArchitectureCollectors);
         }
     }
 
@@ -134,6 +161,12 @@ public class MapInBootAutoConfiguration {
         @ConditionalOnMissingBean(EndpointMappingCollectorAdapter.class)
         EndpointMappingCollectorAdapter endpointMappingCollectorAdapter() {
             return new EndpointMappingCollectorAdapter();
+        }
+
+        @Bean
+        @ConditionalOnMissingBean(MvcRuntimeArchitectureCollector.class)
+        MvcRuntimeArchitectureCollector mvcRuntimeArchitectureCollector(ApplicationContext applicationContext) {
+            return new MvcRuntimeArchitectureCollector(applicationContext);
         }
     }
 

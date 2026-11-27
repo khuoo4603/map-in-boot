@@ -149,13 +149,20 @@ class GraphTest {
                 .orElseThrow();
 
         assertEquals(3, graph.nodes().size());
-        assertEquals(1, graph.edges().size());
+        assertEquals(2, graph.edges().size());
         assertEquals("orders", endpointNode.serviceId());
         assertEquals(List.of("evidence-chain", "evidence-endpoint"), endpointNode.evidenceIds());
         assertEquals("OrderController#list", handlerNode.label());
-        assertEquals(endpointNode.id(), graph.edges().get(0).sourceId());
-        assertEquals(chainNode.id(), graph.edges().get(0).targetId());
-        assertEquals(List.of("evidence-chain", "evidence-endpoint"), graph.edges().get(0).evidenceIds());
+        GraphEdge chainEdge = graph.edges().stream().filter(edge -> edge.type() == EdgeType.MATCHED_BY)
+                .findFirst().orElseThrow();
+        GraphEdge mappingEdge = graph.edges().stream().filter(edge -> edge.type() == EdgeType.FLOWS_TO)
+                .findFirst().orElseThrow();
+        assertEquals(endpointNode.id(), chainEdge.sourceId());
+        assertEquals(chainNode.id(), chainEdge.targetId());
+        assertEquals(List.of("evidence-chain", "evidence-endpoint"), chainEdge.evidenceIds());
+        assertEquals(endpointNode.id(), mappingEdge.sourceId());
+        assertEquals(handlerNode.id(), mappingEdge.targetId());
+        assertEquals("HANDLER", mappingEdge.attributes().get("flowKind"));
     }
 
     @Test
@@ -296,15 +303,17 @@ class GraphTest {
                 Confidence.CONFIRMED, List.of());
 
         SecurityGraph graph = new GraphBuilder().build("orders", report(List.of(endpoint, chain), List.of(), List.of(first, second)));
+        GraphEdge matchedBy = graph.edges().stream().filter(edge -> edge.type() == EdgeType.MATCHED_BY).findFirst().orElseThrow();
         GraphEdge presentationChanged = new GraphEdge(
-                graph.edges().get(0).id(), graph.edges().get(0).sourceId(), graph.edges().get(0).targetId(), EdgeType.MATCHED_BY,
+                matchedBy.id(), matchedBy.sourceId(), matchedBy.targetId(), EdgeType.MATCHED_BY,
                 Map.of("matcherCondition", "/orders/**", "chainOrder", "1", "matcherLabel", "different"),
                 Confidence.UNKNOWN, List.of("different-evidence"));
 
-        assertEquals(1, graph.edges().size());
-        assertEquals("A label", graph.edges().get(0).attributes().get("matcherLabel"));
+        assertEquals(2, graph.edges().size());
+        assertEquals("A label", matchedBy.attributes().get("matcherLabel"));
         assertEquals(new GraphFingerprintGenerator().generate(graph), new GraphFingerprintGenerator().generate(
-                new SecurityGraph(graph.nodes(), List.of(presentationChanged))));
+                new SecurityGraph(graph.nodes(), graph.edges().stream()
+                        .map(edge -> edge.id().equals(matchedBy.id()) ? presentationChanged : edge).toList())));
     }
 
     @Test

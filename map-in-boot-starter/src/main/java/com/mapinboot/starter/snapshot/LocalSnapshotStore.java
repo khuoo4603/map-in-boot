@@ -31,7 +31,7 @@ import org.apache.commons.logging.LogFactory;
 // Snapshot JSON의 원자적 저장·복원·구조 이력 및 보존기간 관리
 public class LocalSnapshotStore {
     private static final Log log = LogFactory.getLog(LocalSnapshotStore.class);
-    private static final String SUPPORTED_SCHEMA_VERSION = "1";
+    private static final String SUPPORTED_SCHEMA_VERSION = "2";
     private static final Pattern MANAGED_FILE = Pattern.compile("snapshot-[0-9a-fA-F-]{36}\\.json");
 
     private final Path directory;
@@ -64,16 +64,12 @@ public class LocalSnapshotStore {
             throw new MapInBootException(ErrorCode.UNSUPPORTED_SCHEMA, "지원하지 않는 Snapshot schemaVersion입니다.");
         }
         String json = codec.encode(snapshot);
-        boolean snapshotComplete = isComplete(snapshot);
-        if (complete && !snapshotComplete) {
+        boolean analysisComplete = isAnalysisComplete(snapshot);
+        if (complete && !analysisComplete) {
             throw new MapInBootException(ErrorCode.INVALID_SNAPSHOT,
                     "Snapshot 완전성 인자와 저장 데이터가 일치하지 않습니다.");
         }
-        if (!complete && snapshotComplete) {
-            log.warn("Snapshot 부분 결과가 완전 기준선 형태와 일치하지 않아 저장하지 않습니다.");
-            return Optional.empty();
-        }
-        if (!complete && snapshot.nodes().isEmpty()) {
+        if (!analysisComplete && snapshot.nodes().isEmpty()) {
             return Optional.empty();
         }
         prepareDirectoryForWrite();
@@ -84,7 +80,7 @@ public class LocalSnapshotStore {
                 .filter(stored -> isComplete(stored.snapshot()))
                 .max(Comparator.comparing(stored -> stored.snapshot().capturedAt()));
 
-        if (!complete) {
+        if (!analysisComplete) {
             if (latestComplete.isPresent()) {
                 return Optional.of(latestComplete.get().snapshot());
             }
@@ -97,10 +93,19 @@ public class LocalSnapshotStore {
             return Optional.of(snapshot);
         }
 
-        if (latestComplete.isPresent()
-                && latestComplete.get().snapshot().graphFingerprint().equals(snapshot.graphFingerprint())) {
+        if (isComplete(snapshot) && latestComplete.isPresent()
+                && storageKey(latestComplete.get().snapshot()).equals(storageKey(snapshot))) {
             Snapshot updated = withSnapshotId(snapshot, latestComplete.get().snapshot().snapshotId());
             writeAtomically(latestComplete.get().path(), codec.encode(updated));
+            cleanupAfterSaveSafely(snapshot.serviceId());
+            return Optional.of(updated);
+        }
+
+        if (!isComplete(snapshot) && latestAny.isPresent()
+                && !isComplete(latestAny.get().snapshot())
+                && storageKey(latestAny.get().snapshot()).equals(storageKey(snapshot))) {
+            Snapshot updated = withSnapshotId(snapshot, latestAny.get().snapshot().snapshotId());
+            writeAtomically(latestAny.get().path(), codec.encode(updated));
             cleanupAfterSaveSafely(snapshot.serviceId());
             return Optional.of(updated);
         }
@@ -230,7 +235,7 @@ public class LocalSnapshotStore {
             if (!isComplete(stored.snapshot())) {
                 continue;
             }
-            newestByFingerprint.merge(stored.snapshot().graphFingerprint(), stored,
+            newestByFingerprint.merge(storageKey(stored.snapshot()), stored,
                     (left, right) -> left.snapshot().capturedAt().isAfter(right.snapshot().capturedAt()) ? left : right);
         }
 
@@ -243,7 +248,7 @@ public class LocalSnapshotStore {
 
         for (StoredSnapshot stored : snapshots) {
             boolean duplicateComplete = isComplete(stored.snapshot())
-                    && !newestByFingerprint.get(stored.snapshot().graphFingerprint()).path().equals(stored.path());
+                    && !newestByFingerprint.get(storageKey(stored.snapshot())).path().equals(stored.path());
             boolean expired = stored.snapshot().capturedAt().isBefore(cutoff);
             if ((duplicateComplete || expired) && !keep.contains(stored.path())) {
                 deleteManaged(stored.path());
@@ -280,13 +285,26 @@ public class LocalSnapshotStore {
         return snapshots.stream().max(Comparator.comparing(stored -> stored.snapshot().capturedAt()));
     }
 
-    private boolean isComplete(Snapshot snapshot) {
+    private boolean isAnalysisComplete(Snapshot snapshot) {
         if (snapshot == null || snapshot.analysisStatus().isEmpty()
                 || !snapshot.analysisStatus().values().stream().allMatch(AnalysisStatus.READY::equals)
                 || snapshot.nodes().isEmpty()) {
             return false;
         }
         return true;
+    }
+
+    private boolean isComplete(Snapshot snapshot) {
+        return isAnalysisComplete(snapshot) && !snapshot.runtimeArchitecture().coverage().isEmpty()
+                && snapshot.runtimeArchitecture().environment().webApplicationType()
+                    != com.mapinboot.core.snapshot.runtime.RuntimeArchitecture.WebApplicationType.UNKNOWN
+                && snapshot.runtimeArchitecture().coverage().stream()
+                .noneMatch(item -> item.state() == com.mapinboot.core.snapshot.runtime.RuntimeArchitecture.CoverageState.PARTIAL
+                        || item.state() == com.mapinboot.core.snapshot.runtime.RuntimeArchitecture.CoverageState.UNKNOWN);
+    }
+
+    private String storageKey(Snapshot snapshot) {
+        return snapshot.graphFingerprint() + "|" + snapshot.runtimeArchitecture().architectureFingerprint();
     }
 
     private void logReadIssue(MapInBootException exception) {
@@ -304,7 +322,7 @@ public class LocalSnapshotStore {
         return new Snapshot(snapshotId, snapshot.capturedAt(), snapshot.schemaVersion(), snapshot.sdkVersion(),
                 snapshot.serviceId(), snapshot.instanceId(), snapshot.applicationVersion(), snapshot.graphFingerprint(),
                 snapshot.nodes(), snapshot.edges(), snapshot.evidence(), snapshot.findings(), snapshot.analysisStatus(),
-                snapshot.evidenceDisplayCodes());
+                snapshot.evidenceDisplayCodes(), snapshot.runtimeArchitecture());
     }
 
     private MapInBootException snapshotReadFailed(Throwable cause) {

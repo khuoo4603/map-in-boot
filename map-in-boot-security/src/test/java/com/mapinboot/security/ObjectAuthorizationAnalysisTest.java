@@ -167,8 +167,8 @@ class ObjectAuthorizationAnalysisTest {
                     .filter(finding -> "OBJECT_BINDING".equals(finding.ruleId()))
                     .count());
 
-            Snapshot snapshot = new SnapshotAssembler(List.of(new SecurityRuleEngine()), "1")
-                    .assemble(analysis, "fixture", "instance", "test");
+            Snapshot snapshot = new SnapshotAssembler(List.of(new SecurityRuleEngine()))
+                    .assemble(analysis, "fixture", "instance", "test", com.mapinboot.core.snapshot.runtime.RuntimeArchitectureAssembler.unknown());
             assertEquals(1, snapshot.findings().stream()
                     .filter(finding -> "OBJECT_BINDING".equals(finding.ruleId()))
                     .count());
