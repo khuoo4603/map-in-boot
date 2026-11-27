@@ -16,16 +16,25 @@ import com.mapinboot.starter.bootstrap.MapInBootBootstrap;
 import com.mapinboot.starter.snapshot.LocalSnapshotStore;
 import com.mapinboot.starter.snapshot.SnapshotAssembler;
 import com.mapinboot.starter.web.api.StatusController;
+import com.mapinboot.starter.web.access.WebAccessGuard;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Base64;
+import java.util.Enumeration;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.springframework.boot.SpringApplication;
@@ -34,7 +43,12 @@ import org.springframework.boot.autoconfigure.EnableAutoConfiguration;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.context.ConfigurableApplicationContext;
 import org.springframework.context.annotation.Bean;
+import org.springframework.core.env.Environment;
+import org.springframework.http.HttpMethod;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
+import org.springframework.mock.web.MockHttpServletRequest;
+import org.springframework.mock.web.MockHttpSession;
 import org.springframework.security.config.Customizer;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.core.userdetails.User;
@@ -43,12 +57,16 @@ import org.springframework.security.core.userdetails.UserDetailsService;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.FilterChainProxy;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.context.WebApplicationContext;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 import org.springframework.test.web.servlet.request.RequestPostProcessor;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
+import com.mapinboot.starter.autoconfigure.MapInBootProperties;
+import com.mapinboot.starter.web.auth.LoginController;
+import com.mapinboot.starter.web.auth.SdkLoginService;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
 
@@ -56,8 +74,13 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class WebAccessSmokeIntegrationTest {
@@ -151,6 +174,8 @@ class WebAccessSmokeIntegrationTest {
                         "mapinboot.web.enabled", "true",
                         "mapinboot.web.anonymous-preview", "true",
                         "mapinboot.snapshot.directory", directory.toString()))) {
+            assertTrue(WebAccessGuard.isSdkReadApiFilterPassThroughEnabled(
+                    context.getBean(MapInBootProperties.class), context.getEnvironment()));
             MapInBootBootstrap bootstrap = context.getBean(MapInBootBootstrap.class);
             await(() -> bootstrap.failureCode() != null || bootstrap.snapshot() != null);
             MockMvc mvc = MockMvcBuilders.webAppContextSetup((WebApplicationContext) context).build();
@@ -168,6 +193,613 @@ class WebAccessSmokeIntegrationTest {
     }
 
     @Test
+    void explicitHostModeKeepsUiPublicAndDisablesAnonymousPreview() throws Exception {
+        try (ConfigurableApplicationContext context = start(
+                AccessHost.class,
+                Map.of(
+                        "spring.profiles.active", "develop",
+                        "mapinboot.web.enabled", "true",
+                        "mapinboot.web.auth-mode", "HOST",
+                        "mapinboot.web.anonymous-preview", "true",
+                        "mapinboot.snapshot.directory", tempDirectory.resolve("explicit-host").toString()))) {
+            assertFalse(WebAccessGuard.isSdkReadApiFilterPassThroughEnabled(
+                    context.getBean(MapInBootProperties.class), context.getEnvironment()));
+            MockMvc mvc = MockMvcBuilders.webAppContextSetup((WebApplicationContext) context).build();
+
+            mvc.perform(get("/mapinboot/")).andExpect(status().isOk());
+            mvc.perform(get("/mapinboot/app.css")).andExpect(status().isOk());
+            mvc.perform(get("/mapinboot/api/status")).andExpect(status().isUnauthorized());
+            mvc.perform(get("/mapinboot/api/status").with(principal(false)))
+                    .andExpect(status().isForbidden());
+            mvc.perform(get("/mapinboot/api/status").with(principal(true)))
+                    .andExpect(status().isOk());
+        }
+    }
+
+    @Test
+    void noneModeAllowsFormalUiAndReadOnlyApisButKeepsDiagnosticsProtected() throws Exception {
+        try (ConfigurableApplicationContext context = start(
+                AccessHost.class,
+                Map.of(
+                        "spring.profiles.active", "develop",
+                        "mapinboot.web.enabled", "true",
+                        "mapinboot.web.auth-mode", "NONE",
+                        "mapinboot.snapshot.directory", tempDirectory.resolve("none-mode").toString()))) {
+            assertTrue(WebAccessGuard.isSdkReadApiFilterPassThroughEnabled(
+                    context.getBean(MapInBootProperties.class), context.getEnvironment()));
+            MapInBootBootstrap bootstrap = context.getBean(MapInBootBootstrap.class);
+            await(() -> bootstrap.persistedSnapshot() != null || bootstrap.failureCode() != null);
+            MockMvc mvc = MockMvcBuilders.webAppContextSetup((WebApplicationContext) context).build();
+
+            mvc.perform(get("/mapinboot/")).andExpect(status().isOk());
+            mvc.perform(get("/mapinboot/app.css")).andExpect(status().isOk());
+            mvc.perform(get("/mapinboot/api/status")).andExpect(status().isOk());
+            mvc.perform(get("/mapinboot/api/snapshot")).andExpect(status().isOk());
+            mvc.perform(get("/mapinboot/test")).andExpect(status().isUnauthorized());
+            mvc.perform(get("/mapinboot/test").with(principal(false)))
+                    .andExpect(status().isForbidden());
+            mvc.perform(get("/mapinboot/test").with(principal(true))).andExpect(status().isOk());
+            mvc.perform(get("/mapinboot/smoke.txt")).andExpect(status().isUnauthorized());
+        }
+    }
+
+    @Test
+    void authStatusIsAvailableInEveryModeAndCreatesSessionOnlyForPassword() throws Exception {
+        try (ConfigurableApplicationContext hostContext = start(
+                AccessHost.class,
+                Map.of(
+                        "mapinboot.web.enabled", "true",
+                        "mapinboot.web.auth-mode", "HOST",
+                        "mapinboot.snapshot.directory", tempDirectory.resolve("auth-status-host").toString()))) {
+            MockMvc mvc = MockMvcBuilders.webAppContextSetup((WebApplicationContext) hostContext).build();
+            MvcResult result = mvc.perform(get("/mapinboot/api/auth/status"))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.mode").value("HOST"))
+                    .andExpect(jsonPath("$.authenticated").value(false))
+                    .andExpect(header().string("Cache-Control", "no-store"))
+                    .andReturn();
+            assertNull(result.getRequest().getSession(false));
+            mvc.perform(get("/mapinboot/api/auth/status").with(principal(false)))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.authenticated").value(true));
+            mvc.perform(post("/mapinboot/api/auth/login").content("{}"))
+                    .andExpect(status().isNotFound());
+            mvc.perform(post("/mapinboot/api/auth/logout"))
+                    .andExpect(status().isNotFound());
+        }
+
+        try (ConfigurableApplicationContext noneContext = start(
+                AccessHost.class,
+                Map.of(
+                        "mapinboot.web.enabled", "true",
+                        "mapinboot.web.auth-mode", "NONE",
+                        "mapinboot.snapshot.directory", tempDirectory.resolve("auth-status-none").toString()))) {
+            MockMvc mvc = MockMvcBuilders.webAppContextSetup((WebApplicationContext) noneContext).build();
+            MvcResult result = mvc.perform(get("/mapinboot/api/auth/status"))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.mode").value("NONE"))
+                    .andExpect(jsonPath("$.authenticated").value(false))
+                    .andReturn();
+            assertNull(result.getRequest().getSession(false));
+            mvc.perform(post("/mapinboot/api/auth/login").content("{}"))
+                    .andExpect(status().isNotFound());
+            mvc.perform(post("/mapinboot/api/auth/logout"))
+                    .andExpect(status().isNotFound());
+        }
+
+        try (ConfigurableApplicationContext passwordContext = start(
+                AccessHost.class,
+                Map.of(
+                        "mapinboot.web.enabled", "true",
+                        "mapinboot.web.auth-mode", "PASSWORD",
+                        "mapinboot.web.login.password", "test-secret",
+                        "mapinboot.snapshot.directory", tempDirectory.resolve("auth-status-password").toString()))) {
+            MockMvc mvc = MockMvcBuilders.webAppContextSetup((WebApplicationContext) passwordContext).build();
+            MvcResult result = mvc.perform(get("/mapinboot/api/auth/status"))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.mode").value("PASSWORD"))
+                    .andExpect(jsonPath("$.authenticated").value(false))
+                    .andExpect(jsonPath("$.csrfToken").isNotEmpty())
+                    .andExpect(header().string("Cache-Control", "no-store"))
+                    .andReturn();
+            assertNotNull(result.getRequest().getSession(false));
+        }
+    }
+
+    @Test
+    void passwordLoginRotatesSessionAndLogoutPreservesHostAttributes() throws Exception {
+        try (ConfigurableApplicationContext context = start(
+                AccessHost.class,
+                Map.of(
+                        "mapinboot.web.enabled", "true",
+                        "mapinboot.web.auth-mode", "PASSWORD",
+                        "mapinboot.web.login.password", "correct horse battery",
+                        "mapinboot.snapshot.directory", tempDirectory.resolve("password-login").toString()))) {
+            MockMvc mvc = MockMvcBuilders.webAppContextSetup((WebApplicationContext) context).build();
+            MvcResult statusResult = mvc.perform(get("/mapinboot/api/auth/status"))
+                    .andExpect(status().isOk())
+                    .andReturn();
+            MockHttpSession session = (MockHttpSession) statusResult.getRequest().getSession(false);
+            String originalSessionId = session.getId();
+            session.setAttribute("host.attribute", "preserved");
+            String csrfToken = JsonMapper.builder().build()
+                    .readTree(statusResult.getResponse().getContentAsString())
+                    .get("csrfToken").asText();
+
+            MvcResult loginResult = mvc.perform(post("/mapinboot/api/auth/login")
+                            .session(session)
+                            .header("X-MapInBoot-CSRF", csrfToken)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content("{\"password\":\"correct horse battery\"}"))
+                    .andExpect(status().isOk())
+                    .andExpect(header().string("Cache-Control", "no-store"))
+                    .andExpect(content().string(org.hamcrest.Matchers.not(
+                            org.hamcrest.Matchers.containsString("correct horse battery"))))
+                    .andReturn();
+            assertNotEquals(originalSessionId, session.getId());
+            assertEquals("preserved", session.getAttribute("host.attribute"));
+
+            MvcResult authenticatedStatus = mvc.perform(get("/mapinboot/api/auth/status").session(session))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.authenticated").value(true))
+                    .andReturn();
+            String rotatedToken = JsonMapper.builder().build()
+                    .readTree(authenticatedStatus.getResponse().getContentAsString())
+                    .get("csrfToken").asText();
+            assertNotEquals(csrfToken, rotatedToken);
+
+            mvc.perform(post("/mapinboot/api/auth/logout")
+                            .session(session)
+                            .header("X-MapInBoot-CSRF", csrfToken))
+                    .andExpect(status().isForbidden());
+            mvc.perform(post("/mapinboot/api/auth/logout")
+                            .session(session)
+                            .header("X-MapInBoot-CSRF", rotatedToken))
+                    .andExpect(status().isNoContent())
+                    .andExpect(header().string("Cache-Control", "no-store"));
+            mvc.perform(get("/mapinboot/api/auth/status").session(session))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.authenticated").value(false));
+            assertEquals("preserved", session.getAttribute("host.attribute"));
+            assertNotNull(loginResult.getRequest().getSession(false));
+        }
+    }
+
+    @Test
+    void passwordLoginRejectsMalformedInputWrongPasswordAndMissingCsrf() throws Exception {
+        try (ConfigurableApplicationContext context = start(
+                AccessHost.class,
+                Map.of(
+                        "mapinboot.web.enabled", "true",
+                        "mapinboot.web.auth-mode", "PASSWORD",
+                        "mapinboot.web.login.password", "test-secret",
+                        "mapinboot.snapshot.directory", tempDirectory.resolve("password-errors").toString()))) {
+            MockMvc mvc = MockMvcBuilders.webAppContextSetup((WebApplicationContext) context).build();
+            MvcResult statusResult = mvc.perform(get("/mapinboot/api/auth/status"))
+                    .andExpect(status().isOk())
+                    .andReturn();
+            MockHttpSession session = (MockHttpSession) statusResult.getRequest().getSession(false);
+            String csrfToken = JsonMapper.builder().build()
+                    .readTree(statusResult.getResponse().getContentAsString())
+                    .get("csrfToken").asText();
+
+            mvc.perform(post("/mapinboot/api/auth/login")
+                            .session(session)
+                            .header("X-MapInBoot-CSRF", csrfToken)
+                            .contentType(MediaType.TEXT_PLAIN)
+                            .content("{\"password\":\"test-secret\"}"))
+                    .andExpect(status().isBadRequest());
+            mvc.perform(post("/mapinboot/api/auth/login")
+                            .session(session)
+                            .header("X-MapInBoot-CSRF", csrfToken)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content("{\"username\":\"admin\"}"))
+                    .andExpect(status().isBadRequest());
+            mvc.perform(post("/mapinboot/api/auth/login")
+                            .session(session)
+                            .header("X-MapInBoot-CSRF", csrfToken)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content("{\"password\":"))
+                    .andExpect(status().isBadRequest());
+            mvc.perform(post("/mapinboot/api/auth/login")
+                            .session(session)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content("{\"password\":\"wrong\"}"))
+                    .andExpect(status().isForbidden());
+            mvc.perform(post("/mapinboot/api/auth/login")
+                            .session(session)
+                            .header("X-MapInBoot-CSRF", csrfToken)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content("{\"password\":\"wrong\"}"))
+                    .andExpect(status().isUnauthorized());
+            mvc.perform(get("/mapinboot/api/auth/status").session(session))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.authenticated").value(false));
+        }
+    }
+
+    @Test
+    void passwordSessionExpiresAfterConfiguredAbsoluteTimeout() throws Exception {
+        try (ConfigurableApplicationContext context = start(
+                AccessHost.class,
+                Map.of(
+                        "mapinboot.web.enabled", "true",
+                        "mapinboot.web.auth-mode", "PASSWORD",
+                        "mapinboot.web.login.password", "test-secret",
+                        "mapinboot.web.login.session-timeout", "300ms",
+                        "mapinboot.snapshot.directory", tempDirectory.resolve("password-expiry").toString()))) {
+            MockMvc mvc = MockMvcBuilders.webAppContextSetup((WebApplicationContext) context).build();
+            MvcResult statusResult = mvc.perform(get("/mapinboot/api/auth/status"))
+                    .andExpect(status().isOk())
+                    .andReturn();
+            MockHttpSession session = (MockHttpSession) statusResult.getRequest().getSession(false);
+            String csrfToken = JsonMapper.builder().build()
+                    .readTree(statusResult.getResponse().getContentAsString())
+                    .get("csrfToken").asText();
+            mvc.perform(post("/mapinboot/api/auth/login")
+                            .session(session)
+                            .header("X-MapInBoot-CSRF", csrfToken)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content("{\"password\":\"test-secret\"}"))
+                    .andExpect(status().isOk());
+            MvcResult authenticatedStatus = mvc.perform(get("/mapinboot/api/auth/status").session(session))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.authenticated").value(true))
+                    .andReturn();
+            String authenticatedCsrfToken = JsonMapper.builder().build()
+                    .readTree(authenticatedStatus.getResponse().getContentAsString())
+                    .get("csrfToken").asText();
+
+            Thread.sleep(400);
+
+            mvc.perform(post("/mapinboot/api/auth/logout")
+                            .session(session)
+                            .header("X-MapInBoot-CSRF", authenticatedCsrfToken))
+                    .andExpect(status().isForbidden());
+            MvcResult expiredStatus = mvc.perform(get("/mapinboot/api/auth/status").session(session))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.authenticated").value(false))
+                    .andReturn();
+            assertNotNull(JsonMapper.builder().build()
+                    .readTree(expiredStatus.getResponse().getContentAsString())
+                    .get("csrfToken").asText());
+            mvc.perform(get("/mapinboot/").session(session)).andExpect(status().isUnauthorized());
+        }
+    }
+
+    @Test
+    void passwordCsrfTokenIssuanceIsAtomicWithinSession() throws Exception {
+        try (ConfigurableApplicationContext context = start(
+                AccessHost.class,
+                Map.of(
+                        "mapinboot.web.enabled", "true",
+                        "mapinboot.web.auth-mode", "PASSWORD",
+                        "mapinboot.web.login.password", "test-secret",
+                        "mapinboot.snapshot.directory", tempDirectory.resolve("password-csrf-race").toString()))) {
+            SdkLoginService loginService = context.getBean(SdkLoginService.class);
+            CoordinatedCsrfSession session = new CoordinatedCsrfSession();
+            var firstRequest = new MockHttpServletRequest();
+            firstRequest.setSession(session);
+            var secondRequest = new MockHttpServletRequest();
+            secondRequest.setSession(session);
+
+            ExecutorService executor = Executors.newFixedThreadPool(2);
+            try {
+                Future<String> first = executor.submit(() -> loginService.csrfToken(firstRequest));
+                Future<String> second = executor.submit(() -> loginService.csrfToken(secondRequest));
+                assertEquals(first.get(5, TimeUnit.SECONDS), second.get(5, TimeUnit.SECONDS));
+            } finally {
+                executor.shutdownNow();
+            }
+        }
+    }
+
+    @Test
+    void authStatusStringRepresentationDoesNotContainCsrfToken() {
+        LoginController.AuthStatus status = new LoginController.AuthStatus(
+                com.mapinboot.starter.autoconfigure.WebAuthMode.PASSWORD,
+                false,
+                "sensitive-csrf-token");
+
+        assertFalse(status.toString().contains("sensitive-csrf-token"));
+    }
+
+    @Test
+    void passwordModeProtectsMvcMappedAliasesFromHostOnlyAccess() throws Exception {
+        try (ConfigurableApplicationContext context = start(
+                AccessHost.class,
+                Map.of(
+                        "spring.profiles.active", "develop",
+                        "mapinboot.web.enabled", "true",
+                        "mapinboot.web.auth-mode", "PASSWORD",
+                        "mapinboot.web.login.password", "test-secret",
+                        "mapinboot.snapshot.directory", tempDirectory.resolve("password-mapped-aliases").toString()))) {
+            MockMvc mvc = MockMvcBuilders.webAppContextSetup((WebApplicationContext) context).build();
+
+            mvc.perform(get("/mapinboot/api/status;version=1").with(principal(true)))
+                    .andExpect(status().isBadRequest());
+            mvc.perform(get("/mapinboot/test;version=1").with(principal(true)))
+                    .andExpect(status().isBadRequest());
+            mvc.perform(get("/mapinboot//app.js").with(principal(true)))
+                    .andExpect(status().isUnauthorized());
+        }
+    }
+
+    @Test
+    void passwordAuthExceptionsUseExactContextAwarePaths() throws Exception {
+        try (ConfigurableApplicationContext context = start(
+                AccessHost.class,
+                Map.of(
+                        "mapinboot.web.enabled", "true",
+                        "mapinboot.web.auth-mode", "PASSWORD",
+                        "mapinboot.web.login.password", "test-secret",
+                        "mapinboot.snapshot.directory", tempDirectory.resolve("password-context-path").toString()))) {
+            MockMvc mvc = MockMvcBuilders.webAppContextSetup((WebApplicationContext) context).build();
+            MvcResult statusResult = mvc.perform(get("/tenant/mapinboot/api/auth/status").contextPath("/tenant"))
+                    .andExpect(status().isOk())
+                    .andReturn();
+            MockHttpSession session = (MockHttpSession) statusResult.getRequest().getSession(false);
+            String csrfToken = JsonMapper.builder().build()
+                    .readTree(statusResult.getResponse().getContentAsString())
+                    .get("csrfToken").asText();
+            mvc.perform(post("/tenant/mapinboot/api/auth/login")
+                            .contextPath("/tenant")
+                            .session(session)
+                            .header("X-MapInBoot-CSRF", csrfToken)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content("{\"password\":\"test-secret\"}"))
+                    .andExpect(status().isOk());
+            mvc.perform(get("/tenant/mapinboot/").contextPath("/tenant").session(session))
+                    .andExpect(status().isOk());
+            mvc.perform(get("/tenant/mapinboot/api/status").contextPath("/tenant").session(session))
+                    .andExpect(status().isOk());
+
+            MapInBootProperties properties = context.getBean(MapInBootProperties.class);
+            MockHttpServletRequest request = new MockHttpServletRequest();
+            request.setContextPath("/tenant");
+            request.setRequestURI("/tenant/mapinboot/api/auth/status");
+            request.setMethod("POST");
+            request.setSession(session);
+            assertEquals(HttpStatus.UNAUTHORIZED,
+                    WebAccessGuard.deniedStatus(request, properties, context.getEnvironment()));
+            request.setMethod("GET");
+            request.setRequestURI("/tenant/mapinboot/api/auth/login");
+            assertEquals(HttpStatus.UNAUTHORIZED,
+                    WebAccessGuard.deniedStatus(request, properties, context.getEnvironment()));
+            request.setMethod("POST");
+            request.setRequestURI("/tenant/mapinboot/api/auth/login/");
+            assertEquals(HttpStatus.UNAUTHORIZED,
+                    WebAccessGuard.deniedStatus(request, properties, context.getEnvironment()));
+            request.setMethod("GET");
+            request.setRequestURI("/tenant/mapinboot/api/auth/status");
+            assertNull(WebAccessGuard.deniedStatus(request, properties, context.getEnvironment()));
+        }
+    }
+
+    @Test
+    void passwordLoginFailsClosedWhenSecretIsBlankWithoutStoppingSdk() throws Exception {
+        try (ConfigurableApplicationContext context = start(
+                AccessHost.class,
+                Map.of(
+                        "mapinboot.web.enabled", "true",
+                        "mapinboot.web.auth-mode", "PASSWORD",
+                        "mapinboot.web.login.password", "   ",
+                        "mapinboot.snapshot.directory", tempDirectory.resolve("password-missing-secret").toString()))) {
+            MapInBootBootstrap bootstrap = context.getBean(MapInBootBootstrap.class);
+            await(() -> bootstrap.persistedSnapshot() != null || bootstrap.failureCode() != null);
+            MockMvc mvc = MockMvcBuilders.webAppContextSetup((WebApplicationContext) context).build();
+            MvcResult statusResult = mvc.perform(get("/mapinboot/api/auth/status"))
+                    .andExpect(status().isOk())
+                    .andReturn();
+            String csrfToken = JsonMapper.builder().build()
+                    .readTree(statusResult.getResponse().getContentAsString())
+                    .get("csrfToken").asText();
+            mvc.perform(post("/mapinboot/api/auth/login")
+                            .session((MockHttpSession) statusResult.getRequest().getSession(false))
+                            .header("X-MapInBoot-CSRF", csrfToken)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content("{\"password\":\"any\"}"))
+                    .andExpect(status().isServiceUnavailable());
+            assertNotNull(bootstrap.persistedSnapshot());
+        }
+    }
+
+    @Test
+    void passwordLoginLimitSurvivesNewSessionsAndIgnoresForwardedAddress() throws Exception {
+        try (ConfigurableApplicationContext context = start(
+                AccessHost.class,
+                Map.of(
+                        "mapinboot.web.enabled", "true",
+                        "mapinboot.web.auth-mode", "PASSWORD",
+                        "mapinboot.web.login.password", "test-secret",
+                        "mapinboot.snapshot.directory", tempDirectory.resolve("password-limit").toString()))) {
+            MockMvc mvc = MockMvcBuilders.webAppContextSetup((WebApplicationContext) context).build();
+            for (int attempt = 0; attempt < 5; attempt++) {
+                MvcResult statusResult = mvc.perform(get("/mapinboot/api/auth/status")
+                                .with(request -> {
+                                    request.setRemoteAddr("198.51.100.23");
+                                    return request;
+                                }))
+                        .andExpect(status().isOk())
+                        .andReturn();
+                MockHttpSession session = (MockHttpSession) statusResult.getRequest().getSession(false);
+                String csrfToken = JsonMapper.builder().build()
+                        .readTree(statusResult.getResponse().getContentAsString())
+                        .get("csrfToken").asText();
+                mvc.perform(post("/mapinboot/api/auth/login")
+                                .session(session)
+                                .header("X-MapInBoot-CSRF", csrfToken)
+                                .header("X-Forwarded-For", "203.0.113." + (attempt + 1))
+                                .with(request -> {
+                                    request.setRemoteAddr("198.51.100.23");
+                                    return request;
+                                })
+                                .contentType(MediaType.APPLICATION_JSON)
+                                .content("{\"password\":\"wrong\"}"))
+                        .andExpect(status().isUnauthorized());
+            }
+
+            MvcResult newStatus = mvc.perform(get("/mapinboot/api/auth/status")
+                            .with(request -> {
+                                request.setRemoteAddr("198.51.100.23");
+                                return request;
+                            }))
+                    .andExpect(status().isOk())
+                    .andReturn();
+            String csrfToken = JsonMapper.builder().build()
+                    .readTree(newStatus.getResponse().getContentAsString())
+                    .get("csrfToken").asText();
+            mvc.perform(post("/mapinboot/api/auth/login")
+                            .session((MockHttpSession) newStatus.getRequest().getSession(false))
+                            .header("X-MapInBoot-CSRF", csrfToken)
+                            .header("X-Forwarded-For", "192.0.2.99")
+                            .with(request -> {
+                                request.setRemoteAddr("198.51.100.23");
+                                return request;
+                            })
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content("{\"password\":\"wrong\"}"))
+                    .andExpect(status().isTooManyRequests());
+        }
+    }
+
+    @Test
+    void passwordModeProtectsSdkResourcesAndKeepsDiagnosticsHostProtected() throws Exception {
+        try (ConfigurableApplicationContext context = start(
+                AccessHost.class,
+                Map.of(
+                        "spring.profiles.active", "develop",
+                        "mapinboot.web.enabled", "true",
+                        "mapinboot.web.auth-mode", "PASSWORD",
+                        "mapinboot.web.anonymous-preview", "true",
+                        "mapinboot.web.login.password", "test-secret",
+                        "mapinboot.snapshot.directory", tempDirectory.resolve("password-policy").toString()))) {
+            MapInBootBootstrap bootstrap = context.getBean(MapInBootBootstrap.class);
+            await(() -> bootstrap.persistedSnapshot() != null || bootstrap.failureCode() != null);
+            MockMvc mvc = MockMvcBuilders.webAppContextSetup((WebApplicationContext) context).build();
+
+            mvc.perform(get("/mapinboot/")).andExpect(status().isUnauthorized());
+            mvc.perform(get("/mapinboot/app.js")).andExpect(status().isUnauthorized());
+            mvc.perform(get("/mapinboot/api/status")).andExpect(status().isUnauthorized());
+            mvc.perform(get("/mapinboot/api/snapshot").with(principal(true)))
+                    .andExpect(status().isUnauthorized());
+
+            MvcResult statusResult = mvc.perform(get("/mapinboot/api/auth/status"))
+                    .andExpect(status().isOk())
+                    .andReturn();
+            MockHttpSession session = (MockHttpSession) statusResult.getRequest().getSession(false);
+            String csrfToken = JsonMapper.builder().build()
+                    .readTree(statusResult.getResponse().getContentAsString())
+                    .get("csrfToken").asText();
+            mvc.perform(post("/mapinboot/api/auth/login")
+                            .session(session)
+                            .header("X-MapInBoot-CSRF", csrfToken)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content("{\"password\":\"test-secret\"}"))
+                    .andExpect(status().isOk());
+
+            mvc.perform(get("/mapinboot/").session(session))
+                    .andExpect(status().isOk())
+                    .andExpect(header().string("Cache-Control", "no-store"));
+            mvc.perform(get("/mapinboot/app.js").session(session))
+                    .andExpect(status().isOk())
+                    .andExpect(header().string("Cache-Control", "no-store"));
+            mvc.perform(get("/mapinboot/api/status").session(session))
+                    .andExpect(status().isOk())
+                    .andExpect(header().string("Cache-Control", "no-store"));
+            mvc.perform(get("/mapinboot/api/snapshot").session(session))
+                    .andExpect(status().isOk())
+                    .andExpect(header().string("Cache-Control", "no-store"));
+
+            mvc.perform(get("/mapinboot/test").session(session)).andExpect(status().isUnauthorized());
+            mvc.perform(get("/mapinboot/test").session(session).with(principal(false)))
+                    .andExpect(status().isForbidden());
+            mvc.perform(get("/mapinboot/test").session(session).with(principal(true)))
+                    .andExpect(status().isOk())
+                    .andExpect(header().string("Cache-Control", "no-store"));
+            mvc.perform(get("/mapinboot/test/api/report").session(session).with(principal(true)))
+                    .andExpect(status().isOk())
+                    .andExpect(header().string("Cache-Control", "no-store"));
+            mvc.perform(get("/mapinboot/test/assets/development-diagnostic.css")
+                            .session(session)
+                            .with(principal(true)))
+                    .andExpect(status().isOk())
+                    .andExpect(header().string("Cache-Control", "no-store"));
+            mvc.perform(get("/mapinboot/smoke.txt").session(session)).andExpect(status().isUnauthorized());
+            mvc.perform(get("/mapinboot/smoke.txt").session(session).with(principal(true)))
+                    .andExpect(status().isOk());
+        }
+    }
+
+    @Test
+    void passwordModeWithBlankSecretFailsClosedWithoutHostFallback() throws Exception {
+        try (ConfigurableApplicationContext context = start(
+                AccessHost.class,
+                Map.of(
+                        "spring.profiles.active", "develop",
+                        "mapinboot.web.enabled", "true",
+                        "mapinboot.web.auth-mode", "PASSWORD",
+                        "mapinboot.web.login.password", "  ",
+                        "mapinboot.snapshot.directory", tempDirectory.resolve("password-blank-policy").toString()))) {
+            MapInBootBootstrap bootstrap = context.getBean(MapInBootBootstrap.class);
+            await(() -> bootstrap.persistedSnapshot() != null || bootstrap.failureCode() != null);
+            MockMvc mvc = MockMvcBuilders.webAppContextSetup((WebApplicationContext) context).build();
+
+            mvc.perform(get("/mapinboot/").with(principal(true))).andExpect(status().isServiceUnavailable());
+            mvc.perform(get("/mapinboot/app.js").with(principal(true))).andExpect(status().isServiceUnavailable());
+            mvc.perform(get("/mapinboot/api/status").with(principal(true)))
+                    .andExpect(status().isServiceUnavailable());
+            mvc.perform(get("/mapinboot/test").with(principal(true)))
+                    .andExpect(status().isServiceUnavailable());
+            assertNotNull(bootstrap.persistedSnapshot());
+        }
+    }
+
+    @Test
+    void noneModeReadResponsesAreNotCachedAndSdkDisableOverridesMode() throws Exception {
+        try (ConfigurableApplicationContext context = start(
+                AccessHost.class,
+                Map.of(
+                        "spring.profiles.active", "develop",
+                        "mapinboot.web.enabled", "true",
+                        "mapinboot.web.auth-mode", "NONE",
+                        "mapinboot.snapshot.directory", tempDirectory.resolve("none-no-store").toString()))) {
+            MapInBootBootstrap bootstrap = context.getBean(MapInBootBootstrap.class);
+            await(() -> bootstrap.persistedSnapshot() != null || bootstrap.failureCode() != null);
+            MockMvc mvc = MockMvcBuilders.webAppContextSetup((WebApplicationContext) context).build();
+
+            mvc.perform(get("/mapinboot/api/status"))
+                    .andExpect(status().isOk())
+                    .andExpect(header().string("Cache-Control", "no-store"));
+            mvc.perform(get("/mapinboot/api/snapshot"))
+                    .andExpect(status().isOk())
+                    .andExpect(header().string("Cache-Control", "no-store"));
+            mvc.perform(get("/mapinboot/test/api/report").with(principal(true)))
+                    .andExpect(status().isOk())
+                    .andExpect(header().string("Cache-Control", "no-store"));
+            mvc.perform(get("/mapinboot/smoke.txt")).andExpect(status().isUnauthorized());
+            mvc.perform(post("/mapinboot/api/snapshot").with(principal(true)))
+                    .andExpect(status().isMethodNotAllowed());
+        }
+
+        try (ConfigurableApplicationContext context = start(
+                AccessHost.class,
+                Map.of(
+                        "mapinboot.enabled", "false",
+                        "mapinboot.web.enabled", "true",
+                        "mapinboot.web.auth-mode", "NONE",
+                        "mapinboot.snapshot.directory", tempDirectory.resolve("sdk-disabled").toString()))) {
+            assertFalse(WebAccessGuard.isSdkReadApiFilterPassThroughEnabled(
+                    context.getBean(MapInBootProperties.class), context.getEnvironment()));
+            MockMvc mvc = MockMvcBuilders.webAppContextSetup((WebApplicationContext) context).build();
+
+            mvc.perform(get("/mapinboot/").with(principal(true))).andExpect(status().isNotFound());
+            mvc.perform(get("/mapinboot/api/auth/status")).andExpect(status().isNotFound());
+            mvc.perform(get("/mapinboot/api/status").with(principal(true))).andExpect(status().isNotFound());
+        }
+    }
+
+    @Test
     void anonymousPreviewFlagDoesNotOpenApiOutsideDevelopProfile() throws Exception {
         try (ConfigurableApplicationContext context = start(
                 AccessHost.class,
@@ -176,6 +808,8 @@ class WebAccessSmokeIntegrationTest {
                         "mapinboot.web.enabled", "true",
                         "mapinboot.web.anonymous-preview", "true",
                         "mapinboot.snapshot.directory", tempDirectory.resolve("production-preview").toString()))) {
+            assertFalse(WebAccessGuard.isSdkReadApiFilterPassThroughEnabled(
+                    context.getBean(MapInBootProperties.class), context.getEnvironment()));
             MockMvc mvc = MockMvcBuilders.webAppContextSetup((WebApplicationContext) context).build();
 
             mvc.perform(get("/mapinboot/")).andExpect(status().isOk());
@@ -423,7 +1057,203 @@ class WebAccessSmokeIntegrationTest {
             mvc.perform(get("/mapinboot/smoke.txt").with(basic("admin", "password")))
                     .andExpect(status().isOk());
             mvc.perform(post("/mapinboot/api/snapshot").with(basic("admin", "password")))
+                    .andExpect(status().isForbidden());
+        }
+    }
+
+    @Test
+    void passwordSdkSessionPreservesHostSecurityAndHostCsrfInActualFilterChain() throws Exception {
+        Path directory = tempDirectory.resolve("password-security-chain");
+        try (ConfigurableApplicationContext context = start(
+                SecurityHost.class,
+                Map.of(
+                        "spring.profiles.active", "develop",
+                        "mapinboot.web.enabled", "true",
+                        "mapinboot.web.auth-mode", "PASSWORD",
+                        "mapinboot.web.login.password", "sdk-password-secret",
+                        "mapinboot.snapshot.directory", directory.toString()))) {
+            MapInBootBootstrap bootstrap = context.getBean(MapInBootBootstrap.class);
+            await(() -> bootstrap.persistedSnapshot() != null || bootstrap.failureCode() != null);
+            MockMvc mvc = MockMvcBuilders.webAppContextSetup((WebApplicationContext) context)
+                    .addFilters(context.getBean(FilterChainProxy.class))
+                    .build();
+            var collectionBefore = bootstrap.collectionReport();
+            var analysisBefore = bootstrap.analysisReport();
+            Snapshot currentBefore = bootstrap.snapshot();
+            Snapshot persistedBefore = bootstrap.persistedSnapshot();
+            long filesBefore = managedFileCount(directory);
+
+            mvc.perform(get("/mapinboot/api/auth/status"))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.authenticated").value(false));
+            MvcResult loginPage = mvc.perform(get("/login"))
+                    .andExpect(status().isOk())
+                    .andReturn();
+            MockHttpSession hostSession = (MockHttpSession) loginPage.getRequest().getSession(false);
+            String loginCsrfToken = hostCsrfToken(loginPage);
+            MvcResult hostLogin = mvc.perform(post("/login")
+                            .session(hostSession)
+                            .param("_csrf", loginCsrfToken)
+                            .param("username", "admin")
+                            .param("password", "password"))
+                    .andExpect(status().is3xxRedirection())
+                    .andReturn();
+            hostSession = (MockHttpSession) hostLogin.getRequest().getSession(false);
+            MockHttpSession identifiedHostSession = new MockHttpSession(
+                    hostSession.getServletContext(), "host-session-id-auth-01-test-value");
+            Enumeration<String> hostAttributes = hostSession.getAttributeNames();
+            while (hostAttributes.hasMoreElements()) {
+                String attributeName = hostAttributes.nextElement();
+                identifiedHostSession.setAttribute(attributeName, hostSession.getAttribute(attributeName));
+            }
+            hostSession = identifiedHostSession;
+            assertNotNull(hostSession);
+            hostSession.setAttribute("host.integration.attribute", "preserved");
+            String originalSessionId = hostSession.getId();
+            mvc.perform(get("/host").session(hostSession)).andExpect(status().isOk());
+
+            MvcResult sdkStatus = mvc.perform(get("/mapinboot/api/auth/status").session(hostSession))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.authenticated").value(false))
+                    .andReturn();
+            String csrfToken = JsonMapper.builder().build()
+                    .readTree(sdkStatus.getResponse().getContentAsString())
+                    .get("csrfToken").asText();
+            MvcResult sdkLogin = mvc.perform(post("/mapinboot/api/auth/login")
+                            .session(hostSession)
+                            .header("X-MapInBoot-CSRF", csrfToken)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content("{\"password\":\"sdk-password-secret\"}"))
+                    .andReturn();
+            assertEquals(200, sdkLogin.getResponse().getStatus());
+
+            assertNotEquals(originalSessionId, hostSession.getId());
+            assertEquals("preserved", hostSession.getAttribute("host.integration.attribute"));
+            mvc.perform(get("/host").session(hostSession)).andExpect(status().isOk());
+            mvc.perform(get("/mapinboot/api/status").session(hostSession))
+                    .andExpect(status().isOk())
+                    .andExpect(header().string("Cache-Control", "no-store"));
+            mvc.perform(get("/mapinboot/test").session(hostSession)).andExpect(status().isOk());
+
+            String businessCsrfToken = hostCsrfToken(
+                    mvc.perform(get("/login").session(hostSession)).andExpect(status().isOk()).andReturn());
+            mvc.perform(post("/host/update").session(hostSession)).andExpect(status().isForbidden());
+            mvc.perform(post("/host/update")
+                            .session(hostSession)
+                            .param("_csrf", businessCsrfToken))
+                    .andExpect(status().isOk());
+            mvc.perform(post("/mapinboot/api/auth/status").session(hostSession))
+                    .andExpect(status().isForbidden());
+            mvc.perform(post("/mapinboot/api/auth/login/extra").session(hostSession))
+                    .andExpect(status().isForbidden());
+            mvc.perform(post("/mapinboot/api/snapshot").session(hostSession))
+                    .andExpect(status().isForbidden());
+            mvc.perform(post("/mapinboot/api/snapshot")
+                            .session(hostSession)
+                            .param("_csrf", businessCsrfToken))
                     .andExpect(status().isMethodNotAllowed());
+
+            MvcResult anonymousStatus = mvc.perform(get("/mapinboot/api/auth/status"))
+                    .andExpect(status().isOk())
+                    .andReturn();
+            MockHttpSession sdkOnlySession = (MockHttpSession) anonymousStatus.getRequest().getSession(false);
+            String anonymousCsrfToken = JsonMapper.builder().build()
+                    .readTree(anonymousStatus.getResponse().getContentAsString())
+                    .get("csrfToken").asText();
+            mvc.perform(post("/mapinboot/api/auth/login")
+                            .session(sdkOnlySession)
+                            .header("X-MapInBoot-CSRF", anonymousCsrfToken)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content("{\"password\":\"sdk-password-secret\"}"))
+                    .andExpect(status().isOk());
+            mvc.perform(get("/mapinboot/api/status").session(sdkOnlySession)).andExpect(status().isOk());
+            mvc.perform(get("/host").session(sdkOnlySession)).andExpect(status().isUnauthorized());
+            String sdkOnlyHostCsrfToken = hostCsrfToken(
+                    mvc.perform(get("/login").session(sdkOnlySession)).andExpect(status().isOk()).andReturn());
+            mvc.perform(post("/host/update").session(sdkOnlySession)
+                            .param("_csrf", sdkOnlyHostCsrfToken))
+                    .andExpect(status().isUnauthorized());
+
+            MvcResult hostSdkStatus = mvc.perform(get("/mapinboot/api/auth/status").session(hostSession))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.authenticated").value(true))
+                    .andReturn();
+            String logoutToken = JsonMapper.builder().build()
+                    .readTree(hostSdkStatus.getResponse().getContentAsString())
+                    .get("csrfToken").asText();
+            mvc.perform(post("/mapinboot/api/auth/logout")
+                            .session(hostSession)
+                            .header("X-MapInBoot-CSRF", logoutToken))
+                    .andExpect(status().isNoContent());
+            mvc.perform(get("/host").session(hostSession)).andExpect(status().isOk());
+            mvc.perform(get("/mapinboot/api/status").session(hostSession)).andExpect(status().isUnauthorized());
+            assertEquals("preserved", hostSession.getAttribute("host.integration.attribute"));
+
+            assertTrue(bootstrap.collectionReport().facts().stream().anyMatch(fact ->
+                    "POST".equals(fact.attributes().get("httpMethod"))
+                            && "/mapinboot/api/auth/login".equals(fact.attributes().get("path"))));
+            String collected = bootstrap.collectionReport().facts().toString()
+                    + bootstrap.collectionReport().evidence()
+                    + bootstrap.snapshot()
+                    + bootstrap.persistedSnapshot();
+            assertFalse(collected.contains("sdk-password-secret"));
+            assertFalse(collected.contains(originalSessionId));
+            assertFalse(collected.contains(csrfToken));
+            assertFalse(collected.contains(logoutToken));
+            assertEquals(collectionBefore, bootstrap.collectionReport());
+            assertEquals(analysisBefore, bootstrap.analysisReport());
+            assertEquals(currentBefore, bootstrap.snapshot());
+            assertEquals(persistedBefore, bootstrap.persistedSnapshot());
+            assertEquals(filesBefore, managedFileCount(directory));
+        }
+    }
+
+    @Test
+    void sdkSessionExpiryPreservesHostPrincipalAndRole() throws Exception {
+        try (ConfigurableApplicationContext context = start(
+                SecurityHost.class,
+                Map.of(
+                        "spring.profiles.active", "develop",
+                        "mapinboot.web.enabled", "true",
+                        "mapinboot.web.auth-mode", "PASSWORD",
+                        "mapinboot.web.login.password", "sdk-password-secret",
+                        "mapinboot.web.login.session-timeout", "300ms",
+                        "mapinboot.snapshot.directory", tempDirectory.resolve("password-expiry-host").toString()))) {
+            MockMvc mvc = MockMvcBuilders.webAppContextSetup((WebApplicationContext) context)
+                    .addFilters(context.getBean(FilterChainProxy.class))
+                    .build();
+            MvcResult loginPage = mvc.perform(get("/login")).andExpect(status().isOk()).andReturn();
+            MockHttpSession hostSession = (MockHttpSession) loginPage.getRequest().getSession(false);
+            String hostCsrfToken = hostCsrfToken(loginPage);
+            MvcResult hostLogin = mvc.perform(post("/login")
+                            .session(hostSession)
+                            .param("_csrf", hostCsrfToken)
+                            .param("username", "admin")
+                            .param("password", "password"))
+                    .andExpect(status().is3xxRedirection())
+                    .andReturn();
+            hostSession = (MockHttpSession) hostLogin.getRequest().getSession(false);
+
+            MvcResult sdkStatus = mvc.perform(get("/mapinboot/api/auth/status").session(hostSession))
+                    .andExpect(status().isOk())
+                    .andReturn();
+            String sdkCsrfToken = JsonMapper.builder().build()
+                    .readTree(sdkStatus.getResponse().getContentAsString())
+                    .get("csrfToken").asText();
+            mvc.perform(post("/mapinboot/api/auth/login")
+                            .session(hostSession)
+                            .header("X-MapInBoot-CSRF", sdkCsrfToken)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content("{\"password\":\"sdk-password-secret\"}"))
+                    .andExpect(status().isOk());
+
+            Thread.sleep(400);
+
+            mvc.perform(get("/host").session(hostSession)).andExpect(status().isOk());
+            mvc.perform(get("/mapinboot/api/status").session(hostSession)).andExpect(status().isUnauthorized());
+            mvc.perform(get("/mapinboot/api/auth/status").session(hostSession))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.authenticated").value(false));
         }
     }
 
@@ -491,6 +1321,15 @@ class WebAccessSmokeIntegrationTest {
         };
     }
 
+    private String hostCsrfToken(MvcResult loginPage) throws Exception {
+        Matcher matcher = Pattern.compile("name=\"_csrf\"[^>]*value=\"([^\"]+)\"")
+                .matcher(loginPage.getResponse().getContentAsString());
+        if (!matcher.find()) {
+            throw new AssertionError("호스트 로그인 화면에서 CSRF 입력값을 찾지 못했습니다.");
+        }
+        return matcher.group(1);
+    }
+
     private ConfigurableApplicationContext start(Class<?> source, Map<String, Object> properties) {
         SpringApplication application = new SpringApplication(source);
         application.setWebApplicationType(WebApplicationType.SERVLET);
@@ -553,6 +1392,33 @@ class WebAccessSmokeIntegrationTest {
         boolean done();
     }
 
+    private static final class CoordinatedCsrfSession extends MockHttpSession {
+        private static final String CSRF_TOKEN = "mapinboot.sdk.auth.csrf-token";
+        private static final String CSRF_EXPIRES_AT = "mapinboot.sdk.auth.csrf-expires-at";
+
+        private final CountDownLatch tokenReads = new CountDownLatch(2);
+        private final CountDownLatch expiryReads = new CountDownLatch(2);
+
+        @Override
+        public Object getAttribute(String name) {
+            Object value = super.getAttribute(name);
+            CountDownLatch latch = CSRF_TOKEN.equals(name) ? tokenReads
+                    : CSRF_EXPIRES_AT.equals(name) ? expiryReads : null;
+            if (value == null && latch != null && !Thread.holdsLock(this)) {
+                latch.countDown();
+                try {
+                    if (!latch.await(2, TimeUnit.SECONDS)) {
+                        throw new AssertionError("동시 CSRF 발급 요청이 대기 시간 안에 도달하지 못했습니다.");
+                    }
+                } catch (InterruptedException exception) {
+                    Thread.currentThread().interrupt();
+                    throw new AssertionError("동시 CSRF 발급 요청이 중단되었습니다.", exception);
+                }
+            }
+            return value;
+        }
+    }
+
     @SpringBootApplication(scanBasePackages = "com.mapinboot.testhost")
     @EnableAutoConfiguration
     static class AccessHost {
@@ -586,12 +1452,32 @@ class WebAccessSmokeIntegrationTest {
     @EnableAutoConfiguration
     static class SecurityHost {
         @Bean
-        SecurityFilterChain securityFilterChain(HttpSecurity http) throws Exception {
+        SecurityFilterChain securityFilterChain(
+                HttpSecurity http, MapInBootProperties properties, Environment environment) throws Exception {
+            Set<String> sdkAuthPosts = Set.of(WebAccessGuard.authPostPaths());
+            boolean sdkReadApiPassThrough = WebAccessGuard.isSdkReadApiFilterPassThroughEnabled(properties, environment);
             return http
-                    .csrf(csrf -> csrf.disable())
-                    .authorizeHttpRequests(authorize -> authorize.anyRequest().permitAll())
+                    .csrf(csrf -> csrf.ignoringRequestMatchers(request ->
+                            "POST".equalsIgnoreCase(request.getMethod())
+                                    && sdkAuthPosts.contains(applicationPath(request.getRequestURI(), request.getContextPath()))))
+                    .authorizeHttpRequests(authorize -> {
+                        authorize.requestMatchers(HttpMethod.GET, WebAccessGuard.publicUiPaths()).permitAll();
+                        authorize.requestMatchers(HttpMethod.GET, WebAccessGuard.authStatusPaths()).permitAll();
+                        authorize.requestMatchers(HttpMethod.POST, WebAccessGuard.authPostPaths()).permitAll();
+                        if (sdkReadApiPassThrough) {
+                            authorize.requestMatchers(HttpMethod.GET, WebAccessGuard.previewApiPaths()).permitAll();
+                        }
+                        authorize.anyRequest().authenticated();
+                    })
+                    .formLogin(form -> form.permitAll())
                     .httpBasic(Customizer.withDefaults())
                     .build();
+        }
+
+        private static String applicationPath(String requestUri, String contextPath) {
+            return contextPath == null || contextPath.isEmpty() || !requestUri.startsWith(contextPath)
+                    ? requestUri
+                    : requestUri.substring(contextPath.length());
         }
 
         @Bean
@@ -612,6 +1498,11 @@ class WebAccessSmokeIntegrationTest {
             @GetMapping("/host")
             String host() {
                 return "ok";
+            }
+
+            @PostMapping("/host/update")
+            String update() {
+                return "updated";
             }
         }
     }

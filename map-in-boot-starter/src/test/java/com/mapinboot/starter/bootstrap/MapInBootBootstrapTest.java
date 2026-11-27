@@ -40,6 +40,8 @@ import org.junit.jupiter.api.Test;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.context.event.ApplicationReadyEvent;
 import org.springframework.boot.info.BuildProperties;
+import org.springframework.beans.BeanWrapper;
+import org.springframework.beans.BeanWrapperImpl;
 import org.springframework.context.annotation.AnnotationConfigApplicationContext;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -52,6 +54,7 @@ import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class MapInBootBootstrapTest {
@@ -75,6 +78,17 @@ class MapInBootBootstrapTest {
         assertInvalidProperties(Map.of("mapinboot.snapshot.retention-days", "91"));
         assertInvalidProperties(Map.of("mapinboot.snapshot.directory", " "));
         assertInvalidProperties(Map.of("mapinboot.snapshot.directory", "\u0000"));
+        assertInvalidProperties(Map.of("mapinboot.web.login.session-timeout", "0s"));
+    }
+
+    @Test
+    void sessionTimeoutMustFitAbsoluteExpiryInstant() {
+        MapInBootProperties properties = new MapInBootProperties();
+        properties.getWeb().getLogin().setSessionTimeout(Duration.ofSeconds(Long.MAX_VALUE));
+
+        MapInBootException exception = assertThrows(MapInBootException.class, properties::afterPropertiesSet);
+
+        assertEquals(ErrorCode.INVALID_CONFIG, exception.getErrorCode());
     }
 
     @Test
@@ -90,6 +104,33 @@ class MapInBootBootstrapTest {
             assertEquals(7, defaultContext.getBean(MapInBootProperties.class).getSnapshot().getRetentionDays());
             assertEquals(1, minimumContext.getBean(MapInBootProperties.class).getSnapshot().getRetentionDays());
             assertEquals(90, maximumContext.getBean(MapInBootProperties.class).getSnapshot().getRetentionDays());
+        }
+    }
+
+    @Test
+    void authConfigurationBindsDefaultAndExplicitModes() {
+        try (AnnotationConfigApplicationContext defaultContext = contextWithoutTempDirectory(Map.of());
+             AnnotationConfigApplicationContext explicitContext = contextWithoutTempDirectory(Map.of(
+                     "mapinboot.web.auth-mode", "NONE",
+                     "mapinboot.web.login.password", "test-secret",
+                     "mapinboot.web.login.session-timeout", "45m"))) {
+            MapInBootProperties defaultProperties = defaultContext.getBean(MapInBootProperties.class);
+            BeanWrapper defaultWeb = new BeanWrapperImpl(defaultProperties.getWeb());
+            assertTrue(defaultWeb.isReadableProperty("authMode"));
+            assertTrue(defaultWeb.isReadableProperty("authModeConfigured"));
+            assertTrue(defaultWeb.isReadableProperty("login.sessionTimeout"));
+            assertTrue(defaultWeb.isReadableProperty("login.password"));
+            assertEquals("HOST", defaultWeb.getPropertyValue("authMode").toString());
+            assertFalse((boolean) defaultWeb.getPropertyValue("authModeConfigured"));
+            assertEquals(Duration.ofMinutes(30), defaultWeb.getPropertyValue("login.sessionTimeout"));
+            assertNull(defaultWeb.getPropertyValue("login.password"));
+
+            BeanWrapper explicitWeb = new BeanWrapperImpl(
+                    explicitContext.getBean(MapInBootProperties.class).getWeb());
+            assertEquals("NONE", explicitWeb.getPropertyValue("authMode").toString());
+            assertTrue((boolean) explicitWeb.getPropertyValue("authModeConfigured"));
+            assertEquals(Duration.ofMinutes(45), explicitWeb.getPropertyValue("login.sessionTimeout"));
+            assertEquals("test-secret", explicitWeb.getPropertyValue("login.password"));
         }
     }
 

@@ -4,6 +4,9 @@ import com.mapinboot.core.common.error.ErrorCode;
 import com.mapinboot.core.common.error.MapInBootException;
 import java.nio.file.InvalidPathException;
 import java.nio.file.Path;
+import java.time.DateTimeException;
+import java.time.Duration;
+import java.time.Instant;
 import org.springframework.beans.factory.InitializingBean;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
@@ -43,6 +46,17 @@ public class MapInBootProperties implements InitializingBean {
         if (web == null || web.requiredRole == null || web.requiredRole.isBlank()) {
             throw new MapInBootException(ErrorCode.INVALID_CONFIG, "mapinboot.web.required-role 설정이 비어 있습니다.");
         }
+        if (web.login == null || web.login.sessionTimeout == null
+                || web.login.sessionTimeout.isZero() || web.login.sessionTimeout.isNegative()) {
+            throw new MapInBootException(
+                    ErrorCode.INVALID_CONFIG, "mapinboot.web.login.session-timeout 값은 양수여야 합니다.");
+        }
+        try {
+            Instant.now().plus(web.login.sessionTimeout);
+        } catch (DateTimeException | ArithmeticException exception) {
+            throw new MapInBootException(
+                    ErrorCode.INVALID_CONFIG, "mapinboot.web.login.session-timeout 인증 만료 시각 범위 초과", exception);
+        }
         if (snapshot == null || snapshot.directory == null || snapshot.directory.isBlank()) {
             throw new MapInBootException(ErrorCode.INVALID_CONFIG, "mapinboot.snapshot.directory 설정이 비어 있습니다.");
         }
@@ -60,6 +74,8 @@ public class MapInBootProperties implements InitializingBean {
         private boolean enabled = false;
         private boolean anonymousPreview = false;
         private String requiredRole = "MAP_IN_BOOT_ADMIN";
+        private WebAuthMode authMode;
+        private Login login = new Login();
 
         public boolean isEnabled() {
             return enabled;
@@ -83,6 +99,47 @@ public class MapInBootProperties implements InitializingBean {
 
         public void setRequiredRole(String requiredRole) {
             this.requiredRole = requiredRole;
+        }
+
+        public WebAuthMode getAuthMode() {
+            return authMode == null ? WebAuthMode.HOST : authMode;
+        }
+
+        public void setAuthMode(WebAuthMode authMode) {
+            this.authMode = authMode;
+        }
+
+        public boolean isAuthModeConfigured() {
+            return authMode != null;
+        }
+
+        public Login getLogin() {
+            return login;
+        }
+
+        public void setLogin(Login login) {
+            this.login = login;
+        }
+
+        public static class Login {
+            private String password;
+            private Duration sessionTimeout = Duration.ofMinutes(30);
+
+            public String getPassword() {
+                return password;
+            }
+
+            public void setPassword(String password) {
+                this.password = password;
+            }
+
+            public Duration getSessionTimeout() {
+                return sessionTimeout;
+            }
+
+            public void setSessionTimeout(Duration sessionTimeout) {
+                this.sessionTimeout = sessionTimeout;
+            }
         }
     }
 

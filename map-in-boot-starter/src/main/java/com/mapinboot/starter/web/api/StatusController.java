@@ -14,6 +14,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import org.springframework.http.HttpHeaders;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication;
@@ -47,9 +48,11 @@ public class StatusController {
     public ResponseEntity<?> status(HttpServletRequest request) {
         HttpStatus denied = WebAccessGuard.deniedStatus(request, properties, environment);
         if (denied != null) {
-            return ResponseEntity.status(denied).build();
+            return ResponseEntity.status(denied).header(HttpHeaders.CACHE_CONTROL, "no-store").build();
         }
-        return ResponseEntity.ok(StatusResponse.from(bootstrap));
+        return ResponseEntity.ok()
+                .header(HttpHeaders.CACHE_CONTROL, "no-store")
+                .body(StatusResponse.from(bootstrap));
     }
 
     public record StatusResponse(
