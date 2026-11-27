@@ -11,6 +11,7 @@ import com.mapinboot.core.evidence.Relation;
 import com.mapinboot.core.graph.model.GraphEdge;
 import com.mapinboot.core.graph.model.GraphNode;
 import com.mapinboot.core.graph.model.SecurityGraph;
+import com.mapinboot.core.common.status.Confidence;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
@@ -73,6 +74,20 @@ public class GraphBuilder {
         Map<String, GraphEdge> edgesById = new LinkedHashMap<>();
         for (Relation relation : report.relations()) {
             addRelation(relation, evidenceById, nodesById, nodeIdsByStructuralKey, edgesById);
+        }
+        for (Fact fact : report.collectionReport().facts()) {
+            if (fact != null && "ENDPOINT_MAPPING".equals(fact.type())) {
+                String handler = fact.attributes().get("handler");
+                String endpointId = resolvedNodeId(fact.subjectKey(), nodeIdsByStructuralKey);
+                String handlerId = resolvedNodeId(handler, nodeIdsByStructuralKey);
+                boolean explicitMapping = edgesById.values().stream().anyMatch(edge ->
+                        edge.type() == EdgeType.FLOWS_TO && endpointId.equals(edge.sourceId())
+                                && handlerId.equals(edge.targetId()));
+                if (explicitMapping) continue;
+                addRelation(new Relation("endpoint-handler|" + fact.id(), fact.subjectKey(), handler,
+                                EdgeType.FLOWS_TO, Map.of("flowKind", "HANDLER"), Confidence.CONFIRMED,
+                                fact.evidenceIds()), evidenceById, nodesById, nodeIdsByStructuralKey, edgesById);
+            }
         }
         return new SecurityGraph(sorted(nodesById.values(), GraphNode::id), sorted(edgesById.values(), GraphEdge::id));
     }
