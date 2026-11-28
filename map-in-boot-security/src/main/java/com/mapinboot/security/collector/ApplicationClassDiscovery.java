@@ -6,6 +6,7 @@ import io.github.classgraph.ClassGraph;
 import io.github.classgraph.ClassInfo;
 import io.github.classgraph.ScanResult;
 import java.lang.reflect.Method;
+import java.lang.reflect.Proxy;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
@@ -58,8 +59,10 @@ final class ApplicationClassDiscovery {
                 if (targetClass.isSynthetic()) {
                     continue;
                 }
+                boolean generatedProxy = Proxy.isProxyClass(targetClass);
                 addCandidate(targetClass, targetClasses, candidateClassNames, acceptedPackages);
-                if (isApplicationClassName(beanClassName)) {
+                if (isApplicationClassName(beanClassName)
+                        && (!generatedProxy || !targetClass.getName().equals(beanClassName))) {
                     candidateClassNames.add(beanClassName);
                     addPackage(beanClassName, acceptedPackages);
                 }
@@ -175,7 +178,16 @@ final class ApplicationClassDiscovery {
             Set<String> candidateClassNames,
             Set<String> acceptedPackages
     ) {
-        if (type == null || isFrameworkClass(type)) {
+        if (type == null) {
+            return;
+        }
+        if (Proxy.isProxyClass(type)) {
+            for (Class<?> interfaceType : type.getInterfaces()) {
+                addCandidate(interfaceType, targetClasses, candidateClassNames, acceptedPackages);
+            }
+            return;
+        }
+        if (isFrameworkClass(type)) {
             return;
         }
         candidateClassNames.add(type.getName());
