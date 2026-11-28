@@ -241,6 +241,23 @@ class CredentialUsageAnalysisAdapterTest {
     }
 
     @Test
+    void retainsUnknownWhenInterfaceDispatchTargetCannotBeConfirmed() {
+        Fact endpoint = endpoint("interface-dispatch", InterfaceDispatchFixture.class, "endpoint", Jwt.class);
+        Fact jwtRead = usage("interface-dispatch-read", "JWT_USAGE", "READ",
+                location(InterfaceReaderImpl.class, "readSubject", Jwt.class),
+                "org.springframework.security.oauth2.jwt.Jwt", "getSubject", "()Ljava/lang/String;", 0);
+
+        AnalysisReport report = execute(List.of(endpoint, jwtRead));
+
+        assertEquals(AnalysisStatus.PARTIAL, status(report));
+        assertTrue(report.relations().stream().noneMatch(relation ->
+                relation.type() == EdgeType.READS_SECURITY_DATA
+                        && relation.targetKey().equals(jwtRead.subjectKey())));
+        assertTrue(report.diagnostics().stream().anyMatch(diagnostic ->
+                diagnostic.summary().contains("Receiver 또는 호출 경로 확인 불가")));
+    }
+
+    @Test
     void doesNotCreateAuthorityConversionWhenBranchSourcesAreMixed() {
         Fact endpoint = endpoint("branch-authority", CredentialFixture.class, "branchAuthority", Jwt.class,
                 boolean.class);
@@ -540,6 +557,40 @@ class CredentialUsageAnalysisAdapterTest {
         }
 
         public void unrelated() {
+        }
+    }
+
+    interface InterfaceReader {
+        String read(Jwt jwt);
+    }
+
+    static class InterfaceReaderImpl implements InterfaceReader {
+        @Override
+        public String read(Jwt jwt) {
+            return readSubject(jwt);
+        }
+
+        private String readSubject(Jwt jwt) {
+            return jwt.getSubject();
+        }
+    }
+
+    static class AlternateInterfaceReader implements InterfaceReader {
+        @Override
+        public String read(Jwt jwt) {
+            return "unrelated";
+        }
+    }
+
+    static class InterfaceDispatchFixture {
+        private final InterfaceReader reader;
+
+        InterfaceDispatchFixture(InterfaceReader reader) {
+            this.reader = reader;
+        }
+
+        public String endpoint(Jwt jwt) {
+            return reader.read(jwt);
         }
     }
 }

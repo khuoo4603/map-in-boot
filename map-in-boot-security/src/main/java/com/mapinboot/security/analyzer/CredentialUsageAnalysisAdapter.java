@@ -1043,6 +1043,10 @@ public class CredentialUsageAnalysisAdapter extends AbstractAnalysisAdapter {
             if (!location.methodName().equals(name) || !location.descriptor().equals(descriptor)) {
                 return null;
             }
+            if (Modifier.isAbstract(access) || Modifier.isNative(access)) {
+                uncertain = true;
+                return null;
+            }
             found = true;
             return new UsageMethodVisitor(access, descriptor);
         }
