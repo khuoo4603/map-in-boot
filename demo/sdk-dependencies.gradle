@@ -1,0 +1,11 @@
+def sdkMode = rootProject.ext.demoSdkMode
+
+dependencies {
+    if (sdkMode == 'project') {
+        implementation rootProject.project(':map-in-boot-starter')
+        implementation rootProject.project(':map-in-boot-security')
+    } else {
+        implementation "io.github.khuoo4603:map-in-boot-starter:${rootProject.ext.demoSdkVersion}"
+        implementation "io.github.khuoo4603:map-in-boot-security:${rootProject.ext.demoSdkVersion}"
+    }
+}

@@ -1,5 +1,35 @@
+import java.security.MessageDigest
+
 plugins {
     id 'base'
+}
+
+def sdkVersion = providers.gradleProperty('releaseVersion').getOrElse('0.1.0-SNAPSHOT')
+def semverPattern = ~/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*))*))?(?:\+([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$/
+
+if (!(sdkVersion ==~ semverPattern)) {
+    throw new GradleException("releaseVersion must be a valid SemVer value: ${sdkVersion}")
+}
+
+def demoSdkMode = providers.gradleProperty('demoSdkMode').getOrElse('project').toLowerCase(Locale.ROOT)
+def demoSdkVersion = providers.gradleProperty('demoSdkVersion').getOrElse('0.1.0')
+def demoSdkRepository = providers.gradleProperty('demoSdkRepository').getOrElse('build/repository')
+if (!(demoSdkMode in ['project', 'local', 'central'])) {
+    throw new GradleException('demoSdkMode must be project, local, or central')
+}
+if (demoSdkMode != 'project'
+        && (!(demoSdkVersion ==~ semverPattern) || demoSdkVersion.endsWith('-SNAPSHOT'))) {
+    throw new GradleException('demoSdkVersion must be a release SemVer value')
+}
+ext.demoSdkMode = demoSdkMode
+ext.demoSdkVersion = demoSdkVersion
+ext.demoSdkRepository = demoSdkRepository
+
+boolean centralBundleRequested = gradle.startParameter.taskNames.any {
+    it.tokenize(':').last() == 'centralBundle'
+}
+if (centralBundleRequested && (!project.hasProperty('releaseVersion') || sdkVersion.endsWith('-SNAPSHOT'))) {
+    throw new GradleException('centralBundle requires an explicit non-SNAPSHOT releaseVersion')
 }
 
 allprojects {
@@ -7,6 +37,19 @@ allprojects {
     version = '0.1.0-SNAPSHOT'
 
     repositories {
+        if (demoSdkMode == 'local') {
+            exclusiveContent {
+                forRepository {
+                    maven {
+                        name = 'demoSdkLocal'
+                        url = rootProject.file(demoSdkRepository)
+                    }
+                }
+                filter {
+                    includeGroup 'io.github.khuoo4603'
+                }
+            }
+        }
         mavenCentral()
     }
 }
@@ -28,5 +71,219 @@ subprojects {
 
     tasks.withType(Test).configureEach {
         useJUnitPlatform()
+    }
+}
+
+def sdkModules = [
+    project(':map-in-boot-core'),
+    project(':map-in-boot-starter'),
+    project(':map-in-boot-security')
+]
+
+def publicationDetails = [
+    'map-in-boot-core': [
+        name: 'Map in Boot Core',
+        description: 'Map in Boot 공통 모델과 분석 계약'
+    ],
+    'map-in-boot-starter': [
+        name: 'Map in Boot Starter',
+        description: 'Spring Boot 애플리케이션용 Map in Boot SDK 자동 구성과 웹 UI'
+    ],
+    'map-in-boot-security': [
+        name: 'Map in Boot Security',
+        description: 'Spring Security 애플리케이션의 보안 구조 수집과 분석 확장'
+    ]
+]
+
+configure(sdkModules) {
+    group = 'io.github.khuoo4603'
+    version = sdkVersion
+    apply plugin: 'maven-publish'
+    apply plugin: 'signing'
+
+    java {
+        withSourcesJar()
+        withJavadocJar()
+    }
+
+    tasks.withType(Javadoc).configureEach {
+        options.encoding = 'UTF-8'
+        options.docEncoding = 'UTF-8'
+        options.charSet = 'UTF-8'
+    }
+
+    tasks.withType(Jar).configureEach {
+        from(rootProject.file('LICENSE')) {
+            into 'META-INF'
+        }
+    }
+
+    publishing {
+        publications {
+            mavenJava(MavenPublication) {
+                from components.java
+                pom {
+                    name = publicationDetails[project.name].name
+                    description = publicationDetails[project.name].description
+                    url = 'https://github.com/khuoo4603/map-in-boot'
+                    licenses {
+                        license {
+                            name = 'Apache License, Version 2.0'
+                            url = 'https://www.apache.org/licenses/LICENSE-2.0.txt'
+                            distribution = 'repo'
+                        }
+                    }
+                    developers {
+                        developer {
+                            id = 'khuoo4603'
+                            name = '김현우 (kim hyeon woo)'
+                            url = 'https://github.com/khuoo4603'
+                        }
+                    }
+                    scm {
+                        url = 'https://github.com/khuoo4603/map-in-boot'
+                        connection = 'scm:git:git://github.com/khuoo4603/map-in-boot.git'
+                        developerConnection = 'scm:git:ssh://git@github.com/khuoo4603/map-in-boot.git'
+                    }
+                }
+            }
+        }
+        repositories {
+            maven {
+                name = 'buildLocal'
+                url = rootProject.layout.buildDirectory.dir('repository')
+            }
+        }
+    }
+
+    signing {
+        useGpgCmd()
+        required {
+            gradle.taskGraph.allTasks.any { it.name == 'centralBundle' }
+        }
+        sign publishing.publications.mavenJava
+    }
+
+    tasks.withType(Sign).configureEach {
+        onlyIf {
+            gradle.taskGraph.allTasks.any { it.name == 'centralBundle' }
+        }
+    }
+}
+
+def sdkArtifactIds = ['map-in-boot-core', 'map-in-boot-starter', 'map-in-boot-security']
+def sdkGroupPath = 'io/github/khuoo4603'
+def centralArtifactNames = sdkArtifactIds.collectEntries { artifactId ->
+    [(artifactId): [
+        "${artifactId}-${sdkVersion}.jar",
+        "${artifactId}-${sdkVersion}-sources.jar",
+        "${artifactId}-${sdkVersion}-javadoc.jar",
+        "${artifactId}-${sdkVersion}.pom",
+        "${artifactId}-${sdkVersion}.module"
+    ]]
+}
+def centralChecksumExtensions = ['md5', 'sha1', 'sha256', 'sha512']
+def localPublishTasks = sdkModules.collect {
+    it.tasks.named('publishMavenJavaPublicationToBuildLocalRepository')
+}
+
+tasks.register('verifyCentralArtifacts') {
+    group = 'publishing'
+    description = 'Maven Central Bundle의 SDK 파일, Checksum 및 GPG 서명 검증'
+    dependsOn(localPublishTasks)
+
+    doLast {
+        if (!project.hasProperty('releaseVersion') || sdkVersion.endsWith('-SNAPSHOT')) {
+            throw new GradleException('centralBundle requires an explicit non-SNAPSHOT releaseVersion')
+        }
+
+        File repository = layout.buildDirectory.dir('repository').get().asFile
+        List<String> artifactFiles = centralArtifactNames.values().flatten()
+
+        artifactFiles.each { fileName ->
+            String artifactId = sdkArtifactIds.find { fileName.startsWith("${it}-") }
+            File artifactFile = new File(repository, "${sdkGroupPath}/${artifactId}/${sdkVersion}/${fileName}")
+            if (!artifactFile.isFile()) {
+                throw new GradleException("Central Bundle artifact is missing: ${fileName}")
+            }
+
+            File signatureFile = new File(artifactFile.parentFile, "${fileName}.asc")
+            if (!signatureFile.isFile()) {
+                throw new GradleException("Central Bundle signature is missing: ${fileName}.asc")
+            }
+            ByteArrayOutputStream signatureOutput = new ByteArrayOutputStream()
+            ByteArrayOutputStream signatureError = new ByteArrayOutputStream()
+            def signatureResult = exec {
+                commandLine 'gpg', '--batch', '--verify', signatureFile.absolutePath, artifactFile.absolutePath
+                standardOutput = signatureOutput
+                errorOutput = signatureError
+                ignoreExitValue = true
+            }
+            if (signatureResult.exitValue != 0) {
+                throw new GradleException("Central Bundle signature verification failed: ${fileName}")
+            }
+
+            centralChecksumExtensions.each { extension ->
+                File checksumFile = new File(artifactFile.parentFile, "${fileName}.${extension}")
+                if (!checksumFile.isFile()) {
+                    throw new GradleException("Central Bundle checksum is missing: ${checksumFile.name}")
+                }
+                String algorithm = [md5: 'MD5', sha1: 'SHA-1', sha256: 'SHA-256', sha512: 'SHA-512'][extension]
+                String actual = MessageDigest.getInstance(algorithm).digest(artifactFile.bytes).encodeHex().toString()
+                if (checksumFile.text.trim().split(/\s+/)[0].toLowerCase(Locale.ROOT) != actual) {
+                    throw new GradleException("Central Bundle checksum verification failed: ${checksumFile.name}")
+                }
+            }
+        }
+    }
+}
+
+tasks.register('centralBundle', Zip) {
+    group = 'publishing'
+    description = '서명된 SDK 파일을 Maven Central Portal Bundle로 생성'
+    dependsOn(tasks.named('verifyCentralArtifacts'))
+    archiveFileName = "map-in-boot-${sdkVersion}-central.zip"
+    destinationDirectory = layout.buildDirectory.dir('distributions')
+    from(layout.buildDirectory.dir('repository')) {
+        sdkArtifactIds.each { artifactId ->
+            String artifactPath = "${sdkGroupPath}/${artifactId}/${sdkVersion}"
+            centralArtifactNames[artifactId].each { fileName ->
+                include "${artifactPath}/${fileName}"
+                include "${artifactPath}/${fileName}.asc"
+                centralChecksumExtensions.each { extension ->
+                    include "${artifactPath}/${fileName}.${extension}"
+                }
+            }
+        }
+    }
+    doLast {
+        File bundle = archiveFile.get().asFile
+        java.util.zip.ZipFile zip = new java.util.zip.ZipFile(bundle)
+        try {
+            Set<String> entries = new HashSet<>()
+            Set<String> expectedEntries = new HashSet<>()
+            sdkArtifactIds.each { artifactId ->
+                centralArtifactNames[artifactId].each { fileName ->
+                    String basePath = "${sdkGroupPath}/${artifactId}/${sdkVersion}/${fileName}"
+                    expectedEntries.add(basePath)
+                    expectedEntries.add("${basePath}.asc")
+                    centralChecksumExtensions.each { extension ->
+                        expectedEntries.add("${basePath}.${extension}")
+                    }
+                }
+            }
+            zip.entries().each { entry ->
+                String path = entry.name
+                if (path.startsWith('/') || path.split('/').any { it == '..' } || !entries.add(path)) {
+                    throw new GradleException('Central Bundle contains an unsafe or duplicate ZIP entry')
+                }
+            }
+            Set<String> bundledFiles = entries.findAll { path -> !path.endsWith('/') } as Set
+            if (bundledFiles != expectedEntries) {
+                throw new GradleException("Central Bundle file list is incomplete or contains unapproved files: ${bundledFiles.size()}")
+            }
+        } finally {
+            zip.close()
+        }
     }
 }

@@ -976,6 +976,7 @@
 
     function renderProperties(parent, graph, item, selection, snapshot) {
       appendHeading(parent, "기본 속성");
+      const selectedRuntimeComponent = selection.kind === "runtime-component" ? item : null;
       const detailModel = current.displayModel;
       const detailItemIds = current.view === "feature-flow" || current.view === "security-detail"
         ? selection.kind === "node" ? detailModel?.originalNodeToItemIds?.[selection.id]
@@ -1139,6 +1140,9 @@
           runtimeEvidenceIds.forEach((id) => appendRow(originals, "Runtime Evidence ID", id));
           (item.runtimeComponentIds || []).forEach((id) => appendRow(originals, "Runtime 객체 ID", id));
           mappings.forEach((mapping) => appendRow(originals, "FilterMap ID", mapping.id));
+          if (selectedRuntimeComponent?.kind === "HANDLER_ADAPTER") {
+            appendMvcRegistrationDetails(parent, snapshot, selectedRuntimeComponent);
+          }
           return;
         }
         if (item.type === "AUTHORIZATION" || item.type === "SECURITY_DATA") {
