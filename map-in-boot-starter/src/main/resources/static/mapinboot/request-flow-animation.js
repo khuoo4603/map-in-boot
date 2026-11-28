@@ -154,6 +154,7 @@
 
   function connectSteps(steps, graph, projection, displayModel, chainId) {
     const anchoredSteps = [];
+    const notesByStep = new Map();
     steps.forEach((step, index) => {
       if (step.anchorId || !step.id.endsWith("-uncertain")) {
         anchoredSteps.push(step);
@@ -161,10 +162,10 @@
       }
       const note = [step.label, step.description].filter(Boolean).join(": ");
       const previous = anchoredSteps[anchoredSteps.length - 1];
-      if (previous) previous.description = [previous.description, note].filter(Boolean).join(" ");
+      if (previous) notesByStep.set(previous, [...(notesByStep.get(previous) || []), note]);
       else {
         const next = steps.slice(index + 1).find((candidate) => candidate.anchorId);
-        if (next) next.description = [note, next.description].filter(Boolean).join(" ");
+        if (next) notesByStep.set(next, [...(notesByStep.get(next) || []), note]);
         else anchoredSteps.push(step);
       }
     });
@@ -220,6 +221,7 @@
       if (text(step.label).includes("|")) step.label = text(step.label).split("|").filter(Boolean).pop() || "처리 단계";
       step.label = text(step.label).replace(/\b(?:[a-z_$][\w$]*\.)+([A-Z_$][\w$]*)/g, "$1");
       if (descriptions[step.id]) step.description = descriptions[step.id];
+      if (notesByStep.has(step)) step.description = [step.description, ...notesByStep.get(step)].filter(Boolean).join(" ");
     });
     anchoredSteps.forEach((step, index) => {
       step.transition = index < anchoredSteps.length - 1
@@ -235,6 +237,13 @@
     const result = index.securityFiltersForChain(chainId);
     const nodes = nodeMap(graph);
     const edges = edgeMap(graph);
+    const chainRelations = (graph.edges || []).filter((edge) => edge.sourceId === chainId
+      && edge.type === "FILTERED_BY");
+    const hasUnconfirmedOrder = chainRelations.some((edge) => {
+      const filter = nodes.get(edge.targetId);
+      const order = positiveInteger(attributes(edge).filterOrder || attributes(filter).filterOrder);
+      return edge.confidence !== "CONFIRMED" || !filter || filter.type !== "FILTER" || !order;
+    });
     const relationshipsByNode = new Map((result.edges || []).filter((edge) => {
       const filter = nodes.get(edge.targetId);
       return edges.has(edge.id)
@@ -245,7 +254,7 @@
     }).map((edge) => [edge.targetId, edge]));
     const filters = (result.filters || []).map((filter) => nodes.get(filter.id)).filter(Boolean);
     const orderedEdges = filters.map((filter) => relationshipsByNode.get(filter.id)).filter(Boolean);
-    if (result.orderStatus !== "CONFIRMED" || filters.length !== (result.filters || []).length
+    if (hasUnconfirmedOrder || result.orderStatus !== "CONFIRMED" || filters.length !== (result.filters || []).length
       || orderedEdges.length !== filters.length) {
       return { status: result.orderStatus || "UNKNOWN", filters: [], edges: orderedEdges };
     }
@@ -283,6 +292,10 @@
     }
     educationStep(steps, projection, positions, "education-servlet-container", "서블릿 컨테이너",
       "실제 컨테이너 항목 또는 Servlet 요청을 처리하는 일반 구조입니다.", displayModel);
+    if (projection?.nodes?.some((node) => node.id === "education-request-prepare")) {
+      educationStep(steps, projection, positions, "education-request-prepare", "요청 처리 준비",
+        "요청 정보를 다음 처리 단계에 전달하는 일반적인 과정입니다. 실제 요청 객체를 뜻하지 않습니다.", displayModel);
+    }
     educationStep(steps, projection, positions, "education-http-servlet-request", "요청·응답 객체",
       "HttpServletRequest는 경로와 헤더 등 요청 정보를 제공합니다. HttpServletResponse는 응답 상태와 헤더, 본문을 설정하는 데 사용됩니다.", displayModel);
 

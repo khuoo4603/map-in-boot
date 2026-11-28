@@ -4506,7 +4506,9 @@
     });
 
     const learningGroupFor = (projection) => {
-      if (projection.id === "education-http-request") return { key: "request-context", title: "요청 진입", areaId: "entry" };
+      if (["education-http-request", "education-request-prepare"].includes(projection.id)) {
+        return { key: "request-context", title: "요청 진입", areaId: "entry" };
+      }
       if (projection.id === "education-servlet-container") return { key: "servlet-container", title: "서블릿 컨테이너", areaId: "servlet" };
       if (["education-http-servlet-request", "education-http-servlet-response", "education-thread-context"].includes(projection.id)) {
         return { key: "request-response", title: "요청·응답 객체", areaId: "servlet" };
@@ -5837,6 +5839,8 @@
     const projectionNodeDefinitions = detailPresentation && servletLearningAllowed ? [
       projectionNode("education-http-request", "HTTP 요청", "서블릿 컨테이너로 들어오는 요청 단계", 0, EDUCATION_Y),
       projectionNode("education-servlet-container", "서블릿 컨테이너", "Servlet 요청 처리와 Filter 연결을 담당하는 일반 구조", 0, EDUCATION_Y),
+      ...(!runtimeArchitectureSupplied ? [projectionNode("education-request-prepare", "요청 처리 준비",
+        "요청 정보를 다음 처리 단계에 전달하는 일반적인 과정 · 실제 요청 객체 아님", 0, EDUCATION_Y)] : []),
       projectionNode("education-http-servlet-request", "HttpServletRequest", "요청 정보 전달 객체 · 실제 요청 인스턴스 아님", 0, EDUCATION_Y),
       projectionNode("education-http-servlet-response", "HttpServletResponse", "응답 정보 전달 객체 · 실제 응답 인스턴스 아님", 0, EDUCATION_Y),
       ...(securityProjectionAllowed ? [
@@ -5889,7 +5893,8 @@
       node.bounds = layoutRect(node.position, node.width, node.height);
       occupiedBounds.push(node.bounds);
     });
-    const mainLearningIds = ["education-http-request", "education-servlet-container", "education-http-servlet-request",
+    const mainLearningIds = ["education-http-request", "education-servlet-container", "education-request-prepare",
+      "education-http-servlet-request",
       "education-delegating-filter-proxy", "education-filter-chain-proxy", "education-handler-mapping",
       "education-handler-adapter", "education-http-response"];
     const projectionBounds = new Set(projectionNodes.map((node) => node.bounds));
@@ -5955,8 +5960,13 @@
       addProjectionEdge("education-web-server-to-servlet-container",
         hasWebServer ? "education-web-server" : "education-http-request", "education-servlet-container",
         { flowGroup: "request-context", projectionKind: "servlet-container" });
-      addProjectionEdge("education-container-to-request-object", "education-servlet-container", "education-http-servlet-request",
-        { flowGroup: "request-context", projectionKind: "request-object" });
+      if (projectionNodeIds.has("education-request-prepare")) {
+        addProjectionEdge("education-container-to-request-prepare", "education-servlet-container", "education-request-prepare",
+          { flowGroup: "request-context", projectionKind: "request-prepare" });
+        addProjectionEdge("education-request-prepare-to-request-object", "education-request-prepare",
+          "education-http-servlet-request", { flowGroup: "request-context", projectionKind: "request-object" });
+      } else addProjectionEdge("education-container-to-request-object", "education-servlet-container",
+        "education-http-servlet-request", { flowGroup: "request-context", projectionKind: "request-object" });
       const firstServletFilter = orderedRegisteredServletFilters[0];
       if (firstServletFilter && registeredServletOrderStatus === "CONFIRMED") {
         addProjectionEdge("education-request-to-first-servlet-filter", "education-http-servlet-request", firstServletFilter.id,

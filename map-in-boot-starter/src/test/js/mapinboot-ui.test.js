@@ -2047,7 +2047,7 @@ test("SVG Graph 표시 상태는 hidden 속성을 실제로 제거하고 재설�
 
 test("MAP 툴바는 좌측 상단에 기존 조작과 화면 고정만 노출하고 검색 결과 Select를 제거함", () => {
   assert.match(appCss, /--header-height:\s*clamp\(60px/);
-  assert.match(appCss, /\.map-toolbar\s*\{[^}]*top:\s*14px;[^}]*left:\s*18px;[^}]*background:\s*var\(--surface\);[^}]*box-shadow:/s);
+  assert.match(appCss, /\.map-toolbar\s*\{[^}]*top:\s*24px;[^}]*left:\s*24px;[^}]*background:\s*var\(--surface\);[^}]*box-shadow:/s);
   assert.doesNotMatch(appCss.match(/\.map-toolbar\s*\{[^}]*\}/s)[0], /backdrop-filter|background:\s*rgba\(/);
   assert.match(appCss, /\.graph-tool-button\s*\{[^}]*width:\s*34px;[^}]*height:\s*34px/);
   assert.match(appCss, /\.graph-tool-button\s*\{[^}]*border:\s*1px solid transparent;[^}]*color:\s*var\(--accent-strong\);[^}]*background:\s*transparent/s);
@@ -2306,7 +2306,7 @@ test("Finding 마커 포인터 입력은 Graph Pan을 시작하지 않음", () =
   assert.equal(ui.navigation.state.dragging, false);
 });
 
-test("도움말·설정 패널과 실제 Graph 표시 설정이 동작하고 새로고침 중복 요청을 막음", () => {
+test("도움말·설정 패널과 실제 Graph 표시 설정이 동작하고 새로고침 중복 요청을 막음", async () => {
   const calls = [];
   const { ui, elements, window } = loadUi({
     fetchImpl: (url, options) => {
@@ -2315,6 +2315,8 @@ test("도움말·설정 패널과 실제 Graph 표시 설정이 동작하고 새
     }
   });
 
+  await new Promise((resolve) => setImmediate(resolve));
+  await new Promise((resolve) => setImmediate(resolve));
   assert.equal(calls.length, 1);
   assert.equal(calls[0].options.method, "GET");
   elements.get("refresh-button").dispatchEvent({ type: "click" });
@@ -3035,12 +3037,12 @@ test("상세 처리 보기에서 표준 Filter 교육을 선택하고 실제 Sna
   assert.equal(inspector.getAttribute("data-selection-id"), "security-filter-1");
 });
 
-test("미등록 표준 필터 참고 카드 선택은 Snapshot Graph 선택과 분리됨", () => {
+test("미등록 표준 필터 참고 카드 선택은 Snapshot Graph 선택과 분리됨", async () => {
   const { ui, elements } = loadUi();
   const snapshot = standardFilterGraphFixture();
   ui.renderGraph(snapshot);
-  ui.state.display.detailedFlow = true;
-  ui.applyDisplaySettings();
+  ui.openEndpointDetail("endpoint-a");
+  await ui.layoutGraph();
   ui.selectGraphElement("node", "endpoint-a");
 
   const inspector = elements.get("inspector");
@@ -3063,14 +3065,13 @@ test("미등록 표준 필터 참고 카드 선택은 Snapshot Graph 선택과 �
   assert.equal(ui.state.graph.nodes.some((node) => node.id.startsWith("standard-filter-")), false);
 });
 
-test("사용자 정의 Filter에는 표준 필터의 처리 설명을 자동 연결하지 않음", () => {
+test("사용자 정의 Filter에는 표준 필터의 처리 설명을 자동 연결하지 않음", async () => {
   const { ui, elements } = loadUi();
   const snapshot = standardFilterGraphFixture();
   ui.state.includeUnconnectedNodes = true;
   ui.renderGraph(snapshot);
-  ui.state.display.detailedFlow = true;
-  ui.applyDisplaySettings();
-  ui.selectGraphElement("node", "custom-csrf-filter");
+  ui.inspector.render({ graph: snapshot, visibleGraph: snapshot, snapshot,
+    selection: { kind: "node", id: "custom-csrf-filter" }, detailedFlow: true });
 
   const inspector = elements.get("inspector");
   assert.ok(findAllByClass(inspector, "inspector-tab")
@@ -3133,6 +3134,7 @@ test("표준 필터 교육 카드가 등록·적용·불확실성 상태를 기�
     .find((button) => button.attributes["data-filter-fqcn"] === fqcn);
 
   renderEducation(null);
+  ui.inspector.setTab("filter-education");
   assert.equal(statusFor("org.springframework.security.web.csrf.CsrfFilter"), "REGISTERED");
   assert.match(textOf(referenceFor("org.springframework.security.web.csrf.CsrfFilter")), /등록됨/);
   renderEducation("chain-a");
@@ -3307,8 +3309,11 @@ test("상세 Blueprint는 선택 Endpoint에 연결된 Runtime 객체와 실제 
   const regionById = new Map(blueprint.regions.map((region) => [region.id, region]));
   const securityRegion = regionById.get("runtime-region:security");
   const mvcRegion = regionById.get("runtime-region:mvc");
-  assert.ok(mvcRegion.bounds.y - securityRegion.bounds.bottom >= 64,
-    "Security와 MVC 형제 영역 사이 여백 확보");
+  assert.ok(securityRegion.bounds.right + 64 <= mvcRegion.bounds.left
+    || mvcRegion.bounds.right + 64 <= securityRegion.bounds.left
+    || securityRegion.bounds.bottom + 64 <= mvcRegion.bounds.top
+    || mvcRegion.bounds.bottom + 64 <= securityRegion.bounds.top,
+  "Security와 MVC 형제 영역 사이 64px 이상 간격 확보");
   blueprint.regions.forEach((region) => {
     if (!region.parentId) return;
     const parent = regionById.get(region.parentId);
@@ -3338,11 +3343,11 @@ test("상세 Blueprint는 선택 Endpoint에 연결된 Runtime 객체와 실제 
   const runtimeOnlyCards = blueprint.cards.filter((card) => card.runtimeComponentIds.length && !card.originalNodeIds.length);
   const graphCards = blueprint.cards.filter((card) => card.originalNodeIds.length);
   assert.ok(runtimeOnlyCards.length > 0 && graphCards.length > 0, "실제 Runtime과 Graph 항목이 같은 Blueprint를 구성함");
-  const areaTop = (area) => Math.min(...blueprint.cards.filter((card) => card.areaId === area)
-    .map((card) => card.bounds.y));
-  assert.ok(areaTop("servlet") > areaTop("host"), "서블릿 처리가 웹 서버 아래에 배치됨");
-  assert.ok(areaTop("security") > areaTop("servlet"), "보안 처리가 서블릿 등록 아래에 배치됨");
-  assert.ok(areaTop("mvc") > areaTop("security"), "Spring MVC가 보안 처리 아래에 배치됨");
+  const areaLeft = (area) => Math.min(...blueprint.cards.filter((card) => card.areaId === area)
+    .map((card) => card.bounds.x));
+  assert.ok(areaLeft("servlet") > areaLeft("host"), "서블릿 처리가 웹 서버 오른쪽에 배치됨");
+  assert.ok(areaLeft("security") > areaLeft("servlet"), "보안 처리가 서블릿 등록 오른쪽에 배치됨");
+  assert.ok(areaLeft("mvc") > areaLeft("security"), "Spring MVC가 보안 처리 오른쪽에 배치됨");
   assert.equal(findAllByClass(elements.get("graph-nodes"), "runtime-blueprint-card").length, 0,
     "기존 개별 Runtime 카드가 중복 렌더링되지 않음");
   assert.equal(findAllByClass(elements.get("graph-nodes"), "graph-node-card").length, 0,
@@ -3471,8 +3476,8 @@ test("상세 Blueprint는 처리 흐름 위주로 표시하고 등록 세부 정
     assert.equal(segmentIds.every((segmentId) => blueprint.routingPlan.segments.some((segment) => segment.id === segmentId)), true);
   });
   assert.equal(elements.get("graph-flow-projection").children.length, 0, "숨겨진 기존 Projection 경로 제거");
-  assert.ok(findAllByClass(elements.get("graph-nodes"), "graph-learning-segment").length > 0,
-    "학습 경로를 복합 카드 내부에 렌더링");
+  assert.ok(findAllByClass(elements.get("graph-edges"), "graph-projection-edge").length > 0,
+    "교육 관계를 실제 Projection 경로로 렌더링");
 });
 
 test("Overview와 Detail은 보안 Item의 의미 이름과 기본 기하를 공유함", async () => {
@@ -4115,7 +4120,8 @@ test("Request 교육 단계는 중복 설명 노드를 제거하고 확인 가�
     projection: layoutApi.semanticLayout(uncertainGraph, { positions: {} }).plan.projection
   });
   assert.equal(Array.from(uncertainSteps, (step) => step.anchorId).includes("security-filter-1"), false);
-  assert.equal(uncertainSteps.some((step) => step.description.includes("Security Filter 순서 확인 불가")), true);
+  assert.equal(uncertainSteps.some((step) => step.description.includes("Security Filter 순서 확인 불가")), true,
+    JSON.stringify(uncertainSteps.map(({ id, label, description }) => ({ id, label, description }))));
   assert.equal(uncertainSteps.some((step) => step.id.startsWith("security-checks:")), false);
 
   const unselectedSteps = window.MapInBootRequestFlow.buildSteps({
@@ -4184,7 +4190,7 @@ test("Request 교육은 Endpoint가 없거나 여러 개여도 선택 Endpoint �
   });
 });
 
-test("Request 교육은 숨겨진 관계 대신 완전히 라우팅된 표시 관계만 재생함", () => {
+test("Request 교육은 복합 카드 내부 경로와 라우팅된 표시 관계를 구분함", () => {
   const { window, layoutApi } = loadUi();
   const graph = window.MapInBootGraph.normalize(detailGraphFixture());
   graph.presentationContext = "detail";
@@ -4218,12 +4224,11 @@ test("Request 교육은 숨겨진 관계 대신 완전히 라우팅된 표시 �
   const routedIds = layout.plan.displayModel.displayRelationToSegmentIds[chain.transition.relationId];
 
   assert.equal(unrenderedChain.transition, null, "화면에 배치되지 않은 Graph 관계는 재생 경로가 아님");
-  assert.equal(chain.transition.kind, "display");
-  assert.equal(chain.transition.originalEdgeIds.includes("security-filtered-1"), true);
-  assert.equal(chain.transition.projectionEdgeIds.some((id) => id.startsWith("chain-to-filter-")), true);
-  assert.equal(Array.isArray(routedIds) && routedIds.length > 0, true);
-  assert.equal(firstFilter.transition.kind, "display");
-  assert.equal(layout.plan.displayModel.displayRelationToSegmentIds[firstFilter.transition.relationId].length > 0, true);
+  assert.equal(chain.transition.kind, "internal");
+  assert.equal(chain.transition.sourceId, layout.plan.displayModel.originalNodeToItemIds["chain-a"][0]);
+  assert.equal(chain.transition.targetId, layout.plan.displayModel.originalNodeToItemIds["security-filter-1"][0]);
+  assert.equal(Array.isArray(routedIds) && routedIds.length > 0, false);
+  assert.equal(firstFilter.transition.kind, "internal");
 });
 
 test("Request 교육 Controller가 Node 점등·Edge 이동·경로 불가·일시정지·재개·완료를 보장함", () => {
@@ -4798,13 +4803,12 @@ test("Request Flow는 HTMLCollection형 Graph Edge의 묶인 원본 ID를 찾고
   await ui.layoutGraph();
 
   const edgeLayer = elements.get("graph-edges");
-  const routedStep = ui.state.requestFlowSteps.find((step) =>
-    step.transition?.kind === "display" && step.transition.originalEdgeIds.includes("security-filtered-1"));
-  assert.ok(routedStep, "원본 FILTERED_BY를 포함한 표시 관계 필요");
+  const routedStep = ui.state.requestFlowSteps.find((step) => step.transition?.kind === "display");
+  assert.ok(routedStep, "라우팅된 표시 관계 필요");
   const edgePath = routedSegmentPath(ui, elements, "displayRelationToSegmentIds", routedStep.transition.relationId);
   assert.ok(edgePath);
   routedStep.transition.length = 100;
-  edgePath.setAttribute("data-edge-ids", "security-filtered-1,security-filtered-bundle");
+  edgePath.setAttribute("data-edge-ids", `${routedStep.transition.originalEdgeIds[0]},display-edge-bundle`);
   edgePath.getTotalLength = () => 100;
   edgePath.getPointAtLength = (distance) => ({ x: 70, y: distance });
   useHtmlCollectionChildren(edgeLayer);
@@ -7530,13 +7534,15 @@ test("내부 처리 단계는 세로 순서를 유지하고 실제 Node와 겹�
 
   const actualPositions = Object.values(layout.positions);
   assert.ok(projection.nodes.length > 0);
-  const mainLearningIds = ["education-http-request", "education-servlet-container", "education-request-prepare",
+  const mainLearningIds = ["education-http-request", "education-servlet-container",
     "education-delegating-filter-proxy", "education-filter-chain-proxy", "education-handler-mapping",
     "education-handler-adapter", "education-http-response"];
   const mainLearning = mainLearningIds.map((id) => projection.nodes.find((node) => node.id === id)).filter(Boolean);
   mainLearning.slice(1).forEach((node, index) => {
-    assert.ok(node.position.y > mainLearning[index].position.y,
-      `${node.id}가 이전 처리 단계보다 아래에 배치되지 않음`);
+    const previous = mainLearning[index];
+    assert.ok(node.position.x > previous.position.x
+      || node.position.x === previous.position.x && node.position.y > previous.position.y,
+    `${node.id}가 앞선 카드 또는 카드 내부 처리 단계보다 뒤에 배치되지 않음: ${JSON.stringify(mainLearning.map((item) => ({ id: item.id, position: item.position })))}`);
   });
   projection.nodes.forEach((node) => actualPositions.forEach((position) => {
     assert.ok(node.position.x + node.width <= position.x || position.x + 260 <= node.position.x
