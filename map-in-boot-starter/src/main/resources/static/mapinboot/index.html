@@ -1,0 +1,277 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Map in Boot</title>
+  <link rel="stylesheet" href="/mapinboot/app.css">
+</head>
+<body data-ui-shell>
+  <div class="app-shell">
+    <header class="app-header">
+      <div class="header-group header-left">
+        <img class="header-logo" src="/mapinboot/assets/mapinboot_logo_transparent.png" alt="Map in Boot 로고">
+        <span class="product-name">Map in Boot</span>
+        <div class="header-meta" aria-label="Snapshot 정보">
+          <span class="service-name" id="service-name">서비스 미확인</span>
+          <span class="snapshot-time" id="snapshot-time">Snapshot 버전: 확인 불가</span>
+          <span class="sr-only" id="view-state">Snapshot 조회 전</span>
+        </div>
+      </div>
+      <div class="header-group header-right">
+        <nav class="header-nav" aria-label="주요 화면">
+          <button class="header-nav-item is-active" type="button" data-view="all-flow" aria-current="page">전체 MAP</button>
+          <button class="header-nav-item" type="button" data-view="feature-flow">기능별 상세</button>
+          <button class="header-nav-item" type="button" data-view="security-flow">보안 MAP</button>
+          <button class="header-nav-item" type="button" data-view="security-detail">상세 취약점</button>
+        </nav>
+        <span class="header-divider" aria-hidden="true"></span>
+        <div class="header-actions" aria-label="도구">
+          <button class="header-action" id="refresh-button" type="button" aria-label="결과 다시 불러오기" data-tooltip="결과 다시 불러오기">
+            <svg class="header-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+              <path d="M20 11a8 8 0 0 0-14.9-4L3 10m0 0V5m0 5h5M4 13a8 8 0 0 0 14.9 4L21 14m0 0v5m0-5h-5"></path>
+            </svg>
+            <span class="sr-only">결과 다시 불러오기</span>
+          </button>
+          <button class="header-action" id="help-button" type="button" aria-label="도움말" aria-expanded="false" aria-controls="help-panel" data-tooltip="도움말">
+            <svg class="header-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+              <circle cx="12" cy="12" r="9"></circle>
+              <path d="M9.8 9a2.3 2.3 0 1 1 3.7 1.8c-.9.7-1.5 1.1-1.5 2.4M12 16.5h.01"></path>
+            </svg>
+            <span class="sr-only">도움말</span>
+          </button>
+          <button class="header-action" id="settings-button" type="button" aria-label="설정" aria-expanded="false" aria-controls="settings-panel" data-tooltip="설정">
+            <svg class="header-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+              <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.38a2 2 0 0 0-.73-2.73l-.15-.09a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"></path>
+              <circle cx="12" cy="12" r="3"></circle>
+            </svg>
+            <span class="sr-only">설정</span>
+          </button>
+          <button class="header-action sdk-logout" id="logout-button" type="button" aria-label="SDK 로그아웃" data-tooltip="로그아웃" hidden>
+            <svg class="header-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+              <path d="M10 17l5-5-5-5M15 12H3M12 3h6a3 3 0 0 1 3 3v12a3 3 0 0 1-3 3h-6"></path>
+            </svg>
+            <span class="sr-only">SDK 로그아웃</span>
+          </button>
+        </div>
+      </div>
+    </header>
+
+    <div class="header-panels">
+      <section class="header-panel" id="help-panel" role="dialog" aria-labelledby="help-panel-title" hidden>
+        <h2 id="help-panel-title">도움말</h2>
+        <ul>
+          <li>Node·Edge에 마우스를 올리면 요약을 확인할 수 있습니다.</li>
+          <li>Node·Edge를 클릭하면 오른쪽 Inspector가 열립니다.</li>
+          <li>검색·필터·화면 맞춤·확대·축소·이동으로 Graph를 탐색합니다.</li>
+          <li>선택 해제는 빈 영역 클릭, 닫기 버튼 또는 Escape입니다.</li>
+        </ul>
+      </section>
+      <section class="header-panel settings-panel" id="settings-panel" role="dialog" aria-labelledby="settings-panel-title" aria-hidden="true" data-open="false" tabindex="-1" inert hidden>
+        <div class="settings-panel-header">
+          <h2 id="settings-panel-title">화면 설정</h2>
+          <button class="settings-close" id="settings-close" type="button" aria-label="설정 닫기">닫기</button>
+        </div>
+        <fieldset class="settings-group">
+          <legend>그래프 표시</legend>
+          <label class="settings-option"><span>기술 영역 표시</span><span class="settings-switch"><input id="setting-show-areas" type="checkbox" role="switch" aria-checked="true" checked><span class="settings-switch-track" aria-hidden="true"></span></span></label>
+          <label class="settings-option"><span>관계명 표시</span><span class="settings-switch"><input id="setting-show-edge-labels" type="checkbox" role="switch" aria-checked="true" checked><span class="settings-switch-track" aria-hidden="true"></span></span></label>
+          <label class="settings-option"><span>미니맵 표시</span><span class="settings-switch"><input id="setting-show-minimap" type="checkbox" role="switch" aria-checked="true" checked><span class="settings-switch-track" aria-hidden="true"></span></span></label>
+        </fieldset>
+        <fieldset class="settings-group">
+          <legend>학습 흐름</legend>
+          <label class="settings-choice"><span>노드에서 머무는 시간</span><select id="setting-flow-node-duration" aria-label="노드에서 머무는 시간">
+            <option value="500">0.5초</option>
+            <option value="1000">1초</option>
+            <option value="1500" selected>1.5초</option>
+            <option value="2000">2초</option>
+            <option value="3000">3초</option>
+            <option value="5000">5초</option>
+          </select></label>
+          <label class="settings-choice"><span>이동 속도</span><select id="setting-flow-speed" aria-label="이동 속도">
+            <option value="0.5">0.5배</option>
+            <option value="1" selected>1배</option>
+            <option value="1.5">1.5배</option>
+            <option value="2">2배</option>
+          </select></label>
+          <p class="settings-description">기능별 상세 화면의 노드 대기 시간과 빛 점 이동 속도에 적용합니다.</p>
+        </fieldset>
+      </section>
+    </div>
+
+    <div class="app-body">
+      <main class="main-content">
+        <section class="graph-canvas" aria-labelledby="view-title">
+          <div class="graph-surface" id="graph-canvas" data-graph-state="empty">
+            <h1 id="view-title" class="sr-only">전체 Flow Map</h1>
+              <div class="graph-tools map-toolbar" aria-label="그래프 탐색 도구">
+              <div class="graph-navigation-tools" aria-label="화면 이동 도구">
+                <button class="graph-tool-button" id="zoom-out" type="button" aria-label="그래프 축소" data-tooltip="그래프 축소"><span aria-hidden="true">−</span></button>
+                <button class="graph-tool-button" id="zoom-in" type="button" aria-label="그래프 확대" data-tooltip="그래프 확대"><span aria-hidden="true">+</span></button>
+                <button class="graph-tool-button" id="fit-graph" type="button" aria-label="전체 그래프 맞춤" data-tooltip="전체 그래프 맞춤">
+                  <svg class="toolbar-icon fit-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M8 3H3v5m13-5h5v5M3 16v5h5m13-5v5h-5M8 8l-5-5m13 5 5-5M8 16l-5 5m13-5 5 5"></path></svg>
+                </button>
+                <button class="graph-tool-button" id="reset-view" type="button" aria-label="보기 초기화" data-tooltip="보기 초기화">
+                  <svg class="toolbar-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M4 11a8 8 0 1 1 2.2 5.5M4 5v6h6"></path></svg>
+                </button>
+                <div class="toolbar-tool-group map-filter-toggle">
+                  <button class="graph-tool-button map-filter-button" id="filter-toggle" type="button" aria-label="필터 열기" data-tooltip="검색 및 그래프 필터" aria-expanded="false" aria-controls="map-filter-panel">
+                    <svg class="filter-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                      <path d="M4 6h4m4 0h8M4 12h8m4 0h4M4 18h2m4 0h10"></path>
+                      <circle cx="10" cy="6" r="1.5"></circle>
+                      <circle cx="14" cy="12" r="1.5"></circle>
+                      <circle cx="8" cy="18" r="1.5"></circle>
+                    </svg>
+                    <span class="sr-only">필터</span>
+                  </button>
+                </div>
+                <div class="toolbar-tool-group map-lock-toggle">
+                  <button class="graph-tool-button map-lock-button" id="screen-lock-toggle" type="button" aria-label="화면 이동과 확대·축소 고정" data-tooltip="화면 이동과 확대·축소 고정" aria-pressed="false" data-locked="false">
+                    <svg class="toolbar-icon lock-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                      <rect x="4.5" y="10" width="15" height="11" rx="2"></rect>
+                      <path class="lock-shackle-open" d="M8 10V7a4 4 0 0 1 7.6-1.7"></path>
+                      <path class="lock-shackle-closed" d="M8 10V7a4 4 0 0 1 8 0v3"></path>
+                      <circle cx="12" cy="15.5" r="1"></circle>
+                    </svg>
+                  </button>
+                </div>
+              </div>
+                <div class="map-filter-panel" id="map-filter-panel" role="region" aria-label="Graph 필터" hidden>
+                    <label class="graph-search" id="endpoint-filter-label"><span id="endpoint-filter-label-text">Endpoint 검색</span>
+                      <input id="endpoint-search" type="search" autocomplete="off" placeholder="Method·Path·Handler" aria-controls="endpoint-options" aria-expanded="false" aria-autocomplete="list">
+                      <div class="endpoint-options" id="endpoint-options" role="listbox" aria-label="API 선택" hidden></div>
+                    </label>
+                    <label id="node-filter-field">노드 유형
+                      <select id="node-filter">
+                        <option value="">모든 노드 유형</option>
+                      </select>
+                    </label>
+                    <label id="edge-filter-field">관계 유형
+                      <select id="edge-filter">
+                        <option value="">모든 관계 유형</option>
+                      </select>
+                    </label>
+                    <label id="unconnected-node-field" hidden>
+                      <input id="include-unconnected-nodes" type="checkbox">
+                      미연결 노드 포함
+                    </label>
+                    <div id="finding-filter-fields" hidden>
+                      <label>진단 유형<select id="finding-rule">
+                        <option value="">모든 유형</option>
+                        <option value="CHAIN_MISSING">보안 필터 체인 미적용</option>
+                        <option value="CHAIN_ORDER">보안 체인·매칭 우선순위 문제</option>
+                        <option value="PUBLIC_ENDPOINT">과도한 공개 접근 허용</option>
+                        <option value="METHOD_MISMATCH">URL·메서드 보안 불일치</option>
+                        <option value="FILTER_ORDER">필터 구성·순서 문제</option>
+                        <option value="OBJECT_BINDING">인증 주체와 대상 객체 권한 검증 문제</option>
+                        <option value="STATE_BYPASS">업무 보안 절차 우회 가능성</option>
+                      </select></label>
+                      <label>판단 신뢰도<select id="finding-confidence">
+                        <option value="">모든 상태</option><option value="CONFIRMED">확정</option>
+                        <option value="LIKELY">검토 필요</option><option value="UNKNOWN">확인 불가</option>
+                      </select></label>
+                      <div id="finding-list" class="finding-list"></div>
+                    </div>
+                    <div id="finding-api-fields" hidden>
+                      <label>취약점 연결 API<select id="finding-api-select" aria-controls="detail-finding-list">
+                        <option value="">API 선택</option>
+                      </select></label>
+                      <div id="detail-finding-list" class="finding-api-list" role="group" aria-label="선택 API의 Finding" aria-live="polite"></div>
+                    </div>
+                    <button class="map-filter-reset" id="search-reset" type="button">검색 초기화</button>
+                    <span class="graph-filter-status sr-only" id="graph-filter-status" role="status" aria-live="polite">Graph 없음</span>
+                </div>
+            </div>
+            <div class="shell-notice" id="shell-notice" role="status" aria-live="polite" hidden></div>
+            <div class="canvas-empty" id="graph-empty">
+            <p id="graph-state-message">Snapshot 조회 후 Graph를 표시합니다.</p>
+            </div>
+            <svg id="graph-svg" class="graph-svg" viewBox="0 0 640 360" role="group" aria-label="Snapshot Graph" hidden>
+              <defs>
+                <marker id="graph-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+                  <path d="M 0 0 L 10 5 L 0 10 z" fill="#86efac"></path>
+                </marker>
+                <marker id="graph-guide-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+                  <path d="M 0 0 L 10 5 L 0 10 z" fill="#6f9479"></path>
+                </marker>
+              </defs>
+              <g id="graph-viewport">
+                <g id="graph-areas" class="graph-areas" aria-hidden="true"></g>
+                <g id="graph-finding-sections" class="graph-finding-sections"></g>
+                <g id="graph-flow-projection" class="graph-flow-projection" aria-hidden="true"></g>
+                <g id="graph-guides" class="graph-guides" aria-hidden="true"></g>
+                <g id="graph-edges"></g>
+                <g id="graph-nodes"></g>
+                <g id="graph-finding-section-titles" class="graph-finding-section-titles" aria-hidden="true"></g>
+                <g id="request-flow-education" aria-hidden="true" hidden>
+                  <circle id="request-flow-dot" class="request-flow-dot" cx="0" cy="0" r="6" hidden></circle>
+                </g>
+              </g>
+            </svg>
+            <div class="request-flow-controls" id="request-flow-controls" role="region" aria-label="요청 처리 흐름" hidden>
+              <div class="request-flow-heading">
+                <h2 class="request-flow-title">요청 처리 흐름</h2>
+                <p class="request-flow-status" id="request-flow-status" data-state="idle" role="status" aria-live="polite">시작 전</p>
+              </div>
+              <div class="request-flow-buttons">
+                <button id="request-flow-start" type="button" aria-label="시작" title="시작"><svg class="toolbar-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M8 5l11 7-11 7z"></path></svg></button>
+                <button id="request-flow-pause" type="button" aria-label="일시정지" title="일시정지"><svg class="toolbar-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M9 5v14M15 5v14"></path></svg></button>
+                <button id="request-flow-reset" type="button" aria-label="처음으로" title="처음으로"><svg class="toolbar-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M4 11a8 8 0 1 1 2.2 5.5M4 5v6h6"></path></svg></button>
+                <span class="request-flow-divider" aria-hidden="true"></span>
+                <button id="request-flow-detail-toggle" type="button" aria-label="상세" title="상세" aria-expanded="false" aria-controls="request-flow-details" disabled><svg class="toolbar-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="9"></circle><path d="M12 11v5M12 8h.01"></path></svg></button>
+              </div>
+              <section class="request-flow-details" id="request-flow-details" role="dialog" aria-labelledby="request-flow-step-title" hidden>
+                <header class="request-flow-detail-header">
+                  <h3 class="request-flow-step-title" id="request-flow-step-title">표시할 단계가 없습니다.</h3>
+                  <button class="request-flow-detail-close" id="request-flow-detail-close" type="button" aria-label="상세 닫기">×</button>
+                </header>
+                <p class="request-flow-step-description" id="request-flow-step-description"></p>
+                <div class="request-flow-navigation" id="request-flow-navigation">
+                  <button id="request-flow-previous" type="button" disabled>이전</button>
+                  <button id="request-flow-next" type="button" disabled>다음</button>
+                  <span class="request-flow-popover-count" id="request-flow-popover-count" aria-live="polite">0 / 0</span>
+                </div>
+              </section>
+            </div>
+            <div class="graph-minimap" id="graph-minimap" hidden>
+              <svg id="graph-minimap-svg" viewBox="0 0 640 360" role="img" aria-label="Graph 미니맵">
+                <rect class="graph-minimap-background" x="0" y="0" width="640" height="360"></rect>
+                <g id="graph-minimap-nodes"></g>
+                <rect id="graph-minimap-viewport" class="graph-minimap-viewport" x="0" y="0" width="640" height="360"></rect>
+              </svg>
+            </div>
+            <div class="graph-popover" id="graph-popover" role="status" aria-live="polite" hidden></div>
+          </div>
+        </section>
+      </main>
+
+      <div class="finding-modal" id="finding-modal" role="dialog" aria-modal="true" aria-labelledby="finding-modal-title" hidden>
+        <section class="finding-modal-panel">
+          <header class="finding-modal-header">
+            <div class="finding-modal-heading">
+              <h2 id="finding-modal-title">Finding</h2>
+              <div class="finding-modal-meta">
+                <span class="finding-modal-confidence" id="finding-modal-confidence" data-confidence="UNKNOWN">판단 불가 (UNKNOWN)</span>
+                <span class="finding-modal-rule" id="finding-modal-rule">Rule ID 확인 불가</span>
+              </div>
+            </div>
+            <button class="finding-modal-close" id="finding-modal-close" type="button" aria-label="Finding 상세 닫기">닫기</button>
+          </header>
+          <div class="finding-modal-content" id="finding-modal-content"></div>
+        </section>
+      </div>
+      <aside class="inspector" id="inspector" aria-hidden="true" hidden></aside>
+    </div>
+  </div>
+  <script src="/mapinboot/vendor/elk-api.js" defer></script>
+  <script src="/mapinboot/graph-flow.js" defer></script>
+  <script src="/mapinboot/request-flow-animation.js" defer></script>
+  <script src="/mapinboot/graph-standard-filters.js" defer></script>
+  <script src="/mapinboot/graph-renderer.js" defer></script>
+  <script src="/mapinboot/layout-client.js" defer></script>
+  <script src="/mapinboot/graph-navigation.js" defer></script>
+  <script src="/mapinboot/graph-inspector.js" defer></script>
+  <script src="/mapinboot/spotlight.js" defer></script>
+  <script src="/mapinboot/app.js" defer></script>
+</body>
+</html>

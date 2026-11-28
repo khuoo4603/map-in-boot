@@ -1,0 +1,403 @@
+package com.mapinboot.demo.identity.config;
+
+import com.mapinboot.demo.identity.repository.InMemoryUserRepository;
+import com.mapinboot.demo.identity.security.RefreshTokenFilter;
+import com.mapinboot.starter.autoconfigure.MapInBootProperties;
+import com.mapinboot.starter.web.access.WebAccessGuard;
+import jakarta.servlet.http.Cookie;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.security.KeyFactory;
+import java.security.interfaces.RSAPublicKey;
+import java.security.spec.X509EncodedKeySpec;
+import java.util.ArrayList;
+import java.util.Base64;
+import java.util.Collection;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.core.io.ClassPathResource;
+import org.springframework.core.env.Environment;
+import org.springframework.core.env.Profiles;
+import org.springframework.core.annotation.Order;
+import org.springframework.core.convert.converter.Converter;
+import org.springframework.http.HttpMethod;
+import org.springframework.http.HttpStatus;
+import org.springframework.security.authentication.AbstractAuthenticationToken;
+import org.springframework.security.authentication.AuthenticationManager;
+import org.springframework.security.config.annotation.authentication.configuration.AuthenticationConfiguration;
+import org.springframework.security.config.annotation.web.builders.HttpSecurity;
+import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
+import org.springframework.security.config.http.SessionCreationPolicy;
+import org.springframework.security.core.GrantedAuthority;
+import org.springframework.security.core.authority.SimpleGrantedAuthority;
+import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
+import org.springframework.security.crypto.password.PasswordEncoder;
+import org.springframework.security.oauth2.core.DelegatingOAuth2TokenValidator;
+import org.springframework.security.oauth2.core.OAuth2Error;
+import org.springframework.security.oauth2.core.OAuth2TokenValidator;
+import org.springframework.security.oauth2.core.OAuth2TokenValidatorResult;
+import org.springframework.security.oauth2.jwt.Jwt;
+import org.springframework.security.oauth2.jwt.JwtDecoder;
+import org.springframework.security.oauth2.jwt.JwtValidators;
+import org.springframework.security.oauth2.jwt.NimbusJwtDecoder;
+import org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationToken;
+import org.springframework.security.web.SecurityFilterChain;
+import org.springframework.security.web.AuthenticationEntryPoint;
+import org.springframework.security.web.authentication.HttpStatusEntryPoint;
+import org.springframework.security.web.authentication.session.ChangeSessionIdAuthenticationStrategy;
+import org.springframework.security.web.authentication.session.SessionAuthenticationStrategy;
+import org.springframework.security.oauth2.server.resource.web.authentication.BearerTokenAuthenticationFilter;
+import org.springframework.security.web.context.NullSecurityContextRepository;
+import org.springframework.security.web.context.HttpSessionSecurityContextRepository;
+import org.springframework.security.web.context.SecurityContextRepository;
+import org.springframework.security.web.csrf.CookieCsrfTokenRepository;
+import org.springframework.session.MapSessionRepository;
+import org.springframework.session.Session;
+import org.springframework.session.web.http.CookieSerializer;
+import org.springframework.session.web.http.DefaultCookieSerializer;
+import org.springframework.web.cors.CorsConfiguration;
+import org.springframework.web.cors.CorsConfigurationSource;
+import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
+
+/**
+ * Identity 서비스 Spring Security 및 JWT 인증 설정
+ */
+@Configuration
+@EnableWebSecurity
+public class IdentitySecurityConfig {
+
+    private final String publicKeyPath;
+    private final String issuer;
+    private final String audience;
+    private final String corsAllowedOrigins;
+    private final Environment environment;
+    private final boolean mapInBootWebEnabled;
+
+    public IdentitySecurityConfig(
+            @Value("${demo.jwt.public-key-path:}") String publicKeyPath,
+            @Value("${demo.jwt.issuer:demo-identity}") String issuer,
+            @Value("${demo.jwt.audience:demo-services}") String audience,
+            @Value("${DEMO_CORS_ALLOWED_ORIGINS:}") String corsAllowedOrigins,
+            Environment environment,
+            @Value("${mapinboot.web.enabled:false}") boolean mapInBootWebEnabled) {
+        this.publicKeyPath = publicKeyPath;
+        this.issuer = issuer;
+        this.audience = audience;
+        this.corsAllowedOrigins = corsAllowedOrigins;
+        this.environment = environment;
+        this.mapInBootWebEnabled = mapInBootWebEnabled;
+    }
+
+    /**
+     * 보안 필터 체인 구성
+     */
+    @Bean
+    @Order(1)
+    public SecurityFilterChain sessionSecurityFilterChain(
+            HttpSecurity http,
+            SecurityContextRepository securityContextRepository) throws Exception {
+        http
+            .securityMatcher("/api/session/**")
+            .cors(cors -> cors.configurationSource(corsConfigurationSource()))
+            .securityContext(securityContext -> securityContext
+                .securityContextRepository(securityContextRepository))
+            .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.IF_REQUIRED))
+            .exceptionHandling(exception -> exception
+                .authenticationEntryPoint(diagnosticAuthenticationEntryPoint()))
+            .authorizeHttpRequests(auth -> auth
+                .anyRequest().hasAuthority("ROLE_CUSTOMER"));
+
+        return http.build();
+    }
+
+    /*
+     * Scenario: N08 (counterpart: V08)
+     * API: POST /api/auth/refresh
+     * Rule: FILTER_ORDER
+     * Vulnerable: 없음
+     * 취약: BearerTokenAuthenticationFilter보다 먼저 RefreshTokenFilter 실행
+     * Note: SDK는 이 주석을 탐지 근거로 사용하지 않음
+     */
+    @Bean
+    @Order(50)
+    public SecurityFilterChain refreshSecurityFilterChain(
+            HttpSecurity http,
+            JwtDecoder jwtDecoder,
+            InMemoryUserRepository userRepository) throws Exception {
+        configureRefreshSecurity(http, "/api/auth/refresh", jwtDecoder);
+        http.addFilterBefore(
+                new RefreshTokenFilter(userRepository), BearerTokenAuthenticationFilter.class);
+        return http.build();
+    }
+
+    @Bean
+    @Order(100)
+    public SecurityFilterChain securityFilterChain(
+            HttpSecurity http,
+            JwtDecoder jwtDecoder,
+            SecurityContextRepository securityContextRepository,
+            MapInBootProperties mapInBootProperties) throws Exception {
+        http
+            .csrf(csrf -> csrf
+                .csrfTokenRepository(CookieCsrfTokenRepository.withHttpOnlyFalse())
+                .requireCsrfProtectionMatcher(request -> {
+                    String method = request.getMethod();
+                    if ("GET".equals(method) || "HEAD".equals(method)
+                            || "TRACE".equals(method) || "OPTIONS".equals(method)) {
+                        return false;
+                    }
+                    if (WebAccessGuard.isAuthPostRequest(request)) {
+                        return false;
+                    }
+                    String authorization = request.getHeader("Authorization");
+                    if ("/api/identity/verify".equals(request.getRequestURI())
+                            && authorization == null
+                            && !hasIdentitySessionCookie(request.getCookies())) {
+                        return false;
+                    }
+                    return authorization == null || !authorization.startsWith("Bearer ");
+                }))
+            .cors(cors -> cors.configurationSource(corsConfigurationSource()))
+            .securityContext(securityContext -> securityContext
+                .securityContextRepository(securityContextRepository))
+            .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.IF_REQUIRED))
+            .exceptionHandling(exception -> exception
+                .authenticationEntryPoint(diagnosticAuthenticationEntryPoint()))
+            .authorizeHttpRequests(auth -> {
+                // SDK UI와 인증 진입 경로를 호스트 필터까지 전달
+                auth.requestMatchers(HttpMethod.GET, WebAccessGuard.publicUiPaths()).permitAll();
+                auth.requestMatchers(HttpMethod.GET, WebAccessGuard.authUiPaths()).permitAll();
+                auth.requestMatchers(HttpMethod.GET, WebAccessGuard.authStatusPaths()).permitAll();
+                auth.requestMatchers(HttpMethod.POST, WebAccessGuard.authPostPaths()).permitAll();
+                if (WebAccessGuard.isSdkReadApiFilterPassThroughEnabled(mapInBootProperties, environment)) {
+                    auth.requestMatchers(HttpMethod.GET, WebAccessGuard.previewApiPaths()).permitAll();
+                }
+                auth.requestMatchers("/mapinboot-assets/**",
+                        "/api/auth/login", "/api/auth/csrf", "/error").permitAll();
+                auth.requestMatchers("/api/identity/**").hasAuthority("ROLE_CUSTOMER");
+                auth.requestMatchers("/api/**").authenticated();
+                auth.anyRequest().authenticated();
+            })
+            .logout(logout -> logout
+                .logoutUrl("/api/auth/logout")
+                .invalidateHttpSession(true)
+                .clearAuthentication(true)
+                .deleteCookies("MIB_IDENTITY_SESSION")
+                .logoutSuccessHandler((request, response, authentication) ->
+                        response.setStatus(204)))
+            .oauth2ResourceServer(oauth2 -> oauth2.jwt(jwt -> jwt
+                .decoder(jwtDecoder)
+                .jwtAuthenticationConverter(jwtAuthenticationConverter())
+            ));
+
+        return http.build();
+    }
+
+    private AuthenticationEntryPoint diagnosticAuthenticationEntryPoint() {
+        return (request, response, exception) -> {
+            String diagnosticPath = request.getContextPath() + "/mapinboot/test";
+            if (mapInBootWebEnabled
+                    && environment.acceptsProfiles(Profiles.of("develop"))
+                    && "GET".equals(request.getMethod())
+                    && diagnosticPath.equals(request.getRequestURI())) {
+                // 미인증 동일 URL 로그인 화면 제공
+                ClassPathResource loginPage = new ClassPathResource(
+                        "META-INF/mapinboot/development-login/development-login.html");
+                if (!loginPage.exists()) {
+                    response.sendError(HttpStatus.NOT_FOUND.value());
+                    return;
+                }
+                response.setStatus(HttpStatus.OK.value());
+                response.setContentType("text/html;charset=UTF-8");
+                try (var input = loginPage.getInputStream()) {
+                    input.transferTo(response.getOutputStream());
+                }
+                return;
+            }
+            response.sendError(HttpStatus.UNAUTHORIZED.value());
+        };
+    }
+
+    private void configureRefreshSecurity(
+            HttpSecurity http,
+            String path,
+            JwtDecoder jwtDecoder) throws Exception {
+        http
+            .securityMatcher(path)
+            .csrf(csrf -> csrf.disable())
+            .cors(cors -> cors.configurationSource(corsConfigurationSource()))
+            .securityContext(securityContext -> securityContext
+                .securityContextRepository(new NullSecurityContextRepository()))
+            .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
+            .exceptionHandling(exception -> exception
+                .authenticationEntryPoint(new HttpStatusEntryPoint(HttpStatus.UNAUTHORIZED)))
+            .authorizeHttpRequests(auth -> auth.anyRequest().authenticated())
+            .oauth2ResourceServer(oauth2 -> oauth2.jwt(jwt -> jwt
+                .decoder(jwtDecoder)
+                .jwtAuthenticationConverter(jwtAuthenticationConverter())
+            ));
+    }
+
+    private boolean hasIdentitySessionCookie(Cookie[] cookies) {
+        if (cookies == null) {
+            return false;
+        }
+        for (Cookie cookie : cookies) {
+            if ("MIB_IDENTITY_SESSION".equals(cookie.getName())) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * 인메모리 HTTP Session 저장소 등록
+     */
+    @Bean
+    public MapSessionRepository sessionRepository() {
+        Map<String, Session> sessions = new ConcurrentHashMap<>();
+        return new MapSessionRepository(sessions);
+    }
+
+    /**
+     * Identity 전용 Session Cookie 속성 구성
+     */
+    @Bean
+    public CookieSerializer cookieSerializer() {
+        DefaultCookieSerializer serializer = new DefaultCookieSerializer();
+        serializer.setCookieName("MIB_IDENTITY_SESSION");
+        serializer.setCookiePath("/");
+        serializer.setUseHttpOnlyCookie(true);
+        serializer.setSameSite("Lax");
+        return serializer;
+    }
+
+    /**
+     * Session SecurityContext 저장소 등록
+     */
+    @Bean
+    public SecurityContextRepository securityContextRepository() {
+        HttpSessionSecurityContextRepository repository = new HttpSessionSecurityContextRepository();
+        repository.setDisableUrlRewriting(true);
+        return repository;
+    }
+
+    /**
+     * 수동 로그인 성공 시 Session ID 교체 전략
+     */
+    @Bean
+    public SessionAuthenticationStrategy sessionAuthenticationStrategy() {
+        return new ChangeSessionIdAuthenticationStrategy();
+    }
+
+    /**
+     * AuthenticationManager 빈 등록
+     */
+    @Bean
+    public AuthenticationManager authenticationManager(AuthenticationConfiguration configuration) throws Exception {
+        return configuration.getAuthenticationManager();
+    }
+
+    /**
+     * JWT 서명 및 유효성 검증용 JwtDecoder 빈 등록
+     */
+    @Bean
+    public JwtDecoder jwtDecoder() throws Exception {
+        if (publicKeyPath == null || publicKeyPath.isBlank()) {
+            throw new IllegalStateException("JWT 공개키 경로 미설정");
+        }
+        String pem = Files.readString(Path.of(publicKeyPath));
+        String publicKeyPEM = pem
+                .replace("-----BEGIN PUBLIC KEY-----", "")
+                .replace("-----END PUBLIC KEY-----", "")
+                .replaceAll("\\s", "");
+        byte[] encoded = Base64.getDecoder().decode(publicKeyPEM);
+        KeyFactory keyFactory = KeyFactory.getInstance("RSA");
+        RSAPublicKey publicKey = (RSAPublicKey) keyFactory.generatePublic(new X509EncodedKeySpec(encoded));
+
+        NimbusJwtDecoder decoder = NimbusJwtDecoder.withPublicKey(publicKey).build();
+
+        OAuth2TokenValidator<Jwt> withIssuer = JwtValidators.createDefaultWithIssuer(issuer);
+        OAuth2TokenValidator<Jwt> withAudience = new OAuth2TokenValidator<>() {
+            @Override
+            public OAuth2TokenValidatorResult validate(Jwt token) {
+                List<String> aud = token.getAudience();
+                if (aud != null && aud.contains(audience)) {
+                    return OAuth2TokenValidatorResult.success();
+                }
+                return OAuth2TokenValidatorResult.failure(new OAuth2Error("invalid_token", "Audience 불일치", null));
+            }
+        };
+
+        decoder.setJwtValidator(new DelegatingOAuth2TokenValidator<>(withIssuer, withAudience));
+        return decoder;
+    }
+
+    /**
+     * JWT의 roles 클레임을 Spring Security GrantedAuthority로 매핑하는 변환기
+     */
+    @Bean
+    public Converter<Jwt, ? extends AbstractAuthenticationToken> jwtAuthenticationConverter() {
+        return jwt -> {
+            Collection<GrantedAuthority> authorities = new ArrayList<>();
+            List<String> roles = jwt.getClaimAsStringList("roles");
+            if (roles != null) {
+                for (String role : roles) {
+                    authorities.add(new SimpleGrantedAuthority(role));
+                }
+            }
+            return new JwtAuthenticationToken(jwt, authorities, jwt.getSubject());
+        };
+    }
+
+    /**
+     * CORS 설정 구성
+     */
+    @Bean
+    public CorsConfigurationSource corsConfigurationSource() {
+        CorsConfiguration configuration = new CorsConfiguration();
+        configuration.setAllowedOrigins(resolveCorsAllowedOrigins());
+        configuration.setAllowedMethods(List.of("GET", "POST", "PUT", "DELETE", "OPTIONS"));
+        configuration.setAllowedHeaders(List.of(
+            "Authorization", "Content-Type", "X-Requested-With", "X-XSRF-TOKEN"
+        ));
+        configuration.setAllowCredentials(true);
+
+        UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();
+        source.registerCorsConfiguration("/**", configuration);
+        return source;
+    }
+
+    private List<String> resolveCorsAllowedOrigins() {
+        if (corsAllowedOrigins == null || corsAllowedOrigins.isBlank()) {
+            return List.of("http://localhost:8080", "http://127.0.0.1:8080");
+        }
+
+        List<String> origins = new ArrayList<>();
+        for (String origin : corsAllowedOrigins.split(",")) {
+            String trimmedOrigin = origin.trim();
+            if (trimmedOrigin.isEmpty()) {
+                continue;
+            }
+            if (trimmedOrigin.contains("*")) {
+                throw new IllegalArgumentException("CORS 와일드카드 Origin 미지원");
+            }
+            origins.add(trimmedOrigin);
+        }
+        return origins.isEmpty()
+                ? List.of("http://localhost:8080", "http://127.0.0.1:8080")
+                : origins;
+    }
+
+    /**
+     * 비밀번호 해싱용 BCryptPasswordEncoder 빈 등록
+     */
+    @Bean
+    public PasswordEncoder passwordEncoder() {
+        return new BCryptPasswordEncoder();
+    }
+}

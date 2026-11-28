@@ -1,0 +1,15 @@
+:root { font-family: "Segoe UI", sans-serif; color: #3d4a59; background: #f6f7f9; }
+* { box-sizing: border-box; }
+body { display: grid; min-height: 100vh; margin: 0; place-items: center; background: #f6f7f9; }
+.login-card { width: min(100% - 32px, 420px); padding: 38px 36px 34px; border: 1px solid #e2e6eb; border-radius: 9px; background: #fff; box-shadow: 0 12px 32px rgb(38 56 77 / 8%); }
+.brand { color: #26384d; font-size: 19px; }
+h1 { margin: 28px 0 8px; color: #39495b; font-size: 24px; font-weight: 500; }
+.description { margin: 0 0 27px; color: #8994a2; font-size: 13px; }
+label { display: block; margin-bottom: 7px; color: #566576; font-size: 13px; }
+.password-field { display: flex; border: 1px solid #cfd8e2; border-radius: 5px; background: #fff; }
+input { min-width: 0; flex: 1; padding: 11px 12px; border: 0; outline: 0; color: #3d4a59; background: transparent; font: inherit; }
+.password-field:focus-within { border-color: #2878d4; box-shadow: 0 0 0 2px rgb(40 120 212 / 14%); }
+#password-toggle { padding: 0 12px; border: 0; color: #687789; background: transparent; cursor: pointer; font-size: 12px; }
+.login-button { width: 100%; margin-top: 19px; padding: 11px 12px; border: 0; border-radius: 5px; color: #fff; background: #2878d4; cursor: pointer; font: inherit; }
+.login-button:disabled { cursor: wait; opacity: .65; }
+.login-status { min-height: 19px; margin: 11px 0 0; color: #b34b58; font-size: 12px; }

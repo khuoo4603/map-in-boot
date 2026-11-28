@@ -1,0 +1,1700 @@
+(() => {
+  "use strict";
+
+  const tabs = [
+    { id: "properties", label: "속성" },
+    { id: "connections", label: "연결 노드" },
+    { id: "relations", label: "연결 관계" }
+  ];
+  const filterEducationTab = { id: "filter-education", label: "필터 이해하기" };
+  const graphDisplay = window.MapInBootGraph || {};
+  const standardFilterClient = window.MapInBootStandardFilters || null;
+  const standardFilters = standardFilterClient && standardFilterClient.list
+    ? standardFilterClient.list()
+    : [];
+  const nodeTypeNames = graphDisplay.nodeTypeNames || {
+    APPLICATION: "애플리케이션",
+    SERVLET: "서블릿",
+    ENDPOINT: "API",
+    HANDLER: "핸들러",
+    SECURITY_CHAIN: "보안 필터 체인",
+    FILTER: "필터",
+    AUTHENTICATION: "인증",
+    AUTHORIZATION: "인가",
+    SECURITY_DATA: "보안 정보",
+    BUSINESS_SECURITY_STATE: "업무 보안 상태"
+  };
+  const edgeTypeNames = graphDisplay.edgeTypeNames || {
+    FLOWS_TO: "흐름",
+    MATCHED_BY: "적용 체인",
+    FILTERED_BY: "적용 필터",
+    SECURED_BY: "보호 근거",
+    READS_SECURITY_DATA: "보안정보 읽기",
+    WRITES_SECURITY_DATA: "보안정보 기록",
+    CONVERTS_TO_AUTHORITY: "권한 변환",
+    USES_FOR_AUTHORIZATION: "실제 인가 사용",
+    SECURITY_STATE: "보안 상태"
+  };
+  const nodeTypeLabel = (type) => nodeTypeNames[type] || "노드 유형 확인 불가";
+  const edgeTypeLabel = (type) => edgeTypeNames[type] || "관계 유형 확인 불가";
+  const confidenceLabel = graphDisplay.confidenceLabel || (() => "판단 불가");
+  const findingRuleLabel = graphDisplay.findingRuleLabel || (() => "진단 유형 확인 불가");
+  const evidenceSourceLabel = graphDisplay.evidenceSourceLabel || (() => "출처 확인 불가");
+  const nodeDisplay = graphDisplay.nodeDisplay || ((item) => ({ primary: item.label, detail: "" }));
+  const shortHandlerSignature = graphDisplay.shortHandlerSignature || ((value) => value);
+  const controllerGroupDisplay = graphDisplay.controllerGroupDisplay || ((item) => ({
+    primary: item.controllerName || item.controllerFqcn,
+    displayId: "표시 ID 확인 불가"
+  }));
+
+  function valueOf(value, fallback = "확인할 수 없음") {
+    return value === null || value === undefined || value === "" ? fallback : String(value);
+  }
+
+  const attributeNames = {
+    httpMethod: "HTTP 메서드",
+    path: "경로",
+    handler: "핸들러",
+    handlerMapping: "핸들러 매핑",
+    mvcPathPatternSettings: "MVC 경로 패턴 설정",
+    params: "요청 파라미터",
+    headers: "요청 헤더",
+    consumes: "요청 미디어 유형",
+    produces: "응답 미디어 유형",
+    servletName: "서블릿 이름",
+    filterClass: "필터 클래스",
+    servletClass: "서블릿 클래스",
+    servletKind: "서블릿 종류",
+    urlPattern: "URL 경로 패턴",
+    dispatcherTypes: "Dispatcher 유형",
+    urlPatterns: "URL 경로 패턴",
+    servletNames: "서블릿 이름",
+    registrationKind: "등록 구분",
+    registrationName: "등록 이름",
+    filterOrder: "필터 순서",
+    filterRole: "필터 역할",
+    chainKey: "체인 내부 식별자",
+    chainOrder: "보안 체인 순서",
+    proxyBeanName: "보안 프록시 Bean 이름",
+    matcherCondition: "요청 매칭 조건",
+    matcherType: "매칭 방식",
+    matcherClass: "매처 클래스",
+    policyMatcherCondition: "정책 매칭 조건",
+    policyMatcherType: "정책 매칭 방식",
+    policyKind: "인가 정책",
+    policySource: "정책 출처",
+    policyOrder: "정책 순서",
+    requiredAuthority: "필요 권한",
+    authorityOperator: "권한 결합 방식",
+    pathPatternSettings: "경로 패턴 설정",
+    factType: "수집 사실 유형",
+    securityKind: "보안 종류",
+    flowKind: "흐름 구분",
+    apiType: "API 유형",
+    apiName: "API 메서드명",
+    apiOwner: "API 소유 클래스",
+    apiDescriptor: "API 메서드 서명",
+    sourceKind: "원천 유형",
+    mappingKind: "매핑 유형",
+    observationKind: "관찰 유형",
+    principalType: "Principal 유형",
+    claimName: "Claim 이름",
+    claim: "Claim 이름",
+    verificationKind: "검증 유형",
+    codeLocation: "코드 위치",
+    credentialSource: "인증정보 출처",
+    credentialCodeLocation: "인증정보 코드 위치",
+    credentialApiOwner: "인증정보 API 소유 클래스",
+    credentialApiName: "인증정보 API 메서드명",
+    credentialApiDescriptor: "인증정보 API 메서드 서명",
+    attributeName: "속성 이름",
+    occurrence: "발생 위치",
+    operation: "수행 동작",
+    required: "필수 여부",
+    hasDefaultValue: "기본값 여부",
+    declarationKind: "선언 유형",
+    annotationType: "어노테이션 유형",
+    beanName: "Bean 이름",
+    declaringClass: "선언 클래스",
+    declaringMethod: "선언 메서드",
+    expressionKind: "표현식 유형",
+    invocationKind: "호출 유형",
+    methodSignature: "메서드 서명",
+    methodSecurityInfrastructure: "메서드 보안 기반 구성",
+    proxyApplicability: "프록시 적용 가능성",
+    proxyDetected: "프록시 확인 결과",
+    proxyKind: "프록시 유형",
+    targetClass: "대상 클래스",
+    authorizationManager: "인가 관리자",
+    authorizationStrategy: "인가 전략",
+    checkKind: "검증 유형",
+    resourceType: "대상 자원 유형",
+    objectLookup: "대상 객체 조회 호출",
+    ownerGetter: "소유자 확인 메서드",
+    requirementKey: "요구사항 식별값",
+    requirementKind: "요구사항 유형",
+    principalSource: "인증 주체 출처",
+    evaluationScope: "판단 범위",
+    pathOutcome: "경로 판단 결과",
+    coverage: "분석 대상 범위",
+    stateName: "업무 상태 이름",
+    stateAction: "업무 상태 동작",
+    authData: "인증 데이터",
+    authType: "인증 유형",
+    authCheck: "인증 확인 방식",
+    codePattern: "코드 분석 패턴",
+    unauthenticatedAction: "미인증 요청 처리",
+    filterChainContinuation: "필터 체인 진행 조건",
+    instanceReuse: "필터 인스턴스 재사용"
+  };
+  const attributeValueNames = {
+    apiType: {
+      AUTHORITY: "권한 API", HEADER: "헤더 API", PRINCIPAL: "인증 주체 API",
+      SESSION: "세션 API", SPRING_SECURITY_JWT: "Spring Security JWT API"
+    },
+    authCheck: { IS_AUTHENTICATED: "인증 여부 확인" },
+    authData: { SECURITY_CONTEXT_AUTHENTICATION: "SecurityContext의 인증 정보" },
+    authType: { AUTHENTICATION: "인증", JWT_AUTHENTICATION: "JWT 인증" },
+    authorityOperator: { ANY: "하나 이상 충족", ALL: "모두 충족" },
+    codePattern: { AUTHENTICATION_GUARD: "인증 확인 흐름", AUTHENTICATION_LOOKUP: "인증 정보 조회 흐름", UNKNOWN: "확인 불가" },
+    coverage: {
+      ALL: "전체 대상", COMPLETE_SUPPORTED_PATH: "지원 경로 전체", PARTIAL: "일부 대상",
+      NONE: "해당 없음", INCOMPLETE: "분석 불완전", UNKNOWN: "확인 불가"
+    },
+    credentialSource: {
+      JWT_SUBJECT: "JWT 주체", AUTHENTICATION_NAME: "인증 이름", REQUEST_HEADER: "요청 헤더", UNKNOWN: "확인 불가"
+    },
+    declarationKind: { METHOD: "메서드 선언", CLASS: "클래스 선언", UNKNOWN: "확인 불가" },
+    evaluationScope: { HANDLER_LOCAL: "핸들러 내부", UNKNOWN: "확인 불가" },
+    factType: {
+      ENDPOINT_MAPPING: "Endpoint 매핑", SERVLET_REGISTRATION: "서블릿 등록", FILTER_REGISTRATION: "필터 등록",
+      SECURITY_CHAIN: "보안 필터 체인", URL_AUTHORIZATION: "URL 인가 정책", METHOD_AUTHORIZATION: "메서드 인가 정책",
+      JWT_USAGE: "JWT 사용", SESSION_USAGE: "세션 사용", HEADER_USAGE: "헤더 사용", PRINCIPAL_USAGE: "인증 주체 사용",
+      AUTHORITY_MAPPING: "권한 매핑", OBJECT_AUTHORIZATION: "객체 인가 확인", OBJECT_AUTHORIZATION_REQUIREMENT: "객체 인가 요구",
+      OBJECT_ACCESS_PATH: "객체 접근 경로", BUSINESS_SECURITY_STATE: "업무 보안 상태", BUSINESS_STATE_EVALUATION: "업무 상태 판단"
+    },
+    filterChainContinuation: { AFTER_AUTHENTICATION: "인증 이후" },
+    filterRole: { AUTHENTICATION_PROVIDER: "인증 제공 필터" },
+    mappingKind: { GRANTED_AUTHORITY_CREATION: "인가 권한 생성" },
+    matcherCondition: { ANY: "모든 요청" },
+    matcherType: {
+      ANY: "모든 요청", METHOD_PATH: "HTTP 메서드·경로", NEGATED: "제외 조건",
+      OR: "여러 조건 중 하나", UNSUPPORTED: "지원하지 않는 방식", UNKNOWN: "확인 불가"
+    },
+    mvcPathPatternSettings: { DEFAULT: "기본 설정", NON_DEFAULT: "사용자 설정", UNKNOWN: "확인 불가" },
+    observationKind: {
+      DECLARATION: "선언 정보", CODE_PATTERN: "코드 분석", SPRING_METADATA: "Spring 메타데이터",
+      RUNTIME: "실행 환경", BYTECODE: "바이트코드 분석"
+    },
+    operation: {
+      READ: "조회", DECLARE: "선언", CREATE: "생성", VERIFY_CONFIGURATION: "검증 구성",
+      WRITE: "작성", SIGN: "서명", AUTH_STATUS: "인증 상태 확인"
+    },
+    pathOutcome: {
+      ENFORCED: "보호 적용", BYPASS_PATH: "보호 우회 경로", UNRESOLVED: "판단 미완료",
+      GUARDED: "검증됨", SOURCE_MISMATCH: "인증 주체 불일치", UNGUARDED: "검증 없음", UNKNOWN: "확인 불가"
+    },
+    pathPatternSettings: { DEFAULT: "기본 설정", NON_DEFAULT: "사용자 설정", UNKNOWN: "확인 불가" },
+    policyKind: {
+      PERMIT_ALL: "공개 접근 허용", AUTHENTICATED: "인증 필요", AUTHORITY_REQUIRED: "권한 필요",
+      COMPOSITE_AUTHORITY: "복합 권한 필요"
+    },
+    policyMatcherCondition: { ANY: "모든 요청" },
+    policyMatcherType: {
+      ANY: "모든 요청", METHOD_PATH: "HTTP 메서드·경로", PATH: "경로", NEGATED: "제외 조건",
+      UNSUPPORTED: "지원하지 않는 방식", UNKNOWN: "확인 불가"
+    },
+    policySource: {
+      URL: "URL 인가 정책", METHOD: "메서드 인가 정책", OBJECT: "객체 인가 정책", ANNOTATION: "어노테이션 인가 정책"
+    },
+    principalSource: {
+      JWT_SUBJECT: "JWT 주체", AUTHENTICATION_NAME: "인증 이름", REQUEST_HEADER: "요청 헤더", UNKNOWN: "확인 불가"
+    },
+    proxyApplicability: { APPLICABLE: "적용 가능", NOT_APPLICABLE: "적용 불가", UNKNOWN: "확인 불가" },
+    proxyDetected: { DETECTED: "확인됨", NOT_DETECTED: "확인되지 않음", UNKNOWN: "확인 불가" },
+    proxyKind: { JDK: "JDK 프록시", CGLIB: "CGLIB 프록시", UNKNOWN: "확인 불가" },
+    registrationKind: { SECURITY: "보안", SERVLET: "서블릿" },
+    required: { "true": "필수", "false": "선택" },
+    hasDefaultValue: { "true": "기본값 있음", "false": "기본값 없음" },
+    securityKind: { AUTHORIZATION: "인가", AUTHENTICATION: "인증", JWT: "JWT" },
+    servletKind: { DISPATCHER: "요청 분배 서블릿", SERVLET: "서블릿" },
+    sourceKind: {
+      AUTHENTICATION: "인증", JWT: "JWT", SESSION: "세션", HEADER: "헤더", PRINCIPAL: "인증 주체",
+      JWT_SUBJECT: "JWT 주체", REQUEST_HEADER: "요청 헤더", UNKNOWN: "확인 불가"
+    },
+    stateAction: { REQUIRES: "업무 상태 요구", PRODUCES: "업무 상태 생성" },
+    unauthenticatedAction: { HTTP_401: "HTTP 401 응답" },
+    verificationKind: { CONFIGURATION: "구성", UNKNOWN: "확인 불가" }
+  };
+  const enumAttributeKeys = new Set(Object.keys(attributeValueNames)
+    .filter((key) => key !== "matcherCondition" && key !== "policyMatcherCondition"));
+
+  function attributeLabel(key, index) {
+    return attributeNames[key] || `확인되지 않은 속성 ${index}`;
+  }
+
+  function attributeValue(key, value) {
+    const text = valueOf(value);
+    if (key === "matcherCondition" && /^NOT\([\s\S]*\)$/.test(text)) return `제외 조건 · ${text.slice(4, -1)}`;
+    if (key === "matcherCondition" && /^OR\([\s\S]*\)$/.test(text)) return `여러 조건 중 하나 · ${text.slice(3, -1)}`;
+    const values = attributeValueNames[key];
+    if (values && Object.prototype.hasOwnProperty.call(values, text)) return values[text];
+    if (key === "policyKind") return "인가 조건 확인 필요";
+    if (key === "policySource") return "인가 범위 확인 필요";
+    return enumAttributeKeys.has(key) ? `확인되지 않은 분류 (${text})` : text;
+  }
+
+  function confidenceValue(value) {
+    return confidenceLabel(valueOf(value, "UNKNOWN"));
+  }
+
+  function appendElement(parent, tagName, className, text) {
+    const element = document.createElement(tagName);
+    if (className) element.setAttribute("class", className);
+    if (text !== undefined) element.textContent = text;
+    parent.appendChild(element);
+    return element;
+  }
+
+  function appendRow(parent, label, value, attributeKey = null) {
+    const row = appendElement(parent, "div", "inspector-row");
+    if (attributeKey) row.setAttribute("data-attribute-key", attributeKey);
+    appendElement(row, "span", "inspector-label", label);
+    appendElement(row, "span", "inspector-value", valueOf(value));
+    return row;
+  }
+
+  function appendHeading(parent, text) {
+    return appendElement(parent, "h3", "inspector-section-title", text);
+  }
+
+  function appendEmpty(parent, text) {
+    appendElement(parent, "p", "inspector-empty", text);
+  }
+
+  function copyIds(values) {
+    return Array.isArray(values) ? values.map((value) => String(value)) : [];
+  }
+
+  function displayGroupNodeIds(group) {
+    return Array.from(new Set([
+      ...(group.handlerIds || []), ...(group.endpointIds || []), ...(group.nodeIds || []), ...(group.originalNodeIds || [])
+    ].map(String)));
+  }
+
+  function displayGroupEdgeIds(group) {
+    return Array.from(new Set([...(group.edgeIds || []), ...(group.originalEdgeIds || [])].map(String)));
+  }
+
+  function relatedFindings(snapshot, selection, controllerGroups = [], graph = null, displayModel = null, overviewRouting = null) {
+    const findings = snapshot && Array.isArray(snapshot.findings) ? snapshot.findings : [];
+    if (!selection) return [];
+    if (graph && displayModel && overviewRouting) {
+      const scope = resolveOverviewSelection(graph, selection, controllerGroups, snapshot, displayModel, overviewRouting);
+      return findings.filter((finding) => copyIds(finding && finding.nodeIds).some((id) => scope.nodeIds.has(id))
+        || copyIds(finding && finding.edgeIds).some((id) => scope.edgeIds.has(id)));
+    }
+    if (selection.kind === "controller-group") {
+      const group = controllerGroups.find((candidate) => candidate.id === selection.id);
+      if (!group) return [];
+      const nodeIds = new Set(displayGroupNodeIds(group));
+      const edgeIds = new Set(displayGroupEdgeIds(group));
+      return findings.filter((finding) => copyIds(finding && finding.nodeIds).some((id) => nodeIds.has(id))
+        || copyIds(finding && finding.edgeIds).some((id) => edgeIds.has(id)));
+    }
+    if (selection.kind === "runtime-component" || selection.kind === "runtime-relationship") {
+      const architecture = snapshot && snapshot.runtimeArchitecture;
+      const componentIds = new Set();
+      const nodeIds = new Set();
+      if (architecture) {
+        const selected = selection.kind === "runtime-component"
+          ? (architecture.components || []).filter((item) => item.id === selection.id)
+          : (architecture.relationships || []).filter((item) => item.id === selection.id)
+            .flatMap((relation) => [relation.sourceId, relation.targetId])
+              .map((id) => (architecture.components || []).find((item) => item.id === id)).filter(Boolean);
+        selected.forEach((component) => {
+          componentIds.add(component.id);
+          (component.graphNodeIds || []).forEach((id) => nodeIds.add(id));
+        });
+      }
+      return findings.filter((finding) => copyIds(finding && finding.nodeIds).some((id) => nodeIds.has(id))
+        || copyIds(finding && finding.edgeIds).some((id) => nodeIds.has(id))
+        || (finding.runtimeComponentIds || []).some((id) => componentIds.has(id)));
+    }
+    const field = selection.kind === "node" ? "nodeIds" : "edgeIds";
+    return findings.filter((finding) => copyIds(finding && finding[field]).includes(selection.id));
+  }
+
+  function evidenceMap(snapshot) {
+    const entries = snapshot && Array.isArray(snapshot.evidence) ? snapshot.evidence : [];
+    return new Map(entries
+      .filter((entry) => entry && entry.id !== undefined && entry.id !== null)
+      .map((entry) => [String(entry.id), entry]));
+  }
+
+  function directRelations(graph, selection, controllerGroups = [], snapshot = null, displayModel = null, overviewRouting = null) {
+    if (!graph || !selection) return [];
+    if (displayModel && overviewRouting) {
+      const scope = resolveOverviewSelection(graph, selection, controllerGroups, snapshot, displayModel, overviewRouting);
+      return graph.edges.filter((edge) => scope.edgeIds.has(edge.id));
+    }
+    if (selection.kind === "edge") {
+      return graph.edges.filter((edge) => edge.id === selection.id);
+    }
+    if (selection.kind === "controller-group") {
+      const group = controllerGroups.find((candidate) => candidate.id === selection.id);
+      if (!group) return [];
+      const nodeIds = new Set(displayGroupNodeIds(group));
+      const edgeIds = new Set(displayGroupEdgeIds(group));
+      return graph.edges.filter((edge) => edgeIds.has(edge.id) || nodeIds.has(edge.sourceId) || nodeIds.has(edge.targetId));
+    }
+    if (selection.kind === "runtime-component" || selection.kind === "runtime-relationship") {
+      const relation = selection.kind === "runtime-relationship"
+        && (snapshot && snapshot.runtimeArchitecture && snapshot.runtimeArchitecture.relationships || [])
+          .find((item) => item.id === selection.id);
+      const components = snapshot && snapshot.runtimeArchitecture && snapshot.runtimeArchitecture.components || [];
+      const selected = selection.kind === "runtime-component"
+        ? components.filter((item) => item.id === selection.id)
+        : relation ? [relation.sourceId, relation.targetId]
+          .map((id) => components.find((item) => item.id === id)).filter(Boolean) : [];
+      const nodeIds = new Set(selected.flatMap((item) => item.graphNodeIds || []));
+      return graph.edges.filter((edge) => nodeIds.has(edge.sourceId) || nodeIds.has(edge.targetId));
+    }
+    return graph.edges.filter((edge) => edge.sourceId === selection.id || edge.targetId === selection.id);
+  }
+
+  function resolveOverviewSelection(graph, selection, controllerGroups, snapshot, displayModel, overviewRouting) {
+    const nodeIds = new Set();
+    const edgeIds = new Set();
+    const displayItemIds = new Set();
+    const cardIds = new Set();
+    const rowIds = new Set();
+    const visualRelationIds = new Set();
+    const portIds = new Set();
+    const segmentIds = new Set();
+    const junctionIds = new Set();
+    const scope = { nodeIds, edgeIds, displayItemIds, cardIds, rowIds, visualRelationIds, portIds, segmentIds, junctionIds };
+    if (!graph || !selection) return scope;
+    const items = displayModel.itemById || {};
+    const cards = displayModel.cardById || {};
+    const relations = Array.isArray(overviewRouting.relations) ? overviewRouting.relations : [];
+    const graphNodeById = new Map(graph.nodes.map((node) => [node.id, node]));
+    const graphEdgeById = new Map(graph.edges.map((edge) => [edge.id, edge]));
+    const selectedItems = new Set();
+    const seedNodeIds = new Set();
+    const selectedEdgeIds = new Set();
+    const selectedRuntimeComponentIds = new Set();
+    let selectedCard = cards[selection.id] || null;
+    let selectedItem = items[selection.id] || null;
+    let rowScope = null;
+
+    if (selection.kind === "controller-group" && selectedCard) {
+      rowScope = selectedCard.rowId;
+      cardIds.add(selectedCard.id);
+      (selectedCard.items || []).forEach((item) => selectedItems.add(item.id));
+    } else if (selection.kind === "controller-group" && selectedItem) {
+      rowScope = selectedItem.rowId;
+      selectedItems.add(selectedItem.id);
+      selectedCard = cards[selectedItem.cardId] || null;
+    } else if (selection.kind === "controller-group") {
+      const group = controllerGroups.find((candidate) => candidate.id === selection.id);
+      if (group) {
+        rowScope = group.rowId || null;
+        displayGroupNodeIds(group).forEach((id) => seedNodeIds.add(id));
+        if (rowScope !== null) rowIds.add(rowScope);
+        seedNodeIds.forEach((id) => (displayModel.originalNodeToItemIds[id] || []).forEach((itemId) => {
+          const item = items[itemId];
+          if (item && (rowScope === null || item.rowId === rowScope)) selectedItems.add(itemId);
+        }));
+      }
+    } else if (selection.kind === "edge") {
+      selectedEdgeIds.add(selection.id);
+      (selection.segmentEdgeIds || []).forEach((id) => selectedEdgeIds.add(id));
+      if (selection.segmentId) {
+        const segment = (overviewRouting.segments || []).find((item) => item.id === selection.segmentId);
+        (segment && segment.relationIds || []).forEach((id) => visualRelationIds.add(id));
+        segmentIds.add(selection.segmentId);
+      }
+    } else if (selection.kind === "node") {
+      seedNodeIds.add(selection.id);
+      const node = graphNodeById.get(selection.id);
+      if (node && node.type === "ENDPOINT" && window.MapInBootFlow) {
+        const index = window.MapInBootFlow.createIndex(graph);
+        const mapping = index.handlerFor(node.id);
+        if (mapping.status === "CONFIRMED") nodeIds.add(mapping.node.id);
+        const chain = index.firstMatchedChain(node.id);
+        if (chain.status === "CONFIRMED") nodeIds.add(chain.chain.id);
+      } else if (node && node.type === "HANDLER" && window.MapInBootFlow) {
+        window.MapInBootFlow.createIndex(graph).endpointsForHandler(node.id)
+          .forEach((mapping) => nodeIds.add(mapping.endpoint.id));
+      }
+    } else if (selection.kind === "runtime-component" || selection.kind === "runtime-relationship") {
+      const architecture = snapshot && snapshot.runtimeArchitecture;
+      const components = architecture && Array.isArray(architecture.components) ? architecture.components : [];
+      const relations = architecture && Array.isArray(architecture.relationships) ? architecture.relationships : [];
+      const relation = selection.kind === "runtime-relationship" ? relations.find((item) => item.id === selection.id) : null;
+      const selected = selection.kind === "runtime-component"
+        ? components.filter((item) => item.id === selection.id)
+        : relation ? [relation.sourceId, relation.targetId].map((id) => components.find((item) => item.id === id)).filter(Boolean) : [];
+      selected.forEach((component) => selectedRuntimeComponentIds.add(component.id));
+      selected.flatMap((item) => item.graphNodeIds || []).forEach((id) => nodeIds.add(id));
+      selected.forEach((component) => (displayModel.runtimeComponentToItemIds
+        && displayModel.runtimeComponentToItemIds[component.id] || []).forEach((itemId) => selectedItems.add(itemId)));
+      (displayModel.runtimeRelationshipToRelationIds
+        && displayModel.runtimeRelationshipToRelationIds[selection.id] || []).forEach((relationId) => visualRelationIds.add(relationId));
+      graph.edges.filter((edge) => nodeIds.has(edge.sourceId) || nodeIds.has(edge.targetId)).forEach((edge) => {
+        edgeIds.add(edge.id);
+        nodeIds.add(edge.sourceId);
+        nodeIds.add(edge.targetId);
+      });
+    }
+
+    selectedItems.forEach((id) => {
+      displayItemIds.add(id);
+      const item = items[id];
+      if (!item) return;
+      if (item.rowId !== null && item.rowId !== undefined) rowIds.add(item.rowId);
+      (item.originalNodeIds || []).forEach((nodeId) => seedNodeIds.add(nodeId));
+      (item.inputPortIds || []).forEach((id) => portIds.add(id));
+      (item.outputPortIds || []).forEach((id) => portIds.add(id));
+      if (item.cardId) cardIds.add(item.cardId);
+    });
+    const selectedItemNodeIds = new Set(seedNodeIds);
+    if (selection.kind === "controller-group") {
+      graph.edges.forEach((edge) => {
+        if (!selectedItemNodeIds.has(edge.sourceId) && !selectedItemNodeIds.has(edge.targetId)) return;
+        if (rowIds.size > 0) {
+          const edgeRows = (displayModel.displayEdgeInstances || [])
+            .filter((instance) => (instance.originalEdgeIds || []).includes(edge.id))
+            .map((instance) => instance.rowId);
+          const endpointRows = [edge.sourceId, edge.targetId].flatMap((nodeId) =>
+            (displayModel.originalNodeToItemIds[nodeId] || []).map((itemId) => items[itemId]?.rowId));
+          if (![...edgeRows, ...endpointRows].some((rowId) => rowIds.has(rowId))) return;
+        }
+        selectedEdgeIds.add(edge.id);
+      });
+    }
+    if (selectedCard) {
+      cardIds.add(selectedCard.id);
+      if (selectedCard.rowId !== null && selectedCard.rowId !== undefined) rowIds.add(selectedCard.rowId);
+    }
+    if (rowScope !== null && rowScope !== undefined) rowIds.add(rowScope);
+
+    const rowMatches = (relation) => rowIds.size === 0 || rowIds.has(relation.rowId);
+    const seedMatches = (relation) => (relation.relatedNodeIds || []).some((id) => seedNodeIds.has(id));
+    relations.forEach((relation) => {
+      if (!rowMatches(relation)) return;
+      if (selectedItems.has(relation.sourceItemId) || selectedItems.has(relation.targetItemId)
+        || seedMatches(relation)
+        || selection.kind === "runtime-component" && (relation.runtimeComponentIds || [])
+          .some((id) => selectedRuntimeComponentIds.has(id))
+        || (relation.originalEdgeIds || []).some((id) => selectedEdgeIds.has(id))) {
+        visualRelationIds.add(relation.id);
+      }
+    });
+
+    // 보안 항목의 실제 Handler→Endpoint 참조에서 확인된 등록 Mapping까지 같은 Row에 한정해 연결
+    const selectedRelations = relations.filter((relation) => visualRelationIds.has(relation.id));
+    const mappingEdgeIds = new Set(selectedRelations.flatMap((relation) => relation.mappingEdgeIds || []));
+    const endpointAnchors = new Set(selectedRelations.map((relation) => relation.viaEndpointId).filter(Boolean));
+    selectedRelations.forEach((relation) => {
+      if (relation.viaEndpointId) seedNodeIds.add(relation.viaEndpointId);
+      if (relation.originalHandlerId) seedNodeIds.add(relation.originalHandlerId);
+    });
+    relations.filter((relation) => rowMatches(relation) && relation.role === "API_MAPPING"
+      && ((relation.mappingEdgeIds || []).some((id) => mappingEdgeIds.has(id))
+        || (relation.relatedNodeIds || []).some((id) => endpointAnchors.has(id))))
+      .forEach((relation) => visualRelationIds.add(relation.id));
+
+    relations.filter((relation) => visualRelationIds.has(relation.id)).forEach((relation) => {
+      (relation.relatedNodeIds || []).forEach((id) => nodeIds.add(id));
+      (relation.originalEdgeIds || []).forEach((id) => selectedEdgeIds.add(id));
+      (relation.mappingEdgeIds || []).forEach((id) => selectedEdgeIds.add(id));
+      [relation.sourceItemId, relation.targetItemId].filter(Boolean).forEach((id) => {
+        displayItemIds.add(id);
+        const item = items[id];
+        if (!item) return;
+        (item.originalNodeIds || []).forEach((nodeId) => nodeIds.add(nodeId));
+        if (item.cardId) cardIds.add(item.cardId);
+      });
+      [relation.visualSourcePortId, relation.visualTargetPortId].filter(Boolean).forEach((id) => portIds.add(id));
+      (overviewRouting.routesByRelationId[relation.id]?.orderedSegmentIds || [])
+        .forEach((id) => segmentIds.add(id));
+    });
+    selectedEdgeIds.forEach((id) => {
+      edgeIds.add(id);
+      const edge = graphEdgeById.get(id);
+      if (edge) {
+        nodeIds.add(edge.sourceId);
+        nodeIds.add(edge.targetId);
+      }
+      const relationIds = displayModel.originalEdgeToRelationIds && displayModel.originalEdgeToRelationIds[id] || [];
+      relationIds.forEach((relationId) => visualRelationIds.add(relationId));
+    });
+    if (selection.kind === "node" || selection.kind === "controller-group") {
+      seedNodeIds.forEach((id) => nodeIds.add(id));
+    }
+    (overviewRouting.junctions || []).filter((junction) => junction.segmentIds.some((id) => segmentIds.has(id)
+      || junction.relationIds.some((relationId) => visualRelationIds.has(relationId))))
+      .forEach((junction) => junctionIds.add(junction.id));
+    if (selection.segmentId) {
+      segmentIds.clear();
+      segmentIds.add(selection.segmentId);
+      junctionIds.clear();
+      (overviewRouting.junctions || []).filter((junction) => junction.segmentIds.includes(selection.segmentId))
+        .forEach((junction) => junctionIds.add(junction.id));
+    }
+
+    return scope;
+  }
+
+  function related(graph, selection, controllerGroups = [], snapshot = null, displayModel = null, overviewRouting = null) {
+    if (displayModel && overviewRouting) {
+      return resolveOverviewSelection(graph, selection, controllerGroups, snapshot, displayModel, overviewRouting);
+    }
+    const nodeIds = new Set();
+    const edgeIds = new Set();
+    if (!graph || !selection) return { nodeIds, edgeIds };
+    if (selection.kind === "edge") {
+      const edge = graph.edges.find((candidate) => candidate.id === selection.id);
+      if (edge) {
+        edgeIds.add(edge.id);
+        nodeIds.add(edge.sourceId);
+        nodeIds.add(edge.targetId);
+      }
+      return { nodeIds, edgeIds };
+    }
+    if (selection.kind === "runtime-component" || selection.kind === "runtime-relationship") {
+      const architecture = snapshot && snapshot.runtimeArchitecture;
+      const components = architecture && Array.isArray(architecture.components) ? architecture.components : [];
+      const relations = architecture && Array.isArray(architecture.relationships) ? architecture.relationships : [];
+      const relation = selection.kind === "runtime-relationship" ? relations.find((item) => item.id === selection.id) : null;
+      const selected = selection.kind === "runtime-component"
+        ? components.filter((item) => item.id === selection.id)
+        : relation ? [relation.sourceId, relation.targetId].map((id) => components.find((item) => item.id === id)).filter(Boolean) : [];
+      selected.forEach((component) => (component.graphNodeIds || []).forEach((id) => nodeIds.add(id)));
+      graph.nodes.filter((node) => nodeIds.has(node.id)).forEach((node) => nodeIds.add(node.id));
+      graph.edges.forEach((edge) => {
+        if (!nodeIds.has(edge.sourceId) && !nodeIds.has(edge.targetId)) return;
+        edgeIds.add(edge.id);
+        nodeIds.add(edge.sourceId);
+        nodeIds.add(edge.targetId);
+      });
+      return { nodeIds, edgeIds };
+    }
+    const selectedNode = selection.kind === "node" && graph.nodes.find((node) => node.id === selection.id);
+    if (selectedNode && selectedNode.type === "ENDPOINT" && window.MapInBootFlow
+      && typeof window.MapInBootFlow.deriveEndpointGraph === "function") {
+      const detail = window.MapInBootFlow.deriveEndpointGraph(graph, selection.id);
+      detail.nodes.forEach((node) => nodeIds.add(node.id));
+      detail.edges.forEach((edge) => edgeIds.add(edge.id));
+      return { nodeIds, edgeIds };
+    }
+    if (selection.kind === "controller-group") {
+      const group = controllerGroups.find((candidate) => candidate.id === selection.id);
+      if (!group) return { nodeIds, edgeIds };
+      const ownedNodeIds = new Set(displayGroupNodeIds(group));
+      const ownedEdgeIds = new Set(displayGroupEdgeIds(group));
+      nodeIds.add(selection.id);
+      ownedNodeIds.forEach((id) => nodeIds.add(id));
+      ownedEdgeIds.forEach((id) => edgeIds.add(id));
+      graph.edges.forEach((edge) => {
+        if (!ownedEdgeIds.has(edge.id) && !ownedNodeIds.has(edge.sourceId) && !ownedNodeIds.has(edge.targetId)) return;
+        edgeIds.add(edge.id);
+        nodeIds.add(edge.sourceId);
+        nodeIds.add(edge.targetId);
+      });
+      return { nodeIds, edgeIds };
+    }
+    nodeIds.add(selection.id);
+    graph.edges.forEach((edge) => {
+      if (edge.sourceId !== selection.id && edge.targetId !== selection.id) return;
+      edgeIds.add(edge.id);
+      nodeIds.add(edge.sourceId === selection.id ? edge.targetId : edge.sourceId);
+    });
+    return { nodeIds, edgeIds };
+  }
+
+  function create(options = {}) {
+    const inspector = options.inspector;
+    const findingModalTitle = options.findingModalTitle;
+    const findingModalConfidence = options.findingModalConfidence;
+    const findingModalRule = options.findingModalRule;
+    const findingModalContent = options.findingModalContent;
+    const popover = options.popover;
+    const surface = options.surface;
+    const onClear = options.onClear || (() => {});
+    const onSelect = options.onSelect || (() => {});
+    const onOpenDetail = options.onOpenDetail || (() => {});
+    const onOpenFindingEndpoint = options.onOpenFindingEndpoint || (() => {});
+    const onCopy = options.onCopy || (() => {});
+    let activeTab = "properties";
+    let selectedFilterFqcn = null;
+    let current = {
+      graph: null,
+      visibleGraph: null,
+      snapshot: null,
+      selection: null,
+      controllerGroups: [],
+      displayIds: null,
+      detailedFlow: false,
+      endpointChainId: null
+    };
+
+    function availableTabs() {
+      return current.detailedFlow && standardFilters.length > 0
+        ? [...tabs, filterEducationTab]
+        : tabs;
+    }
+
+    function setHidden(element, hidden) {
+      if (!element) return;
+      element.hidden = hidden;
+      element.setAttribute("aria-hidden", String(hidden));
+    }
+
+    function close() {
+      current = {
+        graph: null,
+        visibleGraph: null,
+        snapshot: null,
+        selection: null,
+        controllerGroups: [],
+        displayIds: null,
+        displayModel: null,
+        detailedFlow: false,
+        endpointChainId: null
+      };
+      setHidden(inspector, true);
+      if (inspector) {
+        inspector.replaceChildren();
+        inspector.removeAttribute("data-selection-kind");
+        inspector.removeAttribute("data-selection-id");
+      }
+    }
+
+    function selectedItem(graph, selection, controllerGroups = [], snapshot = current.snapshot) {
+      if (!graph || !selection) return null;
+      if (selection.kind === "controller-group") {
+        return controllerGroups.find((group) => group.id === selection.id) || null;
+      }
+      if (selection.kind === "runtime-component") {
+        return snapshot && snapshot.runtimeArchitecture && (snapshot.runtimeArchitecture.components || [])
+          .find((item) => item.id === selection.id) || null;
+      }
+      if (selection.kind === "runtime-relationship") {
+        return snapshot && snapshot.runtimeArchitecture && (snapshot.runtimeArchitecture.relationships || [])
+          .find((item) => item.id === selection.id) || null;
+      }
+      const collection = selection.kind === "node" ? graph.nodes : graph.edges;
+      return collection.find((item) => item.id === selection.id) || null;
+    }
+
+    function displayId(kind, id) {
+      const labeler = current.displayIds && current.displayIds[kind];
+      return labeler ? labeler(id) : kind === "node" ? "노드 확인 불가" : "관계 확인 불가";
+    }
+
+    function displayIdsFor(graph, supplied) {
+      return supplied || (graphDisplay.createDisplayIds ? graphDisplay.createDisplayIds(graph) : null);
+    }
+
+    function selectedLabel(selection, item) {
+      if (!item) return "확인할 수 없음";
+      if (selection.kind === "runtime-component") {
+        const className = valueOf(item.className, item.kind || "Runtime 구성 객체");
+        return className.slice(Math.max(className.lastIndexOf("."), className.lastIndexOf("$")) + 1).split("#")[0];
+      }
+      if (selection.kind === "runtime-relationship") return valueOf(item.kind, "Runtime 관계");
+      if (selection.kind === "controller-group") {
+        if (item.isCompositeCard) return item.title || item.kind || "복합 카드";
+        if (item.isCompositeItem) return item.label || item.kind || "표시 항목";
+        return item.type && graphDisplay.securityGroupDisplay
+          ? graphDisplay.securityGroupDisplay(item, current.graph, current.displayIds).primary
+          : controllerGroupDisplay(item, current.displayIds).primary;
+      }
+      if (selection.kind === "node") {
+        const attributes = item.attributes || {};
+        const display = nodeDisplay(item);
+        if (item.type === "ENDPOINT") {
+          return [attributes.httpMethod, attributes.path].filter(Boolean).join(" ") || display.primary;
+        }
+        if (item.type === "APPLICATION") return attributes.applicationName || attributes.applicationClass || display.primary || item.label;
+        if (item.type === "SERVLET") return attributes.servletName || attributes.servletClass || display.primary || item.label;
+        if (item.type === "HANDLER") return shortHandlerSignature(attributes.handler || item.label || display.primary);
+        if (item.type === "SECURITY_CHAIN") return attributes.proxyBeanName || attributes.chainKey || attributes.matcherCondition || display.primary || item.label;
+        if (item.type === "FILTER") return attributes.registrationName || attributes.filterClass || display.primary || item.label;
+        if (item.type === "AUTHENTICATION" && attributes.authenticationKind) {
+          return attributeValue("authenticationKind", attributes.authenticationKind);
+        }
+        if (item.type === "AUTHORIZATION") {
+          if (attributes.factType === "OBJECT_AUTHORIZATION_REQUIREMENT" || attributes.factType === "OBJECT_ACCESS_PATH") {
+            return attributeValue("factType", attributes.factType);
+          }
+          if (attributes.policyKind) return attributeValue("policyKind", attributes.policyKind);
+        }
+        if (item.type === "BUSINESS_SECURITY_STATE") return attributes.stateName || display.primary || item.label;
+        return display.primary || item.label;
+      }
+      return displayId("edge", item.id);
+    }
+
+    function headerAttributeKeys(item) {
+      const attributes = item.attributes || {};
+      if (item.type === "APPLICATION") return attributes.applicationName ? ["applicationName"] : attributes.applicationClass ? ["applicationClass"] : [];
+      if (item.type === "SERVLET") return attributes.servletName ? ["servletName"] : attributes.servletClass ? ["servletClass"] : [];
+      if (item.type === "ENDPOINT") return ["httpMethod", "path", "handler"];
+      if (item.type === "HANDLER") return [];
+      if (item.type === "SECURITY_CHAIN") return attributes.proxyBeanName ? ["proxyBeanName"]
+        : attributes.chainKey ? ["chainKey"] : attributes.matcherCondition ? ["matcherCondition"] : [];
+      if (item.type === "FILTER") return attributes.registrationName ? ["registrationName"]
+        : attributes.filterClass ? ["filterClass"] : [];
+      if (item.type === "AUTHENTICATION") return attributes.authenticationKind ? ["authenticationKind"] : [];
+      if (item.type === "AUTHORIZATION") return attributes.factType === "OBJECT_AUTHORIZATION_REQUIREMENT"
+        || attributes.factType === "OBJECT_ACCESS_PATH" ? ["factType"] : attributes.policyKind ? ["policyKind"] : [];
+      if (item.type === "SECURITY_DATA") {
+        if (attributes.dataKind) return ["dataKind"];
+        if (attributes.operation === "VERIFY_CONFIGURATION" || attributes.verificationKind === "CONFIGURATION") {
+          return ["operation", "verificationKind"];
+        }
+        if (attributes.mappingKind === "GRANTED_AUTHORITY_CREATION") return ["mappingKind"];
+        if (attributes.apiType === "AUTHORITY") return ["apiType"];
+        if (attributes.sourceKind === "JWT") return ["sourceKind"];
+        if (attributes.apiType === "SPRING_SECURITY_JWT") return ["apiType"];
+        if (attributes.apiType === "PRINCIPAL") return ["apiType"];
+        return attributes.dataType ? ["dataType"] : attributes.securityKind ? ["securityKind"] : [];
+      }
+      if (item.type === "BUSINESS_SECURITY_STATE") return attributes.stateName ? ["stateName"]
+        : ["factType", "stateAction"];
+      return [];
+    }
+
+    function appendEvidence(parent, snapshot, ids, showRawIds = false, heading = "근거") {
+      if (heading) appendHeading(parent, heading);
+      const evidenceIds = Array.from(new Set(copyIds(ids)));
+      if (evidenceIds.length === 0) {
+        appendEmpty(parent, "연결된 근거가 없습니다.");
+        return;
+      }
+      const byId = evidenceMap(snapshot);
+      const displayCodes = snapshot && snapshot.evidenceDisplayCodes || {};
+      evidenceIds.forEach((id) => {
+        const evidence = byId.get(id);
+        const block = appendElement(parent, "div", "inspector-evidence");
+        if (showRawIds) appendRow(block, "Evidence ID", id);
+        const hasDisplayCode = Object.prototype.hasOwnProperty.call(displayCodes, id)
+          && valueOf(displayCodes[id], "") !== "";
+        if (hasDisplayCode) {
+          const code = valueOf(displayCodes[id], "");
+          appendElement(block, "strong", "inspector-evidence-code", code);
+          appendCopyButton(block, "표시 ID 복사", code, "inspector-evidence-copy-code", "표시 ID를 복사했습니다.");
+        } else {
+          appendElement(block, "p", "inspector-evidence-state", "표시 ID가 저장되지 않은 근거입니다.");
+        }
+        if (!evidence) {
+          appendElement(block, "p", "inspector-evidence-state", "근거 참조를 확인할 수 없습니다.");
+        } else {
+          appendRow(block, "근거 출처", evidenceSourceLabel(evidence.source));
+          appendRow(block, "확인 내용", valueOf(evidence.summary, "확인 내용 정보 없음"));
+          appendRow(block, "확인 위치", valueOf(evidence.location, "확인 위치 정보 없음"));
+        }
+      });
+    }
+
+    function appendRuntimeEvidence(parent, snapshot, ids, showHeading = true, showRawIds = true) {
+      const architecture = snapshot && snapshot.runtimeArchitecture;
+      const byId = new Map((architecture && architecture.evidence || []).map((item) => [item.id, item]));
+      const evidenceIds = Array.from(new Set(copyIds(ids)));
+      if (showHeading) appendHeading(parent, "Runtime 근거");
+      if (!evidenceIds.length) {
+        appendEmpty(parent, "Runtime 근거 없음");
+        return;
+      }
+      evidenceIds.forEach((id) => {
+        const item = byId.get(id);
+        const block = appendElement(parent, "div", "inspector-evidence");
+        if (showRawIds) appendRow(block, "근거 ID", id);
+        else appendElement(block, "p", "inspector-evidence-state", "Runtime 근거");
+        if (!item) {
+          appendElement(block, "p", "inspector-evidence-state", "Runtime 근거 참조 확인 불가");
+          return;
+        }
+        appendRow(block, "출처", item.source);
+        appendRow(block, "확인 내용", item.summary);
+        appendRow(block, "확인 위치", item.location);
+      });
+    }
+
+    function appendCopyButton(parent, label, text, className, successMessage) {
+      const button = appendElement(parent, "button", className, label);
+      button.setAttribute("type", "button");
+      button.addEventListener("click", async () => {
+        try {
+          const clipboard = window.navigator && window.navigator.clipboard;
+          if (!clipboard || typeof clipboard.writeText !== "function") throw new Error("clipboard-unavailable");
+          await clipboard.writeText(text);
+          onCopy(successMessage, "success");
+        } catch (_error) {
+          onCopy("클립보드 권한이 없어 복사하지 못했습니다.", "error");
+        }
+      });
+      return button;
+    }
+
+    function appendFindings(parent, snapshot, selection, controllerGroups, heading = "Finding 참조") {
+      const findings = relatedFindings(snapshot, selection, controllerGroups, current.graph,
+        current.displayModel, current.overviewRouting);
+      appendHeading(parent, heading);
+      appendElement(parent, "p", "inspector-finding-state", findings.length > 0 ? "관련 Finding 있음" : "관련 Finding 없음");
+      findings.forEach((finding) => {
+        const block = appendElement(parent, "div", "inspector-finding");
+        appendRow(block, "진단 유형", findingRuleLabel(finding.ruleId));
+        appendRow(block, "제목", finding.title);
+      });
+    }
+
+    function appendAttributes(parent, attributes, priorityKeys = [], consumedKeys = [], showHeading = true) {
+      const entries = attributes && typeof attributes === "object" && !Array.isArray(attributes)
+        ? Object.entries(attributes)
+        : [];
+      const consumed = new Set(consumedKeys);
+      const visibleEntries = entries.filter(([key]) => !consumed.has(key));
+      const prioritized = priorityKeys.map((key) => visibleEntries.find(([entryKey]) => entryKey === key)).filter(Boolean);
+      const remaining = visibleEntries.filter(([key]) => !priorityKeys.includes(key));
+      const orderedEntries = [...prioritized, ...remaining];
+      if (orderedEntries.length === 0) return;
+      if (showHeading) appendHeading(parent, "추가 속성");
+      let unknownIndex = 0;
+      orderedEntries.forEach(([key, value]) => {
+        const label = attributeNames[key] || attributeLabel(key, ++unknownIndex);
+        appendRow(parent, label, attributeValue(key, value), key);
+      });
+    }
+
+    function filterMapComponents(snapshot) {
+      return ((snapshot && snapshot.runtimeArchitecture && snapshot.runtimeArchitecture.components) || [])
+        .filter((component) => component.kind === "TOMCAT_FILTER_MAPPING");
+    }
+
+    function filterMapMatches(mapping, target, components) {
+      const mappingAttributes = mapping.attributes || {};
+      const targetAttributes = target.attributes || {};
+      const linkedRegistration = (components || []).find((component) => component.kind === "SERVLET_FILTER_REGISTRATION"
+        && (component.graphNodeIds || []).includes(target.id));
+      const mappingContextId = String(mapping.contextId || "");
+      const targetContextId = String(target.contextId || linkedRegistration && linkedRegistration.contextId || "");
+      const registrationName = String(targetAttributes.registrationName || target.beanName
+        || linkedRegistration && (linkedRegistration.attributes || {}).registrationName || "");
+      const mappingName = String(mappingAttributes.filterName || "");
+      if (!mappingName || !mappingContextId || mappingName !== registrationName) return false;
+      if (targetContextId) return targetContextId === mappingContextId;
+      return (components || []).some((component) => component.kind === "SERVLET_FILTER_REGISTRATION"
+        && component.contextId === mappingContextId
+        && (component.graphNodeIds || []).includes(target.id)
+        && String((component.attributes || {}).registrationName || "") === mappingName);
+    }
+
+    function appendFilterMapEntry(parent, mapping, includeEvidence = true) {
+      const attributes = mapping.attributes || {};
+      const block = appendElement(parent, "div", "inspector-relation");
+      if (includeEvidence) appendRow(block, "원본 Runtime 객체", mapping.id);
+      if (attributes.filterName) appendRow(block, "필터 이름", attributes.filterName);
+      if (attributes.registrationOrder !== undefined) appendRow(block, "등록 순서", attributes.registrationOrder);
+      if (attributes.urlPatterns !== undefined) appendRow(block, "URL 패턴", Array.isArray(attributes.urlPatterns)
+        ? attributes.urlPatterns.join(", ") : attributes.urlPatterns);
+      if (attributes.dispatcherTypes !== undefined) appendRow(block, "DispatcherType", Array.isArray(attributes.dispatcherTypes)
+        ? attributes.dispatcherTypes.join(", ") : attributes.dispatcherTypes);
+      if (attributes.servletNames !== undefined) appendRow(block, "서블릿 이름", Array.isArray(attributes.servletNames)
+        ? attributes.servletNames.join(", ") : attributes.servletNames);
+      if (includeEvidence) appendRuntimeEvidence(block, current.snapshot, mapping.evidenceIds);
+    }
+
+    function appendFilterMapDetails(parent, snapshot, targets = [], includeUnmatched = false, includeEvidence = true) {
+      const mappings = filterMapComponents(snapshot);
+      if (!mappings.length) return;
+      const architecture = snapshot && snapshot.runtimeArchitecture || {};
+      const components = architecture.components || [];
+      const graphFilters = (current.graph && current.graph.nodes || []).filter((node) => node.type === "FILTER");
+      const contextTargets = targets.filter((target) => ["SERVLET_CONTEXT", "TOMCAT_CONTEXT"].includes(target.kind));
+      const scopedMappings = contextTargets.length ? mappings.filter((mapping) => contextTargets.some((target) =>
+        mapping.contextId === target.contextId && (target.kind !== "TOMCAT_CONTEXT" || mapping.parentId === target.id))) : mappings;
+      const isMatched = (mapping) => components.some((component) => component.kind === "SERVLET_FILTER_REGISTRATION"
+        && filterMapMatches(mapping, component, components)) || graphFilters.some((node) => filterMapMatches(mapping, node, components));
+      const selected = targets.length ? scopedMappings.filter((mapping) => targets.some((target) =>
+        filterMapMatches(mapping, target, components))) : [];
+      const unmatched = includeUnmatched ? scopedMappings.filter((mapping) => !isMatched(mapping)) : [];
+      const entries = Array.from(new Set([...selected, ...unmatched]));
+      if (!entries.length) return;
+      appendHeading(parent, selected.length ? "서블릿 필터 매핑" : "대응 Filter를 확인하지 못한 FilterMap");
+      if (unmatched.length && selected.length) appendElement(parent, "p", "inspector-help",
+        "필터 이름이나 클래스로 대응되는 Servlet Filter를 확인하지 못한 매핑 포함");
+      entries.forEach((mapping) => appendFilterMapEntry(parent, mapping, includeEvidence));
+    }
+
+    function appendMvcRegistrationDetails(parent, snapshot, item) {
+      const components = (snapshot && snapshot.runtimeArchitecture && snapshot.runtimeArchitecture.components) || [];
+      const adapterIds = item.kind === "HANDLER_ADAPTER" ? [item.id]
+        : item.kind === "HANDLER_MAPPING" ? components.filter((component) => component.kind === "HANDLER_ADAPTER"
+          && component.parentId === item.id).map((component) => component.id) : [];
+      const entries = components.filter((component) => ["ARGUMENT_RESOLVER", "MESSAGE_CONVERTER"].includes(component.kind)
+        && adapterIds.includes(component.parentId));
+      if (!entries.length) return;
+      appendHeading(parent, "등록된 MVC 처리 구성");
+      entries.forEach((component) => {
+        const block = appendElement(parent, "div", "inspector-relation");
+        appendRow(block, "구성 유형", component.kind);
+        appendRow(block, "구현 클래스", component.className || "확인 불가");
+        appendAttributes(block, component.attributes);
+        appendRuntimeEvidence(block, snapshot, component.evidenceIds);
+      });
+    }
+
+    function appendHostConfigurationDetails(parent, snapshot, item) {
+      if (item.kind !== "WEB_SERVER") return;
+      const components = (snapshot && snapshot.runtimeArchitecture && snapshot.runtimeArchitecture.components) || [];
+      const related = components.filter((component) => String(component.kind).startsWith("TOMCAT_")
+        && (!item.contextId || component.contextId === item.contextId));
+      if (!related.length) return;
+      appendHeading(parent, "웹 서버 내부 구성");
+      related.forEach((component) => {
+        const block = appendElement(parent, "div", "inspector-relation");
+        appendRow(block, "구성 유형", component.kind);
+        appendRow(block, "구현 클래스", component.className || "확인 불가");
+        appendAttributes(block, component.attributes);
+        appendRuntimeEvidence(block, snapshot, component.evidenceIds);
+      });
+    }
+
+    function appendNodeButton(parent, node, direction) {
+      const button = appendElement(parent, "button", "inspector-link");
+      button.setAttribute("type", "button");
+      button.setAttribute("data-node-id", node.id);
+      button.textContent = `${direction ? `${direction} · ` : ""}${displayId("node", node.id)} · ${nodeTypeLabel(node.type)} · ${selectedLabel({ kind: "node" }, node)}`;
+      button.addEventListener("click", () => onSelect("node", node.id));
+      return button;
+    }
+
+    function renderProperties(parent, graph, item, selection, snapshot) {
+      appendHeading(parent, "기본 속성");
+      const selectedRuntimeComponent = selection.kind === "runtime-component" ? item : null;
+      const detailModel = current.displayModel;
+      const detailItemIds = current.view === "feature-flow" || current.view === "security-detail"
+        ? selection.kind === "node" ? detailModel?.originalNodeToItemIds?.[selection.id]
+          : selection.kind === "runtime-component" ? detailModel?.runtimeComponentToItemIds?.[selection.id] : null
+        : null;
+      const detailItem = detailItemIds?.length === 1 ? detailModel.itemById?.[detailItemIds[0]] : null;
+      if ((selection.kind === "runtime-component" && !detailItem) || selection.kind === "runtime-relationship") {
+        const architecture = snapshot && snapshot.runtimeArchitecture;
+        const components = architecture && architecture.components || [];
+        const componentById = new Map(components.map((component) => [component.id, component]));
+        const areaFor = (kind) => {
+          if (kind === "APPLICATION_CONTEXT" || kind === "WEB_SERVER" || String(kind).startsWith("TOMCAT_")) return "WEB_SERVER";
+          if (String(kind).startsWith("SERVLET")) return "SERVLET";
+          if (String(kind).startsWith("HANDLER_") || ["ARGUMENT_RESOLVER", "MESSAGE_CONVERTER", "MVC_INTERCEPTOR", "EXCEPTION_RESOLVER"].includes(kind)) return "MVC";
+          return "SECURITY";
+        };
+        const coverageLabel = (state) => ({ PRESENT: "확인", PARTIAL: "부분 확인", ABSENT: "미구성",
+          UNKNOWN: "확인 불가", NOT_SUPPORTED: "해당 없음" })[state] || "확인 불가";
+        if (selection.kind === "runtime-component") {
+          appendRow(parent, "객체 유형", item.kind);
+          appendRow(parent, "구현 클래스", item.className || "확인 불가");
+          if (item.beanName) appendRow(parent, "Bean / 등록 이름", item.beanName);
+          appendRow(parent, "Context", item.contextId || "확인 불가");
+          const owner = item.parentId && componentById.get(item.parentId);
+          if (owner) appendRow(parent, "실제 상위 객체", `${owner.kind} · ${owner.className || owner.id}`);
+          const area = areaFor(item.kind);
+          (architecture.coverage || []).filter((entry) => entry.area === area
+            && (!item.contextId || entry.scope === item.contextId)).forEach((entry) =>
+            appendRow(parent, `${area} 수집 범위`, `${coverageLabel(entry.state)} · ${entry.reasonCode}`));
+          appendAttributes(parent, item.attributes);
+          const graphNodes = (item.graphNodeIds || []).map((id) => graph.nodes.find((node) => node.id === id)).filter(Boolean);
+          appendHeading(parent, "연결 Graph Node");
+          if (!graphNodes.length) appendEmpty(parent, "연결된 Graph Node 없음");
+          graphNodes.forEach((node) => {
+            const block = appendElement(parent, "div", "inspector-relation");
+            appendRow(block, "Node", displayId("node", node.id));
+            appendRow(block, "유형", node.type);
+            appendNodeButton(block, node, "원본 Node 보기");
+          });
+          const runtimeRelations = (architecture.relationships || []).filter((entry) =>
+            entry.sourceId === item.id || entry.targetId === item.id);
+          appendHeading(parent, "실제 Runtime 관계");
+          if (!runtimeRelations.length) appendEmpty(parent, "확인된 직접 관계 없음");
+          runtimeRelations.forEach((relation) => {
+            const source = componentById.get(relation.sourceId);
+            const target = componentById.get(relation.targetId);
+            const block = appendElement(parent, "div", "inspector-relation");
+            appendRow(block, "관계", relation.kind);
+            appendRow(block, "방향", `${source ? source.className || source.kind : "확인 불가"} → ${target ? target.className || target.kind : "확인 불가"}`);
+            appendRow(block, "신뢰도", confidenceValue(relation.confidence));
+            appendAttributes(block, relation.attributes);
+          });
+          appendFilterMapDetails(parent, snapshot, [item], ["SERVLET_CONTEXT", "TOMCAT_CONTEXT"].includes(item.kind));
+          appendMvcRegistrationDetails(parent, snapshot, item);
+          appendHostConfigurationDetails(parent, snapshot, item);
+          appendRuntimeEvidence(parent, snapshot, item.evidenceIds);
+        } else {
+          const source = componentById.get(item.sourceId);
+          const target = componentById.get(item.targetId);
+          appendRow(parent, "관계 유형", item.kind);
+          appendRow(parent, "출발 객체", source ? source.className || source.kind : "확인 불가");
+          appendRow(parent, "도착 객체", target ? target.className || target.kind : "확인 불가");
+          appendRow(parent, "신뢰도", confidenceValue(item.confidence));
+          appendAttributes(parent, item.attributes);
+          appendRuntimeEvidence(parent, snapshot, item.evidenceIds);
+        }
+        appendFindings(parent, snapshot, selection, current.controllerGroups);
+        return;
+      }
+      if (selection.kind === "controller-group" || detailItem) {
+        if (detailItem) item = detailItem;
+        if (item.isCompositeCard || item.isCompositeItem || detailItem) {
+          const nodeIds = displayGroupNodeIds(item);
+          const edgeIds = displayGroupEdgeIds(item);
+          const model = current.displayModel || {};
+          const parentCard = item.cardId && model.cardById && model.cardById[item.cardId];
+          const resolvedCard = parentCard || (model.composites || []).find((card) =>
+            (card.items || []).some((entry) => entry.id === item.id));
+          const areas = { "servlet-filter": "Servlet 필터", "spring-security": "Spring Security",
+            "security-checks": "보안 점검", "api-mapping": "API 매핑", "controller-handler": "Controller / Handler",
+            entry: "요청 진입", host: "웹 서버 / WAS", servlet: "서블릿 컨테이너",
+            security: "스프링 시큐리티", mvc: "스프링 MVC" };
+          const areaId = item.areaId || parentCard?.areaId || resolvedCard?.areaId;
+          const nodesById = new Map((snapshot?.nodes || graph.nodes || []).map((node) => [node.id, node]));
+          const edgesById = new Map((snapshot?.edges || graph.edges || []).map((edge) => [edge.id, edge]));
+          const nodes = nodeIds.map((id) => nodesById.get(id)).filter(Boolean);
+          const edges = edgeIds.map((id) => edgesById.get(id)).filter(Boolean);
+          const architecture = snapshot?.runtimeArchitecture || {};
+          const components = (item.runtimeComponentIds || []).map((id) =>
+            (architecture.components || []).find((component) => component.id === id)).filter(Boolean);
+          const filterTargets = [...nodes.filter((node) => node.type === "FILTER"),
+            ...components.filter((component) => component.kind === "SERVLET_FILTER_REGISTRATION")];
+          const mappings = filterMapComponents(snapshot).filter((mapping) => filterTargets.some((target) =>
+            filterMapMatches(mapping, target, architecture.components || [])));
+          const runtimeIds = new Set((architecture.evidence || []).map((entry) => String(entry.id)));
+          const refs = copyIds(item.evidenceRefs);
+          const graphEvidenceIds = Array.from(new Set([...copyIds(item.evidenceIds),
+            ...nodes.flatMap((node) => copyIds(node.evidenceIds)), ...edges.flatMap((edge) => copyIds(edge.evidenceIds)),
+            ...refs.filter((id) => !runtimeIds.has(id))]));
+          const runtimeEvidenceIds = Array.from(new Set([...components.flatMap((component) => copyIds(component.evidenceIds)),
+            ...mappings.flatMap((mapping) => copyIds(mapping.evidenceIds)),
+            ...refs.filter((id) => runtimeIds.has(id))]));
+          appendRow(parent, "표시 유형", item.isCompositeCard ? "복합 카드" : "카드 항목");
+          const region = (model.regions || []).find((entry) => entry.id === areaId || entry.id === `runtime-region:${areaId}`);
+          appendRow(parent, "기술 영역", areas[areaId] || region?.title);
+          if (item.isCompositeItem || detailItem) appendRow(parent, "항목 유형", item.kind);
+          else appendRow(parent, "항목 수", (item.items || []).filter((entry) => !entry.isHeader).length);
+          if (nodes.length) {
+            const types = Array.from(new Set(nodes.map((node) => `${nodeTypeLabel(node.type)} (${node.type})`)));
+            appendRow(parent, "노드 유형", types.join(", "));
+            const codes = nodeIds.map((id) => displayId("node", id)).sort();
+            appendRow(parent, "표시 ID", codes.length > 1 ? `${codes[0]} 외 ${codes.length - 1}개` : codes[0]);
+          }
+          appendHeading(parent, "상세 속성");
+          if (item.subtitle || item.detail) appendRow(parent, "상태", item.subtitle || item.detail);
+          if (item.controllerFqcn) appendRow(parent, "전체 클래스 경로", item.controllerFqcn);
+          if (item.isCompositeCard && item.kind === "CONTROLLER_HANDLER") {
+            nodes.filter((node) => node.type === "HANDLER").forEach((node) => {
+              const signature = (node.attributes && node.attributes.handler) || node.label || "";
+              appendElement(parent, "p", "inspector-handler-method-summary", shortHandlerSignature(signature));
+            });
+          }
+          const priorities = { ENDPOINT: ["httpMethod", "path", "handler", "handlerMapping", "mvcPathPatternSettings"],
+            HANDLER: ["handler", "className", "methodName"], FILTER: ["filterClass", "registrationName", "filterOrder", "chainKey"],
+            SECURITY_CHAIN: ["chainOrder", "matcherType", "matcherCondition"],
+            AUTHENTICATION: ["authenticationKind", "requiredAuthority"], AUTHORIZATION: ["policyKind", "requiredAuthority", "policyMatcherCondition"],
+            SECURITY_DATA: ["dataType", "securityKind", "usage"], BUSINESS_SECURITY_STATE: ["stateName", "stateAction", "stateScope"] };
+          const internalKeys = ["id", "sourceId", "targetId", "rowId", "nodeId", "edgeId", "evidenceId", "chainKey"];
+          nodes.forEach((node) => appendAttributes(parent, node.attributes, priorities[node.type] || [], internalKeys, false));
+          components.forEach((component) => {
+            appendRow(parent, "객체 유형", component.kind);
+            if (component.className) appendRow(parent, "구현 클래스", component.className);
+            if (component.beanName) appendRow(parent, "Bean / 등록 이름", component.beanName);
+            appendAttributes(parent, component.attributes, [], internalKeys, false);
+          });
+          if (filterTargets.length) appendFilterMapDetails(parent, snapshot, filterTargets, false, false);
+          appendFindings(parent, snapshot, selection, current.controllerGroups, "관련 취약점");
+          if (graphEvidenceIds.length || !runtimeEvidenceIds.length) appendEvidence(parent, snapshot, graphEvidenceIds, false, "분석 근거");
+          else appendHeading(parent, "분석 근거");
+          if (runtimeEvidenceIds.length) appendRuntimeEvidence(parent, snapshot, runtimeEvidenceIds, false, false);
+          const originals = appendElement(parent, "details", "inspector-composite-entry");
+          appendElement(originals, "summary", "inspector-composite-entry-title", `원본 데이터 · Node ${nodeIds.length}개 · Edge ${edgeIds.length}개`);
+          if (item.kind === "CONTROLLER_HANDLER") {
+            const signatures = nodes.filter((node) => node.type === "HANDLER")
+              .map((node) => (node.attributes && node.attributes.handler) || node.label || "");
+            const signatureSection = appendElement(originals, "details", "inspector-original-signatures");
+            appendElement(signatureSection, "summary", "inspector-original-signatures-title", "전체 원문 서명");
+            signatures.forEach((signature) => appendElement(signatureSection, "p", "inspector-original-signature", signature));
+          }
+          if (item.rowId) appendRow(originals, "Row ID", item.rowId);
+          nodeIds.forEach((id) => {
+            appendRow(originals, "원본 Node ID", id);
+            const node = nodesById.get(id);
+            if (node) appendNodeButton(originals, node, "원본");
+          });
+          [...nodes, ...components].forEach((source) => internalKeys.forEach((key) => {
+            if (source.attributes && source.attributes[key] !== undefined) appendRow(originals, attributeNames[key] || key, source.attributes[key]);
+          }));
+          edgeIds.forEach((id) => appendRow(originals, "원본 Edge ID", id));
+          graphEvidenceIds.forEach((id) => appendRow(originals, "Evidence ID", id));
+          runtimeEvidenceIds.forEach((id) => appendRow(originals, "Runtime Evidence ID", id));
+          (item.runtimeComponentIds || []).forEach((id) => appendRow(originals, "Runtime 객체 ID", id));
+          mappings.forEach((mapping) => appendRow(originals, "FilterMap ID", mapping.id));
+          if (selectedRuntimeComponent?.kind === "HANDLER_ADAPTER") {
+            appendMvcRegistrationDetails(parent, snapshot, selectedRuntimeComponent);
+          }
+          return;
+        }
+        if (item.type === "AUTHORIZATION" || item.type === "SECURITY_DATA") {
+          appendRow(parent, "유형", item.type === "AUTHORIZATION" ? "인가 근거" : "보안정보 사용");
+          const summary = graphDisplay.securityGroupDisplay
+            ? graphDisplay.securityGroupDisplay(item, graph, current.displayIds)
+            : { context: item.controllerName };
+          appendRow(parent, "관련 맥락", summary.context);
+          appendRow(parent, "원본 Fact", (item.nodeIds || []).length);
+          appendHeading(parent, "포함된 원본 Fact");
+          const nodes = (item.nodeIds || []).map((id) => graph.nodes.find((candidate) => candidate.id === id)).filter(Boolean);
+          if (item.type === "AUTHORIZATION") {
+            nodes.sort((left, right) => {
+              const leftValue = valueOf(left.attributes && left.attributes.policyOrder, "");
+              const rightValue = valueOf(right.attributes && right.attributes.policyOrder, "");
+              const leftOrder = Number(leftValue);
+              const rightOrder = Number(rightValue);
+              const leftKnown = leftValue !== "" && Number.isFinite(leftOrder);
+              const rightKnown = rightValue !== "" && Number.isFinite(rightOrder);
+              if (leftKnown && rightKnown && leftOrder !== rightOrder) return leftOrder - rightOrder;
+              if (leftKnown !== rightKnown) return leftKnown ? -1 : 1;
+              return String(left.id).localeCompare(String(right.id));
+            });
+          }
+          nodes.forEach((node) => {
+            const block = appendElement(parent, "div", "inspector-relation");
+            appendRow(block, "원본 Node ID", node.id);
+            appendRow(block, "노드 유형", node.type);
+            appendNodeButton(block, node, "원본");
+            appendAttributes(block, node.attributes);
+            appendEvidence(block, snapshot, node.evidenceIds, true);
+          });
+          appendFindings(parent, snapshot, selection, current.controllerGroups);
+          return;
+        }
+        const handlerNodes = new Map((item.handlerIds || []).map((id) => [id, graph.nodes.find((node) => node.id === id)]));
+        appendRow(parent, "전체 클래스 경로", item.controllerFqcn);
+        appendRow(parent, "API", (item.endpointIds || []).length);
+        appendRow(parent, "메서드", (item.handlerMethods || []).length);
+        appendHeading(parent, "포함 메서드");
+        if (!item.handlerMethods || item.handlerMethods.length === 0) appendEmpty(parent, "메서드 없음");
+        (item.handlerMethods || []).forEach((method) => {
+          const entry = appendElement(parent, "div", "inspector-handler-method-entry");
+          appendElement(entry, "p", "inspector-handler-method-summary", shortHandlerSignature(method));
+          const matchingNodes = Array.from(handlerNodes.values()).filter((node) => node
+            && ((node.attributes && node.attributes.handler) || node.label) === method);
+          matchingNodes.forEach((node) => appendNodeButton(entry, node, "Handler"));
+        });
+        const originals = appendElement(parent, "details", "inspector-original-signatures");
+        appendElement(originals, "summary", "inspector-original-signatures-title", "전체 원문 서명");
+        (item.handlerMethods || []).forEach((method) => appendElement(originals, "p", "inspector-original-signature", method));
+        appendHeading(parent, "포함 Endpoint");
+        if (!item.endpointIds || item.endpointIds.length === 0) appendEmpty(parent, "Endpoint 없음");
+        const nodes = new Map(graph.nodes.map((node) => [node.id, node]));
+        (item.endpointIds || []).forEach((id) => {
+          const node = nodes.get(id);
+          if (node) appendNodeButton(parent, node, "Endpoint");
+        });
+        return;
+      }
+      if (selection.kind === "node") {
+        appendRow(parent, "노드 ID", displayId("node", item.id));
+        appendRow(parent, "서비스 ID", item.serviceId);
+        if (item.type === "ENDPOINT" && item.attributes && item.attributes.handler) {
+          appendRow(parent, "핸들러 원문 서명", item.attributes.handler, "handler");
+        }
+        const attributeOrder = item.type === "ENDPOINT" ? ["httpMethod", "path", "handler"]
+          : item.type === "SECURITY_CHAIN" ? ["chainOrder", "matcherCondition", "chainKey"]
+            : item.type === "FILTER" ? ["registrationKind", "filterOrder", "filterClass"]
+              : item.type === "SECURITY_DATA" ? ["dataType", "securityKind", "usage"] : [];
+        appendAttributes(parent, item.attributes, attributeOrder, headerAttributeKeys(item));
+        if (item.type === "FILTER") appendFilterMapDetails(parent, snapshot, [item]);
+        appendFindings(parent, snapshot, selection, current.controllerGroups);
+        appendEvidence(parent, snapshot, item.evidenceIds);
+        return;
+      }
+      const nodes = new Map(graph.nodes.map((node) => [node.id, node]));
+      appendRow(parent, "방향", relationDirection(item, nodes));
+      appendRow(parent, "판단 신뢰도", confidenceValue(item.confidence));
+      appendAttributes(parent, item.attributes);
+      appendFindings(parent, snapshot, selection, current.controllerGroups);
+      appendEvidence(parent, snapshot, item.evidenceIds);
+      const model = current.displayModel;
+      const bundleId = model && model.edgeToDisplay[item.id];
+      const edgeIds = Array.from(new Set([...(bundleId && model.displayToEdges[bundleId] || []),
+        ...(Array.isArray(selection.segmentEdgeIds) ? selection.segmentEdgeIds : [])]))
+        .filter((id) => graph.edges.some((edge) => edge.id === id));
+      if (edgeIds.length > 1) {
+        appendHeading(parent, "함께 표시한 원본 관계");
+        edgeIds.forEach((id) => {
+          const button = appendElement(parent, "button", "inspector-link", displayId("edge", id));
+          button.setAttribute("type", "button");
+          button.setAttribute("data-edge-id", id);
+          button.addEventListener("click", () => onSelect("edge", id));
+        });
+      }
+    }
+
+    function filterStatusSource(statusEntry) {
+      if (!statusEntry || statusEntry.status === "UNKNOWN") {
+        return "Snapshot의 등록 분석 상태 · 등록 여부 확인 불가";
+      }
+      if (statusEntry.status === "UNREGISTERED_REFERENCE") {
+        return "Snapshot의 전체 필터 등록 분석 상태";
+      }
+      if ((statusEntry.registrations || []).length > 0) {
+        return "Snapshot의 FILTER Node 및 FILTERED_BY 관계";
+      }
+      return "Snapshot의 필터 등록 분석 상태";
+    }
+
+    function renderFilterEducation(parent, graph, item, selection, snapshot) {
+      if (!standardFilterClient || standardFilters.length === 0) return;
+      const statusEntries = standardFilterClient.classify(
+        snapshot || graph,
+        snapshot && snapshot.analysisStatus || {},
+        current.endpointChainId
+      );
+      const statusByFqcn = new Map(statusEntries.map((entry) => [entry.fqcn, entry]));
+      const selectedNodeFqcn = selection && selection.kind === "node" && item && item.type === "FILTER"
+        ? item.attributes && item.attributes.filterClass
+        : null;
+      const selectedReference = standardFilters.find((reference) => reference.fqcn === selectedFilterFqcn)
+        || standardFilters.find((reference) => reference.fqcn === selectedNodeFqcn)
+        || standardFilters[0];
+      selectedFilterFqcn = selectedReference.fqcn;
+
+      appendHeading(parent, "Spring Security 표준 필터");
+      appendElement(parent, "p", "inspector-filter-education-notice",
+        "처리 내용과 순서는 필터 동작 원리를 설명하기 위한 참고이며, 특정 요청의 실행 기록이나 실제 filterOrder를 뜻하지 않습니다.");
+      const list = appendElement(parent, "div", "inspector-filter-reference-list");
+      list.setAttribute("role", "list");
+      standardFilters.forEach((reference) => {
+        const statusEntry = statusByFqcn.get(reference.fqcn) || {
+          status: "UNKNOWN",
+          statusLabel: standardFilterClient.statusLabel("UNKNOWN"),
+          registrations: []
+        };
+        const entry = appendElement(list, "div", "inspector-filter-reference-item");
+        entry.setAttribute("role", "listitem");
+        const button = appendElement(entry, "button", "inspector-filter-reference");
+        button.setAttribute("type", "button");
+        button.setAttribute("data-filter-fqcn", reference.fqcn);
+        button.setAttribute("data-filter-status", statusEntry.status);
+        button.setAttribute("aria-pressed", String(reference.fqcn === selectedReference.fqcn));
+        appendElement(button, "span", "inspector-filter-reference-name", reference.name);
+        appendElement(button, "span", "inspector-filter-reference-status", statusEntry.statusLabel);
+        button.addEventListener("click", () => {
+          selectedFilterFqcn = reference.fqcn;
+          render(current);
+        });
+      });
+
+      const statusEntry = statusByFqcn.get(selectedReference.fqcn) || {
+        status: "UNKNOWN",
+        statusLabel: standardFilterClient.statusLabel("UNKNOWN"),
+        registrations: []
+      };
+      const selectedActualNode = selectedNodeFqcn === selectedReference.fqcn;
+      const card = appendElement(parent, "section", "inspector-filter-education-card");
+      appendElement(card, "p", "inspector-filter-education-kind", selectedActualNode
+        ? "Snapshot에서 확인한 Filter의 처리 원리"
+        : "Snapshot에 없는 표준 Filter 참고 자료");
+      appendElement(card, "h3", "inspector-filter-education-title", selectedReference.name);
+      appendElement(card, "p", "inspector-filter-education-fqcn", selectedReference.fqcn);
+      appendElement(card, "p", "inspector-filter-education-description", selectedReference.description);
+      appendRow(card, "역할", selectedReference.role);
+      appendRow(card, "입력", selectedReference.input);
+      appendRow(card, "확인 조건", selectedReference.condition);
+      appendRow(card, "대표 처리", selectedReference.processing);
+      appendRow(card, "가능한 결과", selectedReference.outcomes);
+      appendRow(card, "주의사항", selectedReference.cautions);
+      appendRow(card, "분석 상태 출처", filterStatusSource(statusEntry));
+      appendRow(card, "참고 자료", selectedReference.source);
+    }
+
+    function renderConnections(parent, graph, item, selection) {
+      appendHeading(parent, "연결 노드");
+      if (selection.kind === "controller-group") {
+        const nodes = new Map(graph.nodes.map((node) => [node.id, node]));
+        const scope = current.displayModel && current.overviewRouting
+          ? resolveOverviewSelection(graph, selection, current.controllerGroups, current.snapshot,
+            current.displayModel, current.overviewRouting) : null;
+        const ids = scope ? Array.from(scope.nodeIds) : displayGroupNodeIds(item);
+        ids.forEach((id) => {
+          const node = nodes.get(id);
+          if (node) appendNodeButton(parent, node, node.type === "ENDPOINT" ? "API" : node.type === "HANDLER" ? "Handler" : "원본");
+        });
+        if (ids.length === 0) appendEmpty(parent, "연결 노드 없음");
+        const relations = directRelations(graph, selection, current.controllerGroups, current.snapshot,
+          current.displayModel, current.overviewRouting);
+        appendHeading(parent, "연결 관계");
+        if (relations.length === 0) appendEmpty(parent, "연결 관계 없음");
+        else relations.forEach((edge) => appendRow(parent, displayId("edge", edge.id), edgeTypeLabel(edge.type)));
+        return;
+      }
+      if (selection.kind === "edge") {
+        const nodes = new Map(graph.nodes.map((node) => [node.id, node]));
+        const source = nodes.get(item.sourceId);
+        const target = nodes.get(item.targetId);
+        if (source) appendNodeButton(parent, source, "출발");
+        if (target) appendNodeButton(parent, target, "도착");
+        if (!source && !target) appendEmpty(parent, "연결 노드 확인할 수 없음");
+        return;
+      }
+      const nodes = new Map(graph.nodes.map((node) => [node.id, node]));
+      const relations = directRelations(graph, selection, current.controllerGroups, current.snapshot,
+        current.displayModel, current.overviewRouting);
+      const seen = new Set();
+      relations.forEach((edge) => {
+        const otherId = edge.sourceId === item.id ? edge.targetId : edge.sourceId;
+        if (seen.has(otherId)) return;
+        seen.add(otherId);
+        const node = nodes.get(otherId);
+        if (node) appendNodeButton(parent, node, "");
+      });
+      if (seen.size === 0) appendEmpty(parent, "연결 노드 없음");
+      appendHeading(parent, "직접 연결 관계");
+      if (relations.length === 0) {
+        appendEmpty(parent, "연결 관계 없음");
+      } else {
+        relations.forEach((edge) => appendRow(parent, displayId("edge", edge.id), edgeTypeLabel(edge.type)));
+      }
+    }
+
+    function relationDirection(edge, nodes) {
+      if (!nodes.has(edge.sourceId) || !nodes.has(edge.targetId)) return "연결 방향을 확인할 수 없습니다.";
+      return `${displayId("node", edge.sourceId)} → ${displayId("node", edge.targetId)}`;
+    }
+
+    function appendRelation(parent, edge, nodes) {
+      const block = appendElement(parent, "div", "inspector-relation");
+      appendRow(block, "관계 ID", displayId("edge", edge.id));
+      const open = appendElement(block, "button", "inspector-link", "원본 관계 보기");
+      open.setAttribute("type", "button");
+      open.setAttribute("data-edge-id", edge.id);
+      open.addEventListener("click", () => onSelect("edge", edge.id));
+      appendRow(block, "관계 유형", edgeTypeLabel(edge.type));
+      appendRow(block, "방향", relationDirection(edge, nodes));
+      appendRow(block, "판단 신뢰도", confidenceValue(edge.confidence));
+      appendAttributes(block, edge.attributes);
+      appendEvidence(block, current.snapshot, edge.evidenceIds);
+    }
+
+    function renderRelations(parent, graph, item, selection, snapshot) {
+      appendHeading(parent, "연결 관계");
+      const nodes = new Map(graph.nodes.map((node) => [node.id, node]));
+      const relations = directRelations(graph, selection, current.controllerGroups, current.snapshot,
+        current.displayModel, current.overviewRouting);
+      if (relations.length === 0) appendEmpty(parent, "연결 관계 없음");
+      relations.forEach((edge) => appendRelation(parent, edge, nodes));
+
+      if (selection.kind !== "node") return;
+      const directIds = new Set(relations.map((edge) => edge.id));
+      const referencedIds = new Set();
+      relatedFindings(snapshot, selection, current.controllerGroups, graph, current.displayModel,
+        current.overviewRouting).forEach((finding) => copyIds(finding.edgeIds).forEach((id) => referencedIds.add(id)));
+      const referenced = graph.edges.filter((edge) => referencedIds.has(edge.id) && !directIds.has(edge.id));
+      if (referenced.length === 0) return;
+      appendHeading(parent, "Finding 참조 관계");
+      appendElement(parent, "p", "inspector-help", "선택 Node의 Finding이 참조한 Edge이며 직접 연결로 해석하지 않음");
+      referenced.forEach((edge) => appendRelation(parent, edge, nodes));
+    }
+
+    // Snapshot의 원본 ID와 Finding 참조를 대조한 위치 목록
+    function appendFindingLocations(parent, graph, entry, onOpenEndpoint, heading = "확인된 Graph 위치") {
+      appendHeading(parent, heading);
+      if (!entry) {
+        appendEmpty(parent, "Finding을 선택하면 실제 연결 위치를 확인할 수 있습니다.");
+        return;
+      }
+      const nodesById = new Map((graph && graph.nodes || []).map((node) => [node.id, node]));
+      const edgesById = new Map((graph && graph.edges || []).map((edge) => [edge.id, edge]));
+      const edges = entry.edgeIds.map((id) => edgesById.get(id)).filter(Boolean);
+      const nodeIds = new Set(entry.nodeIds);
+      edges.forEach((edge) => {
+        nodeIds.add(edge.sourceId);
+        nodeIds.add(edge.targetId);
+      });
+      const nodes = [...nodeIds].map((id) => nodesById.get(id)).filter(Boolean);
+      if (entry.missing) appendElement(parent, "p", "inspector-help", "일부 Graph 참조를 확인할 수 없습니다.");
+      if (nodes.length === 0 && edges.length === 0) {
+        appendEmpty(parent, "확인된 연결 위치 없음");
+        return;
+      }
+      nodes.forEach((node) => {
+        const label = node.type === "ENDPOINT"
+          ? [node.attributes.httpMethod, node.attributes.path].filter(Boolean).join(" ") || nodeDisplay(node).primary
+          : nodeDisplay(node).primary || node.label;
+        const button = appendElement(parent, "button", "inspector-link", `${displayId("node", node.id)} · ${nodeTypeLabel(node.type)} · ${label}`);
+        button.setAttribute("type", "button");
+        button.setAttribute("data-node-id", node.id);
+        button.addEventListener("click", () => onSelect("node", node.id));
+        if (node.type === "ENDPOINT") {
+          const detail = appendElement(parent, "button", "inspector-detail-action", "기능별 상세 보기");
+          detail.setAttribute("type", "button");
+          detail.setAttribute("data-endpoint-id", node.id);
+          detail.addEventListener("click", () => onOpenEndpoint(node.id));
+        }
+      });
+      edges.forEach((edge) => {
+        const button = appendElement(parent, "button", "inspector-link", `${displayId("edge", edge.id)} · ${edgeTypeLabel(edge.type)}`);
+        button.setAttribute("type", "button");
+        button.setAttribute("data-edge-id", edge.id);
+        button.addEventListener("click", () => onSelect("edge", edge.id));
+      });
+    }
+
+    // Finding 판단, 실제 근거와 점검 가이드의 우측 Inspector
+    function renderFinding({ graph, snapshot, entry, emptyPrompt, onReturn, onOpenEndpoint, dismissed = false, displayIds = null }) {
+      if (dismissed) {
+        close();
+        return null;
+      }
+      current = { graph, visibleGraph: null, snapshot, selection: null, controllerGroups: [], displayIds: displayIdsFor(graph, displayIds), displayModel: null };
+      setHidden(inspector, false);
+      if (!inspector) return null;
+      inspector.replaceChildren();
+      inspector.setAttribute("data-selection-kind", "finding");
+      inspector.setAttribute("data-selection-id", entry ? entry.finding.id : "");
+      const finding = entry && entry.finding;
+      const header = appendElement(inspector, "div", "inspector-header");
+      appendElement(header, "span", "inspector-badge", finding ? "Finding" : "선택 필요");
+      const heading = appendElement(header, "div", "inspector-heading");
+      appendElement(heading, "strong", "inspector-title", finding ? finding.title || "진단 항목" : emptyPrompt && emptyPrompt.title || "Finding 선택 필요");
+      appendElement(heading, "span", "inspector-subtitle", finding
+        ? `${findingRuleLabel(finding.ruleId)} · ${confidenceValue(finding.confidence)}`
+        : emptyPrompt && emptyPrompt.description || "보안 MAP에서 확인할 Finding을 선택하세요.");
+      const closeButton = appendElement(header, "button", "inspector-close", "닫기");
+      closeButton.setAttribute("type", "button");
+      closeButton.setAttribute("aria-label", "Finding Inspector 닫기");
+      closeButton.addEventListener("click", onClear);
+      const back = appendElement(header, "button", "inspector-detail-action", "보안 MAP으로");
+      back.setAttribute("type", "button");
+      back.addEventListener("click", onReturn);
+
+      const body = appendElement(inspector, "div", "inspector-body");
+      if (!finding) {
+        appendEmpty(body, emptyPrompt && emptyPrompt.description || "보안 MAP에서 Finding을 선택할 수 있습니다.");
+        return null;
+      }
+      appendHeading(body, "판단");
+      appendRow(body, "진단 유형", findingRuleLabel(finding.ruleId));
+      appendRow(body, "판단 신뢰도", confidenceValue(finding.confidence));
+      appendElement(body, "p", "inspector-help", valueOf(finding.description, "판단 설명 없음"));
+      appendFindingLocations(body, graph, entry, onOpenEndpoint);
+      appendEvidence(body, snapshot, finding.evidenceIds);
+      appendHeading(body, "점검 가이드");
+      appendElement(body, "p", "inspector-help", valueOf(finding.guide, "제공된 점검 가이드 없음"));
+      return finding;
+    }
+
+    function renderFindingModal({ graph, snapshot, entry, apiLabel, nodeIds = [], edgeIds = [], onOpenEndpoint = onOpenFindingEndpoint, displayIds = null }) {
+      current = { graph, visibleGraph: null, snapshot, selection: null, controllerGroups: [], displayIds: displayIdsFor(graph, displayIds), displayModel: null };
+      if (findingModalTitle) findingModalTitle.textContent = entry
+        ? valueOf(entry.finding.title, "진단 항목")
+        : "Finding 선택 필요";
+      if (findingModalConfidence) {
+        findingModalConfidence.textContent = "판단 불가";
+        findingModalConfidence.setAttribute("data-confidence", "UNKNOWN");
+      }
+      if (findingModalRule) findingModalRule.textContent = "진단 유형 확인 불가";
+      if (!findingModalContent) return null;
+      findingModalContent.replaceChildren();
+      if (!entry) {
+        appendEmpty(findingModalContent, "확인할 Finding이 없습니다.");
+        return null;
+      }
+      const finding = entry.finding;
+      const confidenceCode = valueOf(finding.confidence, "UNKNOWN");
+      if (findingModalConfidence) {
+        findingModalConfidence.textContent = confidenceValue(finding.confidence);
+        findingModalConfidence.setAttribute("data-confidence", confidenceCode);
+      }
+      if (findingModalRule) {
+        const ruleLabel = findingRuleLabel(finding.ruleId);
+        findingModalRule.textContent = finding.ruleId && ruleLabel !== "진단 유형 확인 불가"
+          ? `진단 유형 · ${ruleLabel}` : "진단 유형 확인 불가";
+      }
+      appendHeading(findingModalContent, "대상 API");
+      appendRow(findingModalContent, "API", apiLabel || "확인된 API 없음");
+      appendHeading(findingModalContent, "판단 내용");
+      appendElement(findingModalContent, "p", "finding-modal-description", valueOf(finding.description, "판단 설명 없음"));
+      const scopedEntry = {
+        ...entry,
+        nodeIds: Array.from(new Set([...(entry.nodeIds || []), ...nodeIds])),
+        edgeIds: Array.from(new Set([...(entry.edgeIds || []), ...edgeIds]))
+      };
+      appendEvidence(findingModalContent, snapshot, finding.evidenceIds);
+      appendHeading(findingModalContent, "점검 가이드");
+      appendElement(findingModalContent, "p", "finding-modal-guide", valueOf(finding.guide, "제공된 점검 가이드 없음"));
+      appendFindingLocations(findingModalContent, graph, scopedEntry, onOpenEndpoint, "관련 Graph");
+      return finding;
+    }
+
+    function render({ graph, visibleGraph, snapshot, selection, view = null, findingId = null, onShowFinding = null,
+      controllerGroups = [], displayModel = null, overviewRouting = null, displayIds = null,
+      detailedFlow = false, endpointChainId = null }) {
+      const item = selectedItem(graph, selection, controllerGroups, snapshot);
+      const selectedFilter = selection && selection.kind === "node" && item && item.type === "FILTER"
+        ? standardFilters.find((reference) => reference.fqcn === (item.attributes || {}).filterClass)
+        : null;
+      current = {
+        graph,
+        visibleGraph,
+        snapshot,
+        selection,
+        view,
+        findingId,
+        onShowFinding,
+        controllerGroups,
+        displayModel,
+        overviewRouting,
+        displayIds: displayIdsFor(graph, displayIds),
+        detailedFlow: Boolean(detailedFlow),
+        endpointChainId
+      };
+      if (!current.detailedFlow && activeTab === filterEducationTab.id) activeTab = "properties";
+      // 선택한 Filter의 교육 내용을 동기화하고 현재 Inspector 탭 유지
+      if (current.detailedFlow && selectedFilter) selectedFilterFqcn = selectedFilter.fqcn;
+      if (!availableTabs().some((tab) => tab.id === activeTab)) activeTab = "properties";
+      if (!selection) {
+        close();
+        return null;
+      }
+      if (!item) {
+        close();
+        return null;
+      }
+      setHidden(inspector, false);
+      if (inspector) {
+        inspector.replaceChildren();
+        inspector.setAttribute("data-selection-kind", selection.kind);
+        inspector.setAttribute("data-selection-id", selection.id);
+      }
+
+      const header = appendElement(inspector, "div", "inspector-header");
+      const groupType = item.type === "AUTHORIZATION" ? "인가 근거"
+        : item.type === "SECURITY_DATA" ? "보안정보 사용" : "Controller";
+      const badge = selection.kind === "node" ? nodeTypeLabel(item.type)
+        : selection.kind === "controller-group" ? (item.isCompositeCard
+          ? item.kind === "CONTROLLER_HANDLER" ? "Controller" : "복합 카드"
+          : item.isCompositeItem ? "카드 항목" : groupType) : edgeTypeLabel(item.type);
+      appendElement(header, "span", "inspector-badge", badge);
+      const heading = appendElement(header, "div", "inspector-heading");
+      appendElement(heading, "strong", "inspector-title", selectedLabel(selection, item));
+      const closeButton = appendElement(header, "button", "inspector-close", "닫기");
+      closeButton.setAttribute("type", "button");
+      closeButton.setAttribute("aria-label", "Inspector 닫기");
+      closeButton.addEventListener("click", onClear);
+      if (selection.kind === "node" && item.type === "ENDPOINT" && view !== "feature-flow") {
+        const detailAction = appendElement(header, "button", "inspector-detail-action", "기능별 상세 보기");
+        detailAction.setAttribute("type", "button");
+        detailAction.setAttribute("data-endpoint-id", item.id);
+        detailAction.addEventListener("click", () => findingId
+          ? onOpenFindingEndpoint(item.id)
+          : onOpenDetail(item.id));
+      }
+      if (findingId && onShowFinding) {
+        const findingAction = appendElement(header, "button", "inspector-detail-action", "선택 Finding 다시 보기");
+        findingAction.setAttribute("type", "button");
+        findingAction.addEventListener("click", onShowFinding);
+      }
+
+      const tabBar = appendElement(inspector, "div", "inspector-tabs");
+      availableTabs().forEach((tab) => {
+        const button = appendElement(tabBar, "button", "inspector-tab", tab.label);
+        button.setAttribute("type", "button");
+        button.setAttribute("data-tab", tab.id);
+        button.setAttribute("aria-selected", String(activeTab === tab.id));
+        button.addEventListener("click", () => setTab(tab.id));
+      });
+      const body = appendElement(inspector, "div", "inspector-body");
+      if (activeTab === filterEducationTab.id) renderFilterEducation(body, graph, item, selection, snapshot);
+      else if (activeTab === "connections") renderConnections(body, graph, item, selection);
+      else if (activeTab === "relations") renderRelations(body, graph, item, selection, snapshot);
+      else renderProperties(body, graph, item, selection, snapshot);
+      return item;
+    }
+
+    function setTab(tab) {
+      if (!availableTabs().some((candidate) => candidate.id === tab)) return;
+      activeTab = tab;
+      if (current.selection) render(current);
+    }
+
+    function hoverText(graph, snapshot, kind, id) {
+      const selection = { kind, id };
+      const item = selectedItem(graph, selection, current.controllerGroups, snapshot);
+      if (!item) return null;
+      const lines = [];
+      if (kind === "controller-group") {
+        if (item.isCompositeCard || item.isCompositeItem) {
+          lines.push(selectedLabel({ kind }, item));
+          lines.push(item.subtitle || item.detail || `원본 Node ${displayGroupNodeIds(item).length}개 · 원본 Edge ${displayGroupEdgeIds(item).length}개`);
+        } else {
+        const display = item.type && graphDisplay.securityGroupDisplay
+          ? graphDisplay.securityGroupDisplay(item, graph, current.displayIds)
+          : controllerGroupDisplay(item, current.displayIds);
+        lines.push(display.primary);
+        lines.push(item.type ? display.detail : `${display.displayId} · API ${(item.endpointIds || []).length}개 · 메서드 ${(item.handlerMethods || []).length}개`);
+        }
+      } else if (kind === "runtime-component") {
+        lines.push(selectedLabel(selection, item));
+        lines.push(`${item.kind} · ${item.beanName || item.contextId || "Context 확인 불가"}`);
+      } else if (kind === "runtime-relationship") {
+        lines.push(item.kind || "Runtime 관계");
+        lines.push(`신뢰도 · ${confidenceValue(item.confidence)}`);
+      } else if (kind === "node") {
+        const display = nodeDisplay(item);
+        lines.push(display.primary || selectedLabel(selection, item));
+        lines.push(`${displayId("node", item.id)} · ${nodeTypeLabel(item.type)} · ${display.detail || display.primary || "상세 정보 확인 불가"}`);
+      } else {
+        lines.push(`${displayId("edge", item.id)} · ${edgeTypeLabel(item.type)}`);
+        lines.push(`${displayId("node", item.sourceId)} → ${displayId("node", item.targetId)}`);
+        lines.push(`판단 신뢰도 · ${confidenceValue(item.confidence)}`);
+      }
+      lines.push(relatedFindings(snapshot, selection, current.controllerGroups, graph,
+        current.displayModel, current.overviewRouting).length > 0 ? "관련 Finding 있음" : "관련 Finding 없음");
+      return { item, lines };
+    }
+
+    function showHover({ graph, snapshot, kind, id, anchor, displayIds = null, controllerGroups = null }) {
+      // 닫힌 Inspector가 비운 원본·복합 모델 참조를 현재 Hover 대상으로 복원
+      current.graph = graph;
+      current.snapshot = snapshot;
+      if (Array.isArray(controllerGroups)) current.controllerGroups = controllerGroups;
+      if (displayIds) current.displayIds = displayIds;
+      const content = hoverText(graph, snapshot, kind, id);
+      if (!content || !popover) return;
+      popover.replaceChildren();
+      content.lines.forEach((line, index) => appendElement(popover, "div", index === 0 ? "popover-title" : "popover-line", line));
+      setHidden(popover, false);
+      const surfaceRect = surface && surface.getBoundingClientRect ? surface.getBoundingClientRect() : { left: 0, top: 0, width: 960, height: 540 };
+      const anchorRect = anchor && anchor.getBoundingClientRect ? anchor.getBoundingClientRect() : surfaceRect;
+      const width = 280;
+      const height = Math.max(84, 30 + content.lines.length * 20);
+      const left = Math.max(8, Math.min(surfaceRect.width - width - 8, anchorRect.right - surfaceRect.left + 10));
+      const top = Math.max(8, Math.min(surfaceRect.height - height - 8, anchorRect.top - surfaceRect.top));
+      popover.style.left = `${left}px`;
+      popover.style.top = `${top}px`;
+    }
+
+    function hideHover() {
+      setHidden(popover, true);
+      if (popover) popover.replaceChildren();
+    }
+
+    hideHover();
+    setHidden(inspector, true);
+    return { render, renderFinding, renderFindingModal, related, setTab, showHover, hideHover, close };
+  }
+
+  window.MapInBootInspector = { create, related };
+})();

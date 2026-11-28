@@ -1,0 +1,27 @@
+server:
+  port: ${MAIN_PORT:8080}
+
+spring:
+  application:
+    name: main-service
+
+mapinboot:
+  web:
+    auth-mode: ${MAPINBOOT_WEB_AUTHMODE:${MAPINBOOT_WEB_AUTH_MODE:NONE}}
+    login:
+      password: ${MAPINBOOT_WEB_LOGIN_PASSWORD:${MAPINBOOT_PASSWORD:}}
+
+demo:
+  jwt:
+    public-key-path: ${JWT_PUBLIC_KEY_PATH:}
+    issuer: ${JWT_ISSUER:demo-identity}
+    audience: ${JWT_AUDIENCE:demo-services}
+
+
+app:
+  services:
+    identity-url: ${IDENTITY_BASE_URL:http://localhost:8081}
+    account-url: ${ACCOUNT_BASE_URL:http://localhost:8082}
+    account-service-username: ${DEMO_INTERNAL_SERVICE_USERNAME:main-service}
+    account-service-secret: ${DEMO_INTERNAL_SERVICE_SECRET:mapinboot-normal-demo-internal-service-secret}
+

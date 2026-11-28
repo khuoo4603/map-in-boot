@@ -1,0 +1,3 @@
+dependencies {
+    api 'org.springframework:spring-context:7.0.10'
+}
