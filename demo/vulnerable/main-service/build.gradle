@@ -14,8 +14,6 @@ tasks.named('processResources') {
 }
 
 dependencies {
-    implementation project(':map-in-boot-starter')
-    implementation project(':map-in-boot-security')
     implementation 'org.springframework.boot:spring-boot-starter-webmvc'
     implementation 'org.springframework.boot:spring-boot-starter-security'
     implementation 'org.springframework.boot:spring-boot-starter-oauth2-resource-server'
@@ -23,3 +21,5 @@ dependencies {
     testImplementation 'org.springframework.boot:spring-boot-starter-test'
     testImplementation 'org.springframework.security:spring-security-test'
 }
+
+apply from: rootProject.file('demo/sdk-dependencies.gradle')

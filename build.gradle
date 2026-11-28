@@ -11,6 +11,20 @@ if (!(sdkVersion ==~ semverPattern)) {
     throw new GradleException("releaseVersion must be a valid SemVer value: ${sdkVersion}")
 }
 
+def demoSdkMode = providers.gradleProperty('demoSdkMode').getOrElse('project').toLowerCase(Locale.ROOT)
+def demoSdkVersion = providers.gradleProperty('demoSdkVersion').getOrElse('0.1.0')
+def demoSdkRepository = providers.gradleProperty('demoSdkRepository').getOrElse('build/repository')
+if (!(demoSdkMode in ['project', 'local', 'central'])) {
+    throw new GradleException('demoSdkMode must be project, local, or central')
+}
+if (demoSdkMode != 'project'
+        && (!(demoSdkVersion ==~ semverPattern) || demoSdkVersion.endsWith('-SNAPSHOT'))) {
+    throw new GradleException('demoSdkVersion must be a release SemVer value')
+}
+ext.demoSdkMode = demoSdkMode
+ext.demoSdkVersion = demoSdkVersion
+ext.demoSdkRepository = demoSdkRepository
+
 boolean centralBundleRequested = gradle.startParameter.taskNames.any {
     it.tokenize(':').last() == 'centralBundle'
 }
@@ -23,6 +37,19 @@ allprojects {
     version = '0.1.0-SNAPSHOT'
 
     repositories {
+        if (demoSdkMode == 'local') {
+            exclusiveContent {
+                forRepository {
+                    maven {
+                        name = 'demoSdkLocal'
+                        url = rootProject.file(demoSdkRepository)
+                    }
+                }
+                filter {
+                    includeGroup 'io.github.khuoo4603'
+                }
+            }
+        }
         mavenCentral()
     }
 }
