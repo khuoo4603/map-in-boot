@@ -7,6 +7,7 @@ import io.github.classgraph.ClassInfo;
 import io.github.classgraph.ScanResult;
 import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
+import java.net.URL;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
@@ -23,6 +24,10 @@ import org.springframework.util.ClassUtils;
 
 // 등록 Bean·Handler 기반 제한적 ClassGraph 후보 탐색
 final class ApplicationClassDiscovery {
+    private static final List<String> SDK_CLASS_MARKERS = List.of(
+            "com.mapinboot.security.autoconfigure.MapInBootSecurityAutoConfiguration",
+            "com.mapinboot.starter.autoconfigure.MapInBootAutoConfiguration",
+            "com.mapinboot.starter.web.ui.MapInBootUiController");
     private static final String HANDLER_MAPPING_TYPE =
             "org.springframework.web.servlet.mvc.method.annotation.RequestMappingHandlerMapping";
 
@@ -142,6 +147,50 @@ final class ApplicationClassDiscovery {
 
     static boolean isFrameworkClass(Class<?> type) {
         return isFrameworkClassName(type.getName());
+    }
+
+    static boolean isSdkOwnedClass(Class<?> type) {
+        URL classOrigin = codeOrigin(type);
+        if (classOrigin == null) {
+            return false;
+        }
+        if (classOrigin.equals(codeOrigin(ApplicationClassDiscovery.class))) {
+            return true;
+        }
+        ClassLoader loader = type.getClassLoader() == null
+                ? ClassLoader.getSystemClassLoader() : type.getClassLoader();
+        for (String marker : SDK_CLASS_MARKERS) {
+            try {
+                Class<?> markerClass = Class.forName(marker, false, loader);
+                if (classOrigin.equals(codeOrigin(markerClass))) {
+                    return true;
+                }
+            } catch (ClassNotFoundException | LinkageError exception) {
+                // 해당 SDK 모듈이 현재 소비 환경에 없는 상태
+            }
+        }
+        return false;
+    }
+
+    static boolean isExternalHandlerClass(Class<?> type) {
+        String resource = type.getResource("/" + type.getName().replace('.', '/') + ".class") == null
+                ? "" : type.getResource("/" + type.getName().replace('.', '/') + ".class").toExternalForm();
+        if (resource.contains("!/BOOT-INF/classes!/")) {
+            return false;
+        }
+        return resource.contains("!/BOOT-INF/lib/")
+                || (resource.startsWith("jar:") && resource.contains(".jar!/")
+                && (resource.contains("/.gradle/caches/modules-2/")
+                || resource.contains("/.m2/repository/")));
+    }
+
+    private static URL codeOrigin(Class<?> type) {
+        try {
+            return type.getProtectionDomain() == null || type.getProtectionDomain().getCodeSource() == null
+                    ? null : type.getProtectionDomain().getCodeSource().getLocation();
+        } catch (SecurityException exception) {
+            return null;
+        }
     }
 
     private static Class<?> targetClass(

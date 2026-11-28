@@ -124,6 +124,107 @@ class CredentialUsageAnalysisAdapterTest {
     }
 
     @Test
+    void followsJwtParameterThroughInjectedServiceReceiver() {
+        Fact endpoint = endpoint("service-path", CredentialControllerFixture.class, "handle", Jwt.class);
+        Fact jwtRead = usage("service-path-read", "JWT_USAGE", "READ",
+                location(CredentialServiceFixture.class, "read", Jwt.class),
+                "org.springframework.security.oauth2.jwt.Jwt", "getSubject", "()Ljava/lang/String;", 0);
+
+        AnalysisReport report = execute(List.of(endpoint, jwtRead));
+
+        assertTrue(report.relations().stream().anyMatch(relation ->
+                relation.type() == EdgeType.READS_SECURITY_DATA
+                        && relation.targetKey().equals(jwtRead.subjectKey())));
+        assertTrue(report.relations().stream().flatMap(relation -> relation.evidenceIds().stream())
+                .allMatch(id -> report.evidence().stream().anyMatch(item -> item.id().equals(id))));
+    }
+
+    @Test
+    void preservesKnownJwtArgumentWhenAnotherCallArgumentIsUnknown() {
+        Fact endpoint = endpoint("mixed-arguments", MixedArgumentControllerFixture.class, "handle", Jwt.class);
+        Fact jwtRead = usage("mixed-arguments-read", "JWT_USAGE", "READ",
+                location(MixedArgumentServiceFixture.class, "read", Jwt.class, String.class),
+                "org.springframework.security.oauth2.jwt.Jwt", "getSubject", "()Ljava/lang/String;", 0);
+
+        AnalysisReport report = execute(List.of(endpoint, jwtRead));
+
+        assertTrue(report.relations().stream().anyMatch(relation ->
+                relation.type() == EdgeType.READS_SECURITY_DATA
+                        && relation.targetKey().equals(jwtRead.subjectKey())));
+        assertTrue(report.diagnostics().stream().noneMatch(diagnostic ->
+                diagnostic.summary().contains("Receiver 또는 호출 경로 확인 불가")));
+    }
+
+    @Test
+    void revisitsSameServiceMethodWhenJwtArgumentOriginsDiffer() {
+        Fact endpoint = endpoint("different-jwt-origins", DifferentJwtOriginControllerFixture.class,
+                "handle", Jwt.class);
+        Fact jwtRead = usage("different-jwt-origins-read", "JWT_USAGE", "READ",
+                location(CredentialServiceFixture.class, "read", Jwt.class),
+                "org.springframework.security.oauth2.jwt.Jwt", "getSubject", "()Ljava/lang/String;", 0);
+
+        AnalysisReport report = execute(List.of(endpoint, jwtRead));
+
+        assertTrue(report.relations().stream().anyMatch(relation ->
+                relation.type() == EdgeType.READS_SECURITY_DATA
+                        && relation.targetKey().equals(jwtRead.subjectKey())));
+    }
+
+    @Test
+    void doesNotAttributeUnrelatedFieldArgumentToEndpointJwt() {
+        Fact endpoint = endpoint("unrelated-service-path", UnrelatedCredentialControllerFixture.class,
+                "handle", Jwt.class);
+        Fact jwtRead = usage("unrelated-service-path-read", "JWT_USAGE", "READ",
+                location(CredentialServiceFixture.class, "read", Jwt.class),
+                "org.springframework.security.oauth2.jwt.Jwt", "getSubject", "()Ljava/lang/String;", 0);
+
+        AnalysisReport report = execute(List.of(endpoint, jwtRead));
+
+        assertEquals(AnalysisStatus.PARTIAL, status(report));
+        assertFalse(report.relations().stream().anyMatch(relation ->
+                relation.type() == EdgeType.READS_SECURITY_DATA
+                        && relation.targetKey().equals(jwtRead.subjectKey())));
+        assertTrue(report.diagnostics().stream().anyMatch(diagnostic ->
+                diagnostic.summary().contains("Receiver") || diagnostic.summary().contains("경로")));
+    }
+
+    @Test
+    void followsJwtReturnedByStaticHelperIntoServiceCall() {
+        Fact endpoint = endpoint("returned-service-path", ReturnedCredentialControllerFixture.class,
+                "handle", Jwt.class);
+        Fact jwtRead = usage("returned-service-path-read", "JWT_USAGE", "READ",
+                location(CredentialServiceFixture.class, "read", Jwt.class),
+                "org.springframework.security.oauth2.jwt.Jwt", "getSubject", "()Ljava/lang/String;", 0);
+
+        AnalysisReport report = execute(List.of(endpoint, jwtRead));
+
+        assertTrue(report.relations().stream().anyMatch(relation ->
+                relation.type() == EdgeType.READS_SECURITY_DATA
+                        && relation.targetKey().equals(jwtRead.subjectKey())));
+        assertTrue(report.relations().stream().flatMap(relation -> relation.evidenceIds().stream())
+                .allMatch(id -> report.evidence().stream().anyMatch(item -> item.id().equals(id))));
+    }
+
+    @Test
+    void followsSessionStateThroughReturnedHelperWithoutInferringBusinessMeaning() {
+        Fact endpoint = endpoint("returned-session-path", SessionCredentialControllerFixture.class,
+                "handle", jakarta.servlet.http.HttpSession.class);
+        Fact sessionRead = usage("returned-session-read", "SESSION_USAGE", "READ",
+                location(SessionCredentialServiceFixture.class, "read", jakarta.servlet.http.HttpSession.class),
+                "jakarta.servlet.http.HttpSession", "getAttribute",
+                "(Ljava/lang/String;)Ljava/lang/Object;", 0);
+
+        AnalysisReport report = execute(List.of(endpoint, sessionRead));
+
+        assertTrue(report.relations().stream().anyMatch(relation ->
+                relation.type() == EdgeType.READS_SECURITY_DATA
+                        && relation.targetKey().equals(sessionRead.subjectKey())
+                        && relation.attributes().get("securityKind").equals("SESSION")));
+        assertTrue(report.relations().stream().noneMatch(relation ->
+                relation.type() == EdgeType.USES_FOR_AUTHORIZATION));
+    }
+
+    @Test
     void preservesConfirmedConversionBeforeUnrelatedControlFlow() {
         Fact branchEndpoint = endpoint("map-before-branch", CredentialFixture.class,
                 "mapBeforeUnrelatedBranch", Jwt.class, boolean.class);
@@ -591,6 +692,100 @@ class CredentialUsageAnalysisAdapterTest {
 
         public String endpoint(Jwt jwt) {
             return reader.read(jwt);
+        }
+    }
+
+    static class CredentialControllerFixture {
+        private final CredentialServiceFixture service = new CredentialServiceFixture();
+
+        public String handle(Jwt jwt) {
+            return service.read(jwt);
+        }
+    }
+
+    static class UnrelatedCredentialControllerFixture {
+        private final CredentialServiceFixture service = new CredentialServiceFixture();
+        private final Jwt cached = null;
+
+        public String handle(Jwt jwt) {
+            return service.read(cached);
+        }
+    }
+
+    static class ReturnedCredentialControllerFixture {
+        private final CredentialServiceFixture service = new CredentialServiceFixture();
+
+        public String handle(Jwt jwt) {
+            return service.read(pass(jwt));
+        }
+
+        private static Jwt pass(Jwt jwt) {
+            return jwt;
+        }
+    }
+
+    static class SessionCredentialControllerFixture {
+        private final SessionCredentialServiceFixture service = new SessionCredentialServiceFixture();
+
+        public Object handle(jakarta.servlet.http.HttpSession session) {
+            return service.read(pass(session));
+        }
+
+        private static jakarta.servlet.http.HttpSession pass(
+                jakarta.servlet.http.HttpSession session) {
+            return session;
+        }
+    }
+
+    static class SessionCredentialServiceFixture {
+        public Object read(jakarta.servlet.http.HttpSession session) {
+            Object state = session.getAttribute("unclassified-state");
+            if (state == null) {
+                throw new org.springframework.security.access.AccessDeniedException("denied");
+            }
+            return state;
+        }
+    }
+
+    static class CredentialServiceFixture {
+        public String read(Jwt jwt) {
+            return jwt.getSubject();
+        }
+    }
+
+    static class MixedArgumentControllerFixture {
+        private final MixedArgumentServiceFixture service = new MixedArgumentServiceFixture();
+
+        public String handle(Jwt jwt) {
+            return service.read(jwt, unknownString());
+        }
+
+        private String unknownString() {
+            return String.valueOf(this);
+        }
+    }
+
+    static class MixedArgumentServiceFixture {
+        public String read(Jwt jwt, String ignored) {
+            return jwt.getSubject();
+        }
+    }
+
+    static class DifferentJwtOriginControllerFixture {
+        private final CredentialForwardingServiceFixture service = new CredentialForwardingServiceFixture();
+        private final Jwt cachedJwt = null;
+
+        public String handle(Jwt jwt) {
+            service.forward(cachedJwt);
+            return service.forward(jwt);
+        }
+    }
+
+    static class CredentialForwardingServiceFixture {
+        private final CredentialServiceFixture service = new CredentialServiceFixture();
+
+        public String forward(Jwt jwt) {
+            return service.read(jwt);
         }
     }
 }

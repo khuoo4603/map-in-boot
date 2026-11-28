@@ -116,7 +116,7 @@ public class CredentialUsageAnalysisAdapter extends AbstractAnalysisAdapter {
                     diagnostics.add(diagnostic("인증정보 사용 위치 확인 불가"));
                     continue;
                 }
-                PathResult path = findPath(handlerLocation, usageLocation, pathCache, scanCache);
+                PathResult path = findPath(handlerLocation, usageLocation, fact, pathCache, scanCache);
                 if (path.kind() == PathKind.NONE) {
                     continue;
                 }
@@ -287,10 +287,11 @@ public class CredentialUsageAnalysisAdapter extends AbstractAnalysisAdapter {
     private PathResult findPath(
             MethodLocation start,
             MethodLocation target,
+            Fact usage,
             Map<PathKey, PathResult> pathCache,
             Map<MethodLocation, ScanResult> scanCache
     ) {
-        PathKey key = new PathKey(start, target);
+        PathKey key = new PathKey(start, target, usage.subjectKey());
         PathResult cached = pathCache.get(key);
         if (cached != null) {
             return cached;
@@ -304,15 +305,16 @@ public class CredentialUsageAnalysisAdapter extends AbstractAnalysisAdapter {
         Set<String> roots = new LinkedHashSet<>();
         roots.add(applicationRoot(start.className()));
         roots.add(applicationRoot(target.className()));
+        Set<Integer> targetReceiverParameters = targetReceiverParameters(target, usage, scanCache);
         Deque<PathNode> pending = new ArrayDeque<>();
-        pending.add(new PathNode(start, 0, null));
-        Set<MethodLocation> visited = new LinkedHashSet<>();
+        pending.add(new PathNode(start, 0, null, parameterOrigins(start)));
+        Set<PathStateKey> visited = new LinkedHashSet<>();
         boolean unknown = false;
         PathResult confirmed = null;
 
         while (!pending.isEmpty()) {
             PathNode current = pending.removeFirst();
-            if (!visited.add(current.location())) {
+            if (!visited.add(new PathStateKey(current.location(), current.parameterOrigins()))) {
                 continue;
             }
             ScanResult scan = scan(current.location(), scanCache);
@@ -323,7 +325,9 @@ public class CredentialUsageAnalysisAdapter extends AbstractAnalysisAdapter {
             for (MethodCall call : scan.calls()) {
                 String ownerClass = call.owner().replace('/', '.');
                 if (targetCall(call, ownerClass, target)) {
-                    if (receiverAllowed(call, current.location().className(), target.className())) {
+                    if (receiverAllowed(call, current, target, start)
+                            && targetArgumentsAllowed(call, current, start, target, usage,
+                            targetReceiverParameters)) {
                         String location = current.firstCallLocation() == null
                                 ? current.location().value() : current.firstCallLocation();
                         PathResult candidate = PathResult.callPath(location);
@@ -341,18 +345,185 @@ public class CredentialUsageAnalysisAdapter extends AbstractAnalysisAdapter {
                 if (!receiverCanTraverse(call, current.location().className())) {
                     continue;
                 }
+                Map<Integer, Integer> parameterOrigins = forwardedParameters(call, current.parameterOrigins());
                 pending.addLast(new PathNode(
                         new MethodLocation(ownerClass, call.name(), call.descriptor()),
                         current.depth() + 1,
                         current.firstCallLocation() == null
-                                ? current.location().value() : current.firstCallLocation()));
+                                ? current.location().value() : current.firstCallLocation(),
+                        parameterOrigins));
             }
         }
 
-        PathResult result = confirmed != null && !unknown
-                ? confirmed : (confirmed != null || unknown ? PathResult.unknown() : PathResult.none());
+        PathResult result = confirmed != null
+                ? confirmed : (unknown ? PathResult.unknown() : PathResult.none());
         pathCache.put(key, result);
         return result;
+    }
+
+    private Set<Integer> targetReceiverParameters(
+            MethodLocation target,
+            Fact usage,
+            Map<MethodLocation, ScanResult> scanCache
+    ) {
+        ScanResult scan = scan(target, scanCache);
+        if (!scan.available() || !scan.found()) {
+            return Set.of();
+        }
+        return scan.calls().stream()
+                .filter(call -> matchesFact(call, usage))
+                .flatMap(call -> call.receiverOrigins().stream())
+                .map(Origin::parameterIndex)
+                .filter(index -> index >= 0)
+                .collect(java.util.stream.Collectors.toUnmodifiableSet());
+    }
+
+    private boolean targetArgumentsAllowed(
+            MethodCall call,
+            PathNode current,
+            MethodLocation start,
+            MethodLocation target,
+            Fact usage,
+            Set<Integer> targetReceiverParameters
+    ) {
+        if (targetReceiverParameters.isEmpty()) {
+            return true;
+        }
+        Map<Integer, Integer> forwarded = forwardedParameters(call, current.parameterOrigins());
+        String sourceOwner = usage.attributes().get("apiOwner");
+        for (int targetParameter : targetReceiverParameters) {
+            Integer sourceParameter = forwarded.get(targetParameter);
+            Class<?> sourceType = sourceParameter == null ? null : parameterType(start, sourceParameter);
+            Class<?> targetType = parameterType(target, targetParameter);
+            if (sourceType == null || targetType == null || isBlank(sourceOwner)
+                    || !relatedTypes(sourceType.getName(), sourceOwner.replace('/', '.'))
+                    || !relatedTypes(targetType.getName(), sourceOwner.replace('/', '.'))) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private Integer returnedSecurityParameter(String owner, String name, String descriptor, int opcode) {
+        if (opcode != Opcodes.INVOKESTATIC) {
+            return null;
+        }
+        try {
+            Class<?> type = loadClass(owner.replace('/', '.'));
+            Method method = Arrays.stream(type.getDeclaredMethods())
+                    .filter(candidate -> candidate.getName().equals(name)
+                            && Type.getMethodDescriptor(candidate).equals(descriptor))
+                    .findFirst().orElse(null);
+            if (method == null || !Modifier.isStatic(method.getModifiers())
+                    || Modifier.isAbstract(method.getModifiers()) || Modifier.isNative(method.getModifiers())
+                    || !isSecurityDataType(Type.getReturnType(descriptor).getClassName())) {
+                return null;
+            }
+            String resourceName = type.getName().replace('.', '/') + ".class";
+            ClassLoader loader = type.getClassLoader() == null ? classLoader() : type.getClassLoader();
+            try (InputStream input = loader.getResourceAsStream(resourceName)) {
+                if (input == null) {
+                    return null;
+                }
+                PassThroughVisitor visitor = new PassThroughVisitor(name, descriptor,
+                        Type.getArgumentTypes(descriptor));
+                new ClassReader(input).accept(visitor, ClassReader.SKIP_DEBUG | ClassReader.SKIP_FRAMES);
+                return visitor.returnedParameter();
+            }
+        } catch (IOException | LinkageError | RuntimeException exception) {
+            return null;
+        }
+    }
+
+    private boolean isSecurityDataType(String typeName) {
+        return Set.of(JWT, AUTHENTICATION, SECURITY_CONTEXT,
+                "jakarta/servlet/http/HttpSession", "jakarta/servlet/http/HttpServletRequest",
+                "java/security/Principal").contains(typeName.replace('.', '/'));
+    }
+
+    private final class PassThroughVisitor extends ClassVisitor {
+        private final String methodName;
+        private final String descriptor;
+        private final Type[] parameters;
+        private Integer returnedParameter;
+        private boolean unsupported;
+
+        private PassThroughVisitor(String methodName, String descriptor, Type[] parameters) {
+            super(Opcodes.ASM9);
+            this.methodName = methodName;
+            this.descriptor = descriptor;
+            this.parameters = parameters;
+        }
+
+        @Override
+        public MethodVisitor visitMethod(int access, String name, String methodDescriptor,
+                                         String signature, String[] exceptions) {
+            if (!methodName.equals(name) || !descriptor.equals(methodDescriptor)
+                    || Modifier.isAbstract(access) || Modifier.isNative(access)) {
+                return null;
+            }
+            Map<Integer, Integer> locals = new HashMap<>();
+            Deque<Integer> stack = new ArrayDeque<>();
+            int local = 0;
+            for (int index = 0; index < parameters.length; index++) {
+                locals.put(local, index);
+                local += parameters[index].getSize();
+            }
+            return new MethodVisitor(Opcodes.ASM9) {
+                @Override
+                public void visitVarInsn(int opcode, int variable) {
+                    if (opcode == Opcodes.ALOAD) {
+                        Integer origin = locals.get(variable);
+                        if (origin == null) {
+                            unsupported = true;
+                            stack.push(-1);
+                        } else {
+                            stack.push(origin);
+                        }
+                    } else if (opcode == Opcodes.ASTORE) {
+                        locals.put(variable, stack.isEmpty() ? -1 : stack.pop());
+                    } else {
+                        unsupported = true;
+                    }
+                }
+
+                @Override
+                public void visitTypeInsn(int opcode, String type) {
+                    if (opcode != Opcodes.CHECKCAST) {
+                        unsupported = true;
+                    }
+                }
+
+                @Override
+                public void visitInsn(int opcode) {
+                    if (opcode == Opcodes.ARETURN) {
+                        int origin = stack.isEmpty() ? -1 : stack.pop();
+                        if (origin < 0 || (returnedParameter != null && returnedParameter != origin)) {
+                            unsupported = true;
+                        } else {
+                            returnedParameter = origin;
+                        }
+                    } else if (opcode != Opcodes.NOP) {
+                        unsupported = true;
+                    }
+                }
+
+                @Override
+                public void visitJumpInsn(int opcode, Label label) {
+                    unsupported = true;
+                }
+
+                @Override
+                public void visitMethodInsn(int opcode, String owner, String name,
+                                            String descriptor, boolean isInterface) {
+                    unsupported = true;
+                }
+            };
+        }
+
+        private Integer returnedParameter() {
+            return unsupported ? null : returnedParameter;
+        }
     }
 
     private boolean targetCall(MethodCall call, String ownerClass, MethodLocation target) {
@@ -361,7 +532,31 @@ public class CredentialUsageAnalysisAdapter extends AbstractAnalysisAdapter {
                 && call.descriptor().equals(target.descriptor());
     }
 
-    private boolean receiverAllowed(MethodCall call, String currentClass, String targetClass) {
+    private boolean receiverAllowed(MethodCall call, PathNode current, MethodLocation target, MethodLocation start) {
+        if (!call.receiverOrigins().isEmpty()) {
+            for (Origin origin : call.receiverOrigins()) {
+                if (origin.parameterIndex() < 0) {
+                    continue;
+                }
+                Integer startParameter = current.parameterOrigins().get(origin.parameterIndex());
+                if (startParameter == null) {
+                    continue;
+                }
+                Class<?> sourceType = parameterType(start, startParameter);
+                Class<?> receiverType = parameterType(current.location(), origin.parameterIndex());
+                String owner = call.owner().replace('/', '.');
+                if (sourceType != null && receiverType != null
+                        && (relatedTypes(sourceType.getName(), owner)
+                        || relatedTypes(owner, sourceType.getName()))
+                        && (relatedTypes(receiverType.getName(), owner)
+                        || relatedTypes(owner, receiverType.getName()))) {
+                    return true;
+                }
+            }
+            return false;
+        }
+        String currentClass = current.location().className();
+        String targetClass = target.className();
         if (call.receiver().kind() == ReceiverKind.STATIC) {
             return true;
         }
@@ -383,6 +578,50 @@ public class CredentialUsageAnalysisAdapter extends AbstractAnalysisAdapter {
         } catch (RuntimeException exception) {
             return false;
         }
+    }
+
+    private Map<Integer, Integer> parameterOrigins(MethodLocation location) {
+        Type[] parameters = Type.getArgumentTypes(location.descriptor());
+        Map<Integer, Integer> origins = new LinkedHashMap<>();
+        for (int index = 0; index < parameters.length; index++) {
+            origins.put(index, index);
+        }
+        return origins;
+    }
+
+    private Map<Integer, Integer> forwardedParameters(MethodCall call, Map<Integer, Integer> currentOrigins) {
+        Map<Integer, Integer> forwarded = new LinkedHashMap<>();
+        for (int argumentIndex = 0; argumentIndex < call.argumentOrigins().size(); argumentIndex++) {
+            Set<Origin> origins = call.argumentOrigins().get(argumentIndex);
+            if (origins.size() != 1) {
+                continue;
+            }
+            Origin origin = origins.iterator().next();
+            if (origin.parameterIndex() < 0) {
+                continue;
+            }
+            Integer startParameter = currentOrigins.get(origin.parameterIndex());
+            if (startParameter != null) {
+                forwarded.put(argumentIndex, startParameter);
+            }
+        }
+        return Map.copyOf(forwarded);
+    }
+
+    private Class<?> parameterType(MethodLocation location, int parameterIndex) {
+        try {
+            Class<?> owner = loadClass(location.className());
+            for (Method method : owner.getDeclaredMethods()) {
+                if (method.getName().equals(location.methodName())
+                        && Type.getMethodDescriptor(method).equals(location.descriptor())) {
+                    Class<?>[] parameters = method.getParameterTypes();
+                    return parameterIndex < parameters.length ? parameters[parameterIndex] : null;
+                }
+            }
+        } catch (RuntimeException exception) {
+            return null;
+        }
+        return null;
     }
 
     private boolean receiverCanTraverse(MethodCall call, String currentClass) {
@@ -882,7 +1121,7 @@ public class CredentialUsageAnalysisAdapter extends AbstractAnalysisAdapter {
         }
     }
 
-    private record PathKey(MethodLocation start, MethodLocation target) {
+    private record PathKey(MethodLocation start, MethodLocation target, String usageKey) {
     }
 
     private record PathResult(PathKind kind, String location) {
@@ -903,7 +1142,17 @@ public class CredentialUsageAnalysisAdapter extends AbstractAnalysisAdapter {
         }
     }
 
-    private record PathNode(MethodLocation location, int depth, String firstCallLocation) {
+    private record PathNode(MethodLocation location, int depth, String firstCallLocation,
+                            Map<Integer, Integer> parameterOrigins) {
+        private PathNode {
+            parameterOrigins = Map.copyOf(parameterOrigins);
+        }
+    }
+
+    private record PathStateKey(MethodLocation location, Map<Integer, Integer> parameterOrigins) {
+        private PathStateKey {
+            parameterOrigins = Map.copyOf(parameterOrigins);
+        }
     }
 
     private record ResolvedUsage(Fact endpoint, Fact fact, PathResult path, UsageKind kind,
@@ -965,12 +1214,14 @@ public class CredentialUsageAnalysisAdapter extends AbstractAnalysisAdapter {
             String descriptor,
             int opcode,
             ReceiverValue receiver,
+            Set<Origin> receiverOrigins,
             int globalOccurrence,
             int securityOccurrence,
             List<Set<Origin>> argumentOrigins,
             boolean argumentsUncertain
     ) {
         private MethodCall {
+            receiverOrigins = Set.copyOf(receiverOrigins);
             argumentOrigins = argumentOrigins.stream().map(Set::copyOf).toList();
         }
     }
@@ -995,6 +1246,10 @@ public class CredentialUsageAnalysisAdapter extends AbstractAnalysisAdapter {
         private static ReceiverValue unknown() {
             return new ReceiverValue(ReceiverKind.UNKNOWN, null, null);
         }
+
+        private static ReceiverValue parameter() {
+            return new ReceiverValue(ReceiverKind.OTHER, null, null);
+        }
     }
 
     private record Origin(String owner, String name, String descriptor,
@@ -1010,7 +1265,7 @@ public class CredentialUsageAnalysisAdapter extends AbstractAnalysisAdapter {
         }
 
         private static StackValue parameter(int index) {
-            return new StackValue(ReceiverValue.other(), Set.of(Origin.parameter(index)), false);
+            return new StackValue(ReceiverValue.parameter(), Set.of(Origin.parameter(index)), false);
         }
 
         private static StackValue other() {
@@ -1137,10 +1392,13 @@ public class CredentialUsageAnalysisAdapter extends AbstractAnalysisAdapter {
                 int currentSecurityOccurrence = jwtOperation == null ? -1 : securityOccurrence++;
                 List<Set<Origin>> argumentOrigins = arguments.stream().map(StackValue::origins).toList();
                 calls.add(new MethodCall(owner, name, descriptor, opcode, receiver.receiver(),
-                        currentGlobalOccurrence, currentSecurityOccurrence, argumentOrigins, argumentsUncertain));
+                        receiver.origins(), currentGlobalOccurrence, currentSecurityOccurrence,
+                        argumentOrigins, argumentsUncertain));
+                Integer passThroughParameter = returnedSecurityParameter(owner, name, descriptor, opcode);
                 boolean unsupportedOrigin = carriesOrigin && !securitySourceCall(owner, name, descriptor)
                         && !(JAVA_MAP.equals(owner) && "get".equals(name))
-                        && !(SIMPLE_GRANTED_AUTHORITY.equals(owner) && "<init>".equals(name));
+                        && !(SIMPLE_GRANTED_AUTHORITY.equals(owner) && "<init>".equals(name))
+                        && passThroughParameter == null;
                 if (unsupportedOrigin) {
                     markUncertain();
                 }
@@ -1154,6 +1412,10 @@ public class CredentialUsageAnalysisAdapter extends AbstractAnalysisAdapter {
                     } else if (JAVA_MAP.equals(owner) && "get".equals(name)) {
                         origins.addAll(receiver.origins());
                         valueUncertain = receiver.uncertain();
+                    } else if (passThroughParameter != null && passThroughParameter < arguments.size()) {
+                        StackValue source = arguments.get(passThroughParameter);
+                        origins.addAll(source.origins());
+                        valueUncertain = source.uncertain();
                     }
                     if (unsupportedOrigin) {
                         origins.clear();

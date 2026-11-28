@@ -26,6 +26,19 @@ import org.springframework.web.servlet.mvc.method.annotation.RequestMappingHandl
 class ApplicationClassDiscoveryTest {
 
     @Test
+    void distinguishesSdkAndExternalClassOriginsWithoutPackageRules() throws Exception {
+        Class<?> starterHandler = Class.forName(
+                "com.mapinboot.starter.web.ui.MapInBootUiController", false,
+                Thread.currentThread().getContextClassLoader());
+
+        assertTrue(ApplicationClassDiscovery.isSdkOwnedClass(ApplicationClassDiscovery.class));
+        assertTrue(ApplicationClassDiscovery.isSdkOwnedClass(starterHandler));
+        assertFalse(ApplicationClassDiscovery.isSdkOwnedClass(HandlerFixture.class));
+        assertTrue(ApplicationClassDiscovery.isExternalHandlerClass(RequestMappingHandlerMapping.class));
+        assertFalse(ApplicationClassDiscovery.isExternalHandlerClass(HandlerFixture.class));
+    }
+
+    @Test
     void discoversRegisteredBeansAndHandlersWithinDerivedPackages() {
         try (AnnotationConfigApplicationContext context = context(FixtureConfiguration.class)) {
             ApplicationClassDiscovery.Discovery discovery = ApplicationClassDiscovery.discover(

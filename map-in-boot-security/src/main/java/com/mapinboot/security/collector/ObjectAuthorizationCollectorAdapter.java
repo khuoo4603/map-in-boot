@@ -18,6 +18,7 @@ import java.lang.annotation.Annotation;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
 import java.lang.reflect.Parameter;
+import java.lang.reflect.ParameterizedType;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -80,14 +81,24 @@ public class ObjectAuthorizationCollectorAdapter extends AbstractCollectorAdapte
         boolean partial = discovery.partial();
 
         for (Class<?> targetClass : ApplicationClassDiscovery.sortedClasses(discovery.targetClasses())) {
-            if (ApplicationClassDiscovery.isFrameworkClass(targetClass)) {
+            if (ApplicationClassDiscovery.isFrameworkClass(targetClass)
+                    || ApplicationClassDiscovery.isSdkOwnedClass(targetClass)) {
                 continue;
             }
-            for (Method method : endpointMethods(targetClass)) {
+            boolean externalHandler = ApplicationClassDiscovery.isExternalHandlerClass(targetClass);
+            List<Method> methods = endpointMethods(targetClass);
+            if (externalHandler && methods.stream().noneMatch(method ->
+                    method.getDeclaredAnnotation(RequiresObjectAuthorization.class) != null)) {
+                continue;
+            }
+            for (Method method : methods) {
                 String handler = handler(targetClass, method);
                 String location = location(targetClass, method);
                 RequiresObjectAuthorization requirement = method.getDeclaredAnnotation(
                         RequiresObjectAuthorization.class);
+                if (externalHandler && requirement == null) {
+                    continue;
+                }
                 String requirementKey = null;
                 if (requirement != null) {
                     requirementKey = addRequirement(
@@ -96,7 +107,8 @@ public class ObjectAuthorizationCollectorAdapter extends AbstractCollectorAdapte
                         partial = true;
                     }
                 }
-                ScanOutcome outcome = new BytecodeAnalyzer(targetClass).scan(
+                ScanOutcome outcome = new BytecodeAnalyzer(targetClass,
+                        requirement == null ? null : requirement.resourceType()).scan(
                         method, parameterOrigins(method, location), List.of(), 0, new HashSet<>());
                 if (!outcome.available()) {
                     partial = true;
@@ -199,7 +211,7 @@ public class ObjectAuthorizationCollectorAdapter extends AbstractCollectorAdapte
 
     private PathOutcome pathOutcome(ScanOutcome outcome, RequiresObjectAuthorization requirement) {
         String resourceType = requirement.resourceType().getName();
-        List<Check> checks = outcome.checks().stream()
+        List<Check> checks = outcome.pathChecks().stream()
                 .filter(check -> resourceType.equals(check.resourceType())
                         || ("ASSIGNMENT_DENY".equals(check.kind()) && check.resourceType() == null))
                 .toList();
@@ -215,14 +227,30 @@ public class ObjectAuthorizationCollectorAdapter extends AbstractCollectorAdapte
         if (outcome.uncertain()) {
             return new PathOutcome("UNRESOLVED", location, requirement.principalSource());
         }
-        Check matching = checks.stream()
+        List<Check> resourceChecks = checks.stream()
+                .filter(check -> check.resourceType() != null
+                        && outcome.protectedResourceAccesses().contains(
+                        resourceType + "|" + check.repositoryCall()))
+                .toList();
+        if (resourceChecks.isEmpty() && !checks.isEmpty()) {
+            return new PathOutcome("UNRESOLVED", location, requirement.principalSource());
+        }
+        Set<String> checkedResourceAccesses = resourceChecks.stream()
+                .map(check -> resourceType + "|" + check.repositoryCall())
+                .collect(Collectors.toSet());
+        if (!resourceChecks.isEmpty() && outcome.protectedResourceAccesses().stream()
+                .filter(access -> access.startsWith(resourceType + "|"))
+                .anyMatch(access -> !checkedResourceAccesses.contains(access))) {
+            return new PathOutcome("UNRESOLVED", location, requirement.principalSource());
+        }
+        Check matching = resourceChecks.stream()
                 .filter(check -> requirement.principalSource().equals(check.source().kind()))
                 .findFirst()
                 .orElse(null);
         if (matching != null) {
             return new PathOutcome("GUARDED", matching.location(), matching.source().kind());
         }
-        Check mismatched = checks.stream().findFirst().orElse(null);
+        Check mismatched = resourceChecks.stream().findFirst().orElse(null);
         if (mismatched != null) {
             return new PathOutcome("SOURCE_MISMATCH", mismatched.location(), mismatched.source().kind());
         }
@@ -256,7 +284,7 @@ public class ObjectAuthorizationCollectorAdapter extends AbstractCollectorAdapte
             attributes.put("ownerGetter", check.ownerGetter());
         }
         if (check.repositoryCall() != null) {
-            attributes.put("objectLookup", check.repositoryCall());
+            attributes.put("objectLookup", check.repositoryCall().replaceFirst("@call:[^|]+$", ""));
         }
         if (check.source().headerName() != null) {
             attributes.put("headerName", check.source().headerName());
@@ -399,19 +427,26 @@ public class ObjectAuthorizationCollectorAdapter extends AbstractCollectorAdapte
             boolean available,
             boolean uncertain,
             List<Check> checks,
+            List<Check> pathChecks,
             Set<String> accesses,
             Set<String> accessLocations,
-            Set<String> protectedAccesses
+            Set<String> protectedAccesses,
+            Set<String> protectedResourceAccesses,
+            Set<String> returnedResourceIdentities
     ) {
         private ScanOutcome {
             checks = List.copyOf(checks);
+            pathChecks = List.copyOf(pathChecks);
             accesses = Set.copyOf(accesses);
             accessLocations = Set.copyOf(accessLocations);
             protectedAccesses = Set.copyOf(protectedAccesses);
+            protectedResourceAccesses = Set.copyOf(protectedResourceAccesses);
+            returnedResourceIdentities = Set.copyOf(returnedResourceIdentities);
         }
 
         private static ScanOutcome unavailable() {
-            return new ScanOutcome(false, true, List.of(), Set.of(), Set.of(), Set.of());
+            return new ScanOutcome(false, true, List.of(), List.of(), Set.of(), Set.of(),
+                    Set.of(), Set.of(), Set.of());
         }
     }
 
@@ -461,12 +496,12 @@ public class ObjectAuthorizationCollectorAdapter extends AbstractCollectorAdapte
             return new Value(ValueKind.HEADER, source, null, null, null, null, null);
         }
 
-        private static Value optional(String call) {
-            return new Value(ValueKind.OPTIONAL, null, null, call, null, null, null);
+        private static Value optional(String call, String resourceType) {
+            return new Value(ValueKind.OPTIONAL, null, null, call, null, null, resourceType);
         }
 
-        private static Value object(String call) {
-            return new Value(ValueKind.OBJECT, null, null, call, null, null, null);
+        private static Value object(String call, String resourceType) {
+            return new Value(ValueKind.OBJECT, null, null, call, null, null, resourceType);
         }
 
         private static Value owner(Value object, String getter) {
@@ -537,9 +572,11 @@ public class ObjectAuthorizationCollectorAdapter extends AbstractCollectorAdapte
 
     private final class BytecodeAnalyzer {
         private final Class<?> targetClass;
+        private final Class<?> requiredResourceType;
 
-        private BytecodeAnalyzer(Class<?> targetClass) {
+        private BytecodeAnalyzer(Class<?> targetClass, Class<?> requiredResourceType) {
             this.targetClass = targetClass;
+            this.requiredResourceType = requiredResourceType;
         }
 
         private ScanOutcome scan(
@@ -550,10 +587,11 @@ public class ObjectAuthorizationCollectorAdapter extends AbstractCollectorAdapte
                 Set<String> visited
         ) {
             String descriptor = Type.getMethodDescriptor(method);
-            String key = method.getName() + descriptor + "|"
+            String key = targetClass.getName() + "#" + method.getName() + descriptor + "|"
                     + parameterOrigins.stream().map(value -> value.kind().name()).collect(Collectors.joining(","));
             if (!visited.add(key) || depth > MAX_HELPER_DEPTH) {
-                return new ScanOutcome(true, true, List.of(), Set.of(), Set.of(), Set.of());
+                return new ScanOutcome(true, true, List.of(), List.of(), Set.of(), Set.of(),
+                        Set.of(), Set.of(), Set.of());
             }
 
             String resourceName = targetClass.getName().replace('.', '/') + ".class";
@@ -575,13 +613,23 @@ public class ObjectAuthorizationCollectorAdapter extends AbstractCollectorAdapte
         }
 
         private Method resolveMethod(String owner, String name, String descriptor) {
-            if (!owner.equals(targetClass.getName().replace('.', '/')) || name.startsWith("<")) {
+            String ownerName = owner.replace('/', '.');
+            if (name.startsWith("<") || isFrameworkOwner(owner)
+                    || !applicationRoot(ownerName).equals(applicationRoot(targetClass.getName()))) {
                 return null;
             }
-            for (Method candidate : targetClass.getDeclaredMethods()) {
-                if (candidate.getName().equals(name) && Type.getMethodDescriptor(candidate).equals(descriptor)) {
-                    return candidate;
+            try {
+                Class<?> ownerType = Class.forName(ownerName, false, targetClass.getClassLoader());
+                for (Method candidate : ownerType.getDeclaredMethods()) {
+                    if (candidate.getName().equals(name)
+                            && Type.getMethodDescriptor(candidate).equals(descriptor)
+                            && !Modifier.isAbstract(candidate.getModifiers())
+                            && !Modifier.isNative(candidate.getModifiers())) {
+                        return candidate;
+                    }
                 }
+            } catch (ClassNotFoundException | LinkageError exception) {
+                return null;
             }
             return null;
         }
@@ -594,11 +642,14 @@ public class ObjectAuthorizationCollectorAdapter extends AbstractCollectorAdapte
             private final Set<String> visited;
             private final List<CheckCandidate> candidates = new ArrayList<>();
             private final List<Check> nestedChecks = new ArrayList<>();
+            private final List<Check> nestedPathChecks = new ArrayList<>();
             private final List<Branch> branches = new ArrayList<>();
             private final List<Instruction> instructions = new ArrayList<>();
             private final Set<String> accessedTypes = new LinkedHashSet<>();
             private final Set<String> accessLocations = new LinkedHashSet<>();
             private final Set<String> protectedAccessTypes = new LinkedHashSet<>();
+            private final Set<String> protectedResourceAccesses = new LinkedHashSet<>();
+            private final Set<String> returnedResourceIdentities = new LinkedHashSet<>();
             private final Map<Label, Integer> labels = new HashMap<>();
             private boolean found;
             private boolean uncertain;
@@ -625,6 +676,10 @@ public class ObjectAuthorizationCollectorAdapter extends AbstractCollectorAdapte
                 if (!method.getName().equals(name) || !Type.getMethodDescriptor(method).equals(descriptor)) {
                     return null;
                 }
+            if (Modifier.isAbstract(access) || Modifier.isNative(access)) {
+                uncertain = true;
+                return null;
+            }
                 found = true;
                 return new UsageMethodVisitor(access, descriptor);
             }
@@ -633,19 +688,23 @@ public class ObjectAuthorizationCollectorAdapter extends AbstractCollectorAdapte
                 if (!found) {
                     return ScanOutcome.unavailable();
                 }
-                List<Check> checks = new ArrayList<>();
+                List<Check> localChecks = new ArrayList<>();
                 for (Branch branch : branches) {
                     if (!mismatchBranchHasDenial(branch)) {
                         continue;
                     }
                     CheckCandidate candidate = branch.candidate();
-                    checks.add(new Check(candidate.kind(), candidate.location(), candidate.source(),
+                    localChecks.add(new Check(candidate.kind(), candidate.location(), candidate.source(),
                             candidate.ownerGetter(), candidate.repositoryCall(), candidate.resourceType(), true));
                 }
+                List<Check> checks = new ArrayList<>(localChecks);
                 checks.addAll(nestedChecks);
+                List<Check> pathChecks = new ArrayList<>(localChecks);
+                pathChecks.addAll(nestedPathChecks);
                 boolean effectiveDenial = instructions.stream().anyMatch(Instruction::denial);
                 return new ScanOutcome(true, uncertain || (denialConstructed && !effectiveDenial),
-                        checks, accessedTypes, accessLocations, protectedAccessTypes);
+                        checks, pathChecks, accessedTypes, accessLocations, protectedAccessTypes,
+                        protectedResourceAccesses, returnedResourceIdentities);
             }
 
             private boolean mismatchBranchHasDenial(Branch branch) {
@@ -782,12 +841,17 @@ public class ObjectAuthorizationCollectorAdapter extends AbstractCollectorAdapte
                     recordAccess(receiver);
                     boolean resourceUse = isResourceValue(receiver)
                             || arguments.stream().anyMatch(this::isResourceValue);
-                    boolean helperCall = isHelperCall(owner, name, descriptor, opcode, receiver);
+                    boolean helperCall = isHelperCall(owner, name, descriptor, opcode, receiver)
+                            && !isOwnerGetter(name, descriptor);
+                    if (!helperCall && isUnresolvedResourceCall(owner, name, descriptor)) {
+                        uncertain = true;
+                        accessedTypes.add(requiredResourceType.getName());
+                        accessLocations.add(location(method));
+                    }
                     if (isProtectedTarget(owner, name, descriptor, arguments)) {
-                        arguments.stream().filter(this::isResourceValue)
-                                .map(Value::resourceType).forEach(protectedAccessTypes::add);
+                        arguments.stream().filter(this::isResourceValue).forEach(this::recordProtectedAccess);
                         if (isResourceValue(receiver)) {
-                            protectedAccessTypes.add(receiver.resourceType());
+                            recordProtectedAccess(receiver);
                         }
                     } else if (resourceUse && !helperCall
                             && !isKnownResourceUse(owner, name, descriptor, receiver, arguments)) {
@@ -796,23 +860,48 @@ public class ObjectAuthorizationCollectorAdapter extends AbstractCollectorAdapte
                     denialConstructed |= isForbiddenStatusCall(owner, name, arguments);
                     addInstruction(opcode, null, false, false);
 
+                    String returnedResourceIdentity = null;
                     if (helperCall) {
                         Method helper = resolveMethod(owner, name, descriptor);
                         if (helper != null && depth < MAX_HELPER_DEPTH) {
-                            ScanOutcome nested = new BytecodeAnalyzer(ownerClass).scan(
+                            int pathChecksBefore = nestedPathChecks.size();
+                            ScanOutcome nested = new BytecodeAnalyzer(helper.getDeclaringClass(),
+                                    requiredResourceType).scan(
                                     helper, arguments, List.of(), depth + 1, new HashSet<>(visited));
                             uncertain |= nested.uncertain();
                             nestedChecks.addAll(nested.checks());
                             accessedTypes.addAll(nested.accesses());
                             accessLocations.addAll(nested.accessLocations());
                             protectedAccessTypes.addAll(nested.protectedAccesses());
+                            protectedResourceAccesses.addAll(nested.protectedResourceAccesses());
                             if (!nested.available()) {
                                 uncertain = true;
+                            } else if (Type.VOID_TYPE.equals(Type.getReturnType(descriptor))) {
+                                nestedPathChecks.addAll(nested.pathChecks());
+                            } else if (requiredResourceType != null
+                                    && requiredResourceType.equals(Type.getReturnType(descriptor).getClassName())
+                                    && nested.returnedResourceIdentities().size() == 1) {
+                                returnedResourceIdentity = nested.returnedResourceIdentities().iterator().next();
+                                String matchingIdentity = returnedResourceIdentity;
+                                nestedPathChecks.addAll(nested.pathChecks().stream()
+                                        .filter(check -> matchingIdentity.equals(resourceIdentity(check)))
+                                        .toList());
                             }
+                            if (!nested.pathChecks().isEmpty()
+                                    && nestedPathChecks.size() == pathChecksBefore
+                                    && !Type.VOID_TYPE.equals(Type.getReturnType(descriptor))) {
+                                // 반환값의 거부 결과를 호출자가 집행하는지 확인되지 않는 상태
+                                uncertain = true;
+                            }
+                        } else if (helper != null) {
+                            uncertain = true;
                         }
                     }
 
                     Value returned = returnValue(owner, name, descriptor, receiver, arguments);
+                    if (returnedResourceIdentity != null) {
+                        returned = Value.object(returnedResourceIdentity, requiredResourceType.getName());
+                    }
                     if (isForbiddenStatusCall(owner, name, arguments)
                             || isForbiddenBuilder(owner, name, receiver)) {
                         returned = Value.forbidden();
@@ -885,6 +974,10 @@ public class ObjectAuthorizationCollectorAdapter extends AbstractCollectorAdapte
                             effectiveDenial = returned.kind() == ValueKind.FORBIDDEN;
                             if (isResourceValue(returned)) {
                                 protectedAccessTypes.add(returned.resourceType());
+                                String identity = resourceIdentity(returned);
+                                if (identity != null) {
+                                    returnedResourceIdentities.add(identity);
+                                }
                             }
                         }
                         default -> {
@@ -916,6 +1009,14 @@ public class ObjectAuthorizationCollectorAdapter extends AbstractCollectorAdapte
                     if (isResourceValue(value)) {
                         accessedTypes.add(value.resourceType());
                         accessLocations.add(location(method));
+                    }
+                }
+
+                private void recordProtectedAccess(Value value) {
+                    protectedAccessTypes.add(value.resourceType());
+                    String identity = resourceIdentity(value);
+                    if (identity != null) {
+                        protectedResourceAccesses.add(identity);
                     }
                 }
 
@@ -976,12 +1077,14 @@ public class ObjectAuthorizationCollectorAdapter extends AbstractCollectorAdapte
                         return Value.authenticationCheck();
                     }
                     if (isOptionalResult(descriptor) && !isFrameworkOwner(owner)) {
-                        return Value.optional(owner + "#" + name + descriptor);
+                        return Value.optional(owner + "#" + name + descriptor + "@call:"
+                                        + location(method) + ":" + eventIndex,
+                                optionalResourceType(owner, name, descriptor));
                     }
                     if (OPTIONAL.equals(owner) && ("orElse".equals(name) || "orElseGet".equals(name)
                             || "get".equals(name))
                             && receiver.kind() == ValueKind.OPTIONAL) {
-                        return Value.object(receiver.repositoryCall());
+                        return Value.object(receiver.repositoryCall(), receiver.resourceType());
                     }
                     if (isResourceValue(receiver) && isOwnerGetter(name, descriptor)) {
                         return Value.owner(receiver, name);
@@ -1049,10 +1152,88 @@ public class ObjectAuthorizationCollectorAdapter extends AbstractCollectorAdapte
                         int opcode,
                         Value receiver
                 ) {
-                    return owner.equals(ownerClass.getName().replace('.', '/'))
-                            && opcode != Opcodes.INVOKESTATIC
-                            && receiver.kind() == ValueKind.THIS
-                            && resolveMethod(owner, name, descriptor) != null;
+                    Method method = resolveMethod(owner, name, descriptor);
+                    if (method == null) {
+                        return false;
+                    }
+                    if (Modifier.isStatic(method.getModifiers())) {
+                        return opcode == Opcodes.INVOKESTATIC;
+                    }
+                    if (owner.equals(ownerClass.getName().replace('.', '/'))
+                            && opcode != Opcodes.INVOKESTATIC && receiver.kind() == ValueKind.THIS) {
+                        return true;
+                    }
+                    int classModifiers = method.getDeclaringClass().getModifiers();
+                    return opcode != Opcodes.INVOKESTATIC && !method.getDeclaringClass().isInterface()
+                            && (Modifier.isFinal(classModifiers) || Modifier.isFinal(method.getModifiers())
+                            || Modifier.isPrivate(method.getModifiers()));
+                }
+
+                private String optionalResourceType(String owner, String name, String descriptor) {
+                    if (requiredResourceType == null) {
+                        return null;
+                    }
+                    Method declaration = resolveMethodDeclaration(owner, name, descriptor);
+                    if (declaration == null || declaration.getGenericReturnType() == null) {
+                        return null;
+                    }
+                    java.lang.reflect.Type genericType = declaration.getGenericReturnType();
+                    if (!(genericType instanceof ParameterizedType parameterizedType)
+                            || parameterizedType.getRawType() != java.util.Optional.class) {
+                        return null;
+                    }
+                    java.lang.reflect.Type[] arguments = parameterizedType.getActualTypeArguments();
+                    if (arguments.length != 1 || !(arguments[0] instanceof Class<?> returnedType)
+                            || !requiredResourceType.equals(returnedType)) {
+                        return null;
+                    }
+                    return returnedType.getName();
+                }
+
+                private Method resolveMethodDeclaration(String owner, String name, String descriptor) {
+                    String ownerName = owner.replace('/', '.');
+                    if (name.startsWith("<") || isFrameworkOwner(owner)
+                            || !applicationRoot(ownerName).equals(applicationRoot(ownerClass.getName()))) {
+                        return null;
+                    }
+                    try {
+                        Class<?> ownerType = Class.forName(ownerName, false, ownerClass.getClassLoader());
+                        return Arrays.stream(ownerType.getDeclaredMethods())
+                                .filter(candidate -> candidate.getName().equals(name)
+                                        && Type.getMethodDescriptor(candidate).equals(descriptor))
+                                .findFirst().orElse(null);
+                    } catch (ClassNotFoundException | LinkageError exception) {
+                        return null;
+                    }
+                }
+
+                private boolean isUnresolvedResourceCall(String owner, String name, String descriptor) {
+                    if (requiredResourceType == null || isFrameworkOwner(owner)
+                            || !applicationRoot(owner.replace('/', '.'))
+                            .equals(applicationRoot(ownerClass.getName()))) {
+                        return false;
+                    }
+                    Type returnType = Type.getReturnType(descriptor);
+                    if (returnType.getDescriptor().equals("Ljava/util/Optional;")) {
+                        Method declaration = resolveMethodDeclaration(owner, name, descriptor);
+                        if (declaration == null || !(declaration.getGenericReturnType() instanceof ParameterizedType type)
+                                || type.getRawType() != java.util.Optional.class) {
+                            return true;
+                        }
+                        java.lang.reflect.Type[] arguments = type.getActualTypeArguments();
+                        return arguments.length != 1 || !(arguments[0] instanceof Class<?>);
+                    }
+                    return requiredResourceType.getName().equals(returnType.getClassName());
+                }
+
+                private String resourceIdentity(Value value) {
+                    return isResourceValue(value) && value.repositoryCall() != null
+                            ? value.resourceType() + "|" + value.repositoryCall() : null;
+                }
+
+                private String resourceIdentity(Check check) {
+                    return check.resourceType() != null && check.repositoryCall() != null
+                            ? check.resourceType() + "|" + check.repositoryCall() : null;
                 }
 
                 private boolean isResourceValue(Value value) {
@@ -1074,6 +1255,8 @@ public class ObjectAuthorizationCollectorAdapter extends AbstractCollectorAdapte
                 private boolean isKnownResourceUse(String owner, String name, String descriptor,
                                                     Value receiver, List<Value> arguments) {
                     return isProtectedTarget(owner, name, descriptor, arguments)
+                            || (OPTIONAL.equals(owner) && receiver.kind() == ValueKind.OPTIONAL
+                            && Set.of("orElse", "orElseGet", "get").contains(name))
                             || isHelperCall(owner, name, descriptor, Opcodes.INVOKEVIRTUAL, receiver)
                             || isOwnerGetter(name, descriptor)
                             || isResourceAccessor(name, descriptor)
@@ -1211,5 +1394,11 @@ public class ObjectAuthorizationCollectorAdapter extends AbstractCollectorAdapte
     private boolean isFrameworkOwner(String owner) {
         return owner.startsWith("java/") || owner.startsWith("javax/") || owner.startsWith("jakarta/")
                 || owner.startsWith("org/springframework/");
+    }
+
+    private String applicationRoot(String className) {
+        String[] parts = className.split("\\.");
+        return parts.length >= 2 && Set.of("com", "org", "net", "io").contains(parts[0])
+                ? parts[0] + "." + parts[1] : parts[0];
     }
 }
