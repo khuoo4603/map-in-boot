@@ -19,6 +19,9 @@ import com.mapinboot.starter.snapshot.SnapshotJsonCodec;
 import com.mapinboot.starter.web.api.SnapshotController;
 import com.mapinboot.starter.web.api.StatusController;
 import com.mapinboot.starter.web.access.WebAccessInterceptor;
+import com.mapinboot.starter.web.auth.LoginAttemptLimiter;
+import com.mapinboot.starter.web.auth.LoginController;
+import com.mapinboot.starter.web.auth.SdkLoginService;
 import com.mapinboot.starter.web.ui.DevelopmentDiagnosticController;
 import com.mapinboot.starter.web.ui.MapInBootUiController;
 import java.nio.file.Path;
@@ -26,6 +29,7 @@ import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
@@ -197,8 +201,36 @@ public class MapInBootAutoConfiguration {
         @ConditionalOnMissingBean
         @ConditionalOnProperty(prefix = "mapinboot", name = "enabled", havingValue = "true", matchIfMissing = true)
         @ConditionalOnProperty(prefix = "mapinboot.web", name = "enabled", havingValue = "true")
-        MapInBootUiController mapInBootUiController() {
-            return new MapInBootUiController();
+        MapInBootUiController mapInBootUiController(MapInBootProperties properties) {
+            return new MapInBootUiController(properties);
+        }
+
+        @Bean
+        @ConditionalOnMissingBean
+        @ConditionalOnProperty(prefix = "mapinboot", name = "enabled", havingValue = "true", matchIfMissing = true)
+        @ConditionalOnProperty(prefix = "mapinboot.web", name = "enabled", havingValue = "true")
+        LoginController loginController(
+                MapInBootProperties properties, ObjectProvider<SdkLoginService> loginServiceProvider) {
+            return new LoginController(properties, loginServiceProvider);
+        }
+
+        @Bean
+        @ConditionalOnMissingBean
+        @ConditionalOnProperty(prefix = "mapinboot", name = "enabled", havingValue = "true", matchIfMissing = true)
+        @ConditionalOnProperty(prefix = "mapinboot.web", name = "enabled", havingValue = "true")
+        @ConditionalOnProperty(prefix = "mapinboot.web", name = "auth-mode", havingValue = "PASSWORD")
+        LoginAttemptLimiter loginAttemptLimiter() {
+            return new LoginAttemptLimiter();
+        }
+
+        @Bean
+        @ConditionalOnMissingBean
+        @ConditionalOnProperty(prefix = "mapinboot", name = "enabled", havingValue = "true", matchIfMissing = true)
+        @ConditionalOnProperty(prefix = "mapinboot.web", name = "enabled", havingValue = "true")
+        @ConditionalOnProperty(prefix = "mapinboot.web", name = "auth-mode", havingValue = "PASSWORD")
+        SdkLoginService sdkLoginService(
+                MapInBootProperties properties, LoginAttemptLimiter attemptLimiter) {
+            return new SdkLoginService(properties, attemptLimiter);
         }
 
         @Bean

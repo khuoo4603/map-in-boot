@@ -4,6 +4,8 @@ import { test } from "node:test";
 import vm from "node:vm";
 
 const indexHtml = readFileSync("map-in-boot-starter/src/main/resources/static/mapinboot/index.html", "utf8");
+const loginHtml = readFileSync("map-in-boot-starter/src/main/resources/static/mapinboot/login.html", "utf8");
+const loginScript = readFileSync("map-in-boot-starter/src/main/resources/static/mapinboot/login.js", "utf8");
 const appCss = readFileSync("map-in-boot-starter/src/main/resources/static/mapinboot/app.css", "utf8");
 const appJs = readFileSync("map-in-boot-starter/src/main/resources/static/mapinboot/app.js", "utf8");
 const graphRendererJs = readFileSync("map-in-boot-starter/src/main/resources/static/mapinboot/graph-renderer.js", "utf8");
@@ -122,9 +124,9 @@ function createElement(tagName = "div") {
   return element;
 }
 
-function loadUi({ fetchImpl, timers, animationClock, clipboard, includeSpotlight = true } = {}) {
+function loadUi({ fetchImpl, authStatusImpl, timers, animationClock, clipboard, includeSpotlight = true } = {}) {
   const ids = [
-    "view-title", "view-state", "shell-notice", "help-button", "settings-button", "refresh-button",
+    "view-title", "view-state", "shell-notice", "help-button", "settings-button", "refresh-button", "logout-button",
     "help-panel", "settings-panel", "settings-close", "setting-show-areas", "setting-show-edge-labels", "setting-show-minimap", "setting-show-detail-flow", "setting-flow-node-duration", "setting-flow-speed",
     "graph-canvas", "map-toolbar",
     "graph-empty", "graph-state-message", "graph-svg", "graph-viewport", "graph-areas", "graph-flow-projection", "graph-guides",
@@ -153,6 +155,7 @@ function loadUi({ fetchImpl, timers, animationClock, clipboard, includeSpotlight
   }
   elements.get("help-panel").hidden = true;
   elements.get("settings-panel").hidden = true;
+  elements.get("logout-button").hidden = true;
   elements.get("settings-button").append(createElement("span"));
   elements.get("setting-show-areas").checked = true;
   elements.get("setting-show-edge-labels").checked = true;
@@ -218,6 +221,7 @@ function loadUi({ fetchImpl, timers, animationClock, clipboard, includeSpotlight
     },
   });
   document.body.parentNode = document;
+  document.visibilityState = "visible";
   elements.get("settings-panel").parentNode = document;
   elements.get("settings-button").parentNode = document;
   elements.get("finding-modal").parentNode = document;
@@ -247,7 +251,16 @@ function loadUi({ fetchImpl, timers, animationClock, clipboard, includeSpotlight
   );
   document.body.appendChild(mapToolbar);
   let activeFetch = fetchImpl || (() => new Promise(() => {}));
+  let activeAuthStatus = authStatusImpl || (() => Promise.resolve({
+    ok: true,
+    status: 200,
+    json: async () => ({ mode: "NONE", authenticated: false, csrfToken: null })
+  }));
   const window = Object.assign(createEventTarget(), {});
+  window.location = {
+    replacements: [],
+    replace(path) { this.replacements.push(path); }
+  };
   window.navigator = { clipboard: clipboard || { writeText: async () => {} } };
   if (animationClock) {
     window.requestAnimationFrame = (callback) => animationClock.requestFrame(callback);
@@ -287,7 +300,9 @@ function loadUi({ fetchImpl, timers, animationClock, clipboard, includeSpotlight
     console,
     document,
     window,
-    fetch: (...args) => activeFetch(...args),
+    fetch: (url, ...args) => String(url) === "/mapinboot/api/auth/status"
+      ? activeAuthStatus(url, ...args)
+      : activeFetch(url, ...args),
     setTimeout: timers ? timers.setTimeout : setTimeout,
     clearTimeout: timers ? timers.clearTimeout : clearTimeout,
     performance: animationClock ? { now: () => animationClock.now() } : undefined
@@ -307,9 +322,114 @@ function loadUi({ fetchImpl, timers, animationClock, clipboard, includeSpotlight
     navigation,
     document,
     window,
-    setFetch(fetchFunction) { activeFetch = fetchFunction; }
+    setFetch(fetchFunction) { activeFetch = fetchFunction; },
+    setAuthStatus(fetchFunction) { activeAuthStatus = fetchFunction; }
   };
 }
+
+test("로그인 Form은 JavaScript가 실행되지 않아도 비밀번호를 URL에 넣지 않음", () => {
+  const form = loginHtml.match(/<form\b[^>]*>/i)?.[0] || "";
+  assert.match(form, /\bmethod="post"/i);
+  assert.match(form, /\baction="\/mapinboot\/api\/auth\/login"/i);
+  assert.match(loginScript, /form\.addEventListener\("submit", submitLogin\)/);
+  assert.match(loginScript, /event\.preventDefault\(\)/);
+});
+
+test("일시적인 인증 상태 조회 실패는 PASSWORD 모드와 로그아웃 표시를 유지함", async () => {
+  const authStatus = () => Promise.resolve({
+    ok: true,
+    status: 200,
+    json: async () => ({ mode: "PASSWORD", authenticated: true, csrfToken: "csrf-token" })
+  });
+  const { ui, elements, window, setAuthStatus } = loadUi({
+    authStatusImpl: authStatus,
+    fetchImpl: () => Promise.resolve({
+      ok: true,
+      status: 200,
+      json: async () => ({ phase: "COMPLETED", persistedSnapshotPresent: false })
+    })
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(elements.get("logout-button").hidden, false);
+  setAuthStatus(() => Promise.reject(new Error("offline")));
+
+  await ui.loadStatus();
+
+  assert.equal(elements.get("logout-button").hidden, false);
+  assert.deepEqual(window.location.replacements, []);
+});
+
+test("페이지 복귀 중 인증 상태 네트워크 오류는 로그아웃 처리로 오인하지 않음", async () => {
+  const { elements, window, setAuthStatus } = loadUi({
+    authStatusImpl: () => Promise.resolve({
+      ok: true,
+      status: 200,
+      json: async () => ({ mode: "PASSWORD", authenticated: true, csrfToken: "csrf-token" })
+    }),
+    fetchImpl: () => Promise.resolve({
+      ok: true,
+      status: 200,
+      json: async () => ({ phase: "COMPLETED", persistedSnapshotPresent: false })
+    })
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(elements.get("logout-button").hidden, false);
+  setAuthStatus(() => Promise.reject(new Error("offline")));
+
+  window.dispatchEvent({ type: "pageshow", persisted: true });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.deepEqual(window.location.replacements, []);
+  assert.equal(elements.get("logout-button").hidden, false);
+});
+
+test("다른 탭 로그아웃 후 문서 복귀 시 Snapshot·Graph·Finding을 비우고 SDK 진입점으로 이동함", async () => {
+  let authenticated = true;
+  const { ui, elements, document, window } = loadUi({
+    authStatusImpl: () => Promise.resolve({
+      ok: true,
+      status: 200,
+      json: async () => ({ mode: "PASSWORD", authenticated, csrfToken: "csrf-token" })
+    }),
+    fetchImpl: () => Promise.resolve({
+      ok: true,
+      status: 200,
+      json: async () => ({ phase: "COMPLETED", persistedSnapshotPresent: false })
+    })
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  await new Promise((resolve) => setImmediate(resolve));
+
+  const snapshot = graphFixture();
+  snapshot.findings = [{
+    id: "auth-expired-finding", title: "이전 Finding", ruleId: "CHAIN_MISSING",
+    confidence: "UNKNOWN", nodeIds: ["node-2"], edgeIds: [], evidenceIds: ["evidence-2"]
+  }];
+  ui.state.snapshot = snapshot;
+  ui.renderGraph(snapshot);
+  ui.state.selectedFindingId = "auth-expired-finding";
+  ui.state.selection = { kind: "node", id: "node-2" };
+  assert.ok(ui.state.graph.nodes.length > 0);
+
+  authenticated = false;
+  document.visibilityState = "hidden";
+  document.dispatchEvent({ type: "visibilitychange" });
+  document.visibilityState = "visible";
+  document.dispatchEvent({ type: "visibilitychange" });
+  await new Promise((resolve) => setImmediate(resolve));
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(window.location.replacements.at(-1), "/mapinboot/");
+  assert.equal(ui.state.snapshot, null);
+  assert.equal(ui.state.graph, null);
+  assert.equal(ui.state.selection, null);
+  assert.equal(ui.state.selectedFindingId, null);
+  assert.equal(ui.state.findingIndex.length, 0);
+  assert.equal(elements.get("graph-svg").hasAttribute("hidden"), true);
+});
 
 function textOf(element) {
   return [element.textContent || "", ...Array.from(element.children || [], textOf)].join(" ");

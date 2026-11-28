@@ -6,6 +6,7 @@ import com.mapinboot.starter.bootstrap.MapInBootBootstrap;
 import com.mapinboot.starter.web.access.WebAccessGuard;
 import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.ResponseEntity;
 import org.springframework.core.env.Environment;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
@@ -38,9 +39,11 @@ public class SnapshotController {
     public ResponseEntity<?> snapshot(HttpServletRequest request) {
         HttpStatus denied = WebAccessGuard.deniedStatus(request, properties, environment);
         if (denied != null) {
-            return ResponseEntity.status(denied).build();
+            return ResponseEntity.status(denied).header(HttpHeaders.CACHE_CONTROL, "no-store").build();
         }
         Snapshot persisted = bootstrap.persistedSnapshot();
-        return persisted == null ? ResponseEntity.notFound().build() : ResponseEntity.ok(persisted);
+        return persisted == null
+                ? ResponseEntity.notFound().header(HttpHeaders.CACHE_CONTROL, "no-store").build()
+                : ResponseEntity.ok().header(HttpHeaders.CACHE_CONTROL, "no-store").body(persisted);
     }
 }

@@ -79,9 +79,12 @@ public class MainSecurityConfig {
             .authorizeHttpRequests(auth -> {
                 // SDK 정식 UI 정적 자원은 호스트 인증 없이 읽기 허용
                 auth.requestMatchers(HttpMethod.GET, WebAccessGuard.publicUiPaths()).permitAll();
-                if (WebAccessGuard.isAnonymousPreviewEnabled(mapInBootProperties, environment)) {
+                if (WebAccessGuard.isSdkReadApiFilterPassThroughEnabled(mapInBootProperties, environment)) {
                     auth.requestMatchers(HttpMethod.GET, WebAccessGuard.previewApiPaths()).permitAll();
                 }
+                auth.requestMatchers(HttpMethod.GET, WebAccessGuard.authUiPaths()).permitAll();
+                auth.requestMatchers(HttpMethod.GET, WebAccessGuard.authStatusPaths()).permitAll();
+                auth.requestMatchers(HttpMethod.POST, WebAccessGuard.authPostPaths()).permitAll();
                 // Demo 정적 리소스 및 오류 페이지 접근 허용
                 auth.requestMatchers("/demo/**", "/error", "/favicon.ico").permitAll();
                 auth.requestMatchers(HttpMethod.GET, "/api/public/notices").permitAll();

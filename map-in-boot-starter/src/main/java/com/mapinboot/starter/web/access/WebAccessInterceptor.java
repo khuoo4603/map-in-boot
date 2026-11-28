@@ -4,6 +4,7 @@ import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import java.io.IOException;
 import com.mapinboot.starter.autoconfigure.MapInBootProperties;
+import com.mapinboot.starter.autoconfigure.WebAuthMode;
 import org.springframework.core.env.Environment;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.servlet.HandlerInterceptor;
@@ -24,6 +25,10 @@ public final class WebAccessInterceptor implements HandlerInterceptor {
         if (!properties.isEnabled() || !properties.getWeb().isEnabled()) {
             response.sendError(HttpStatus.NOT_FOUND.value());
             return false;
+        }
+        if (properties.getWeb().getAuthMode() == WebAuthMode.PASSWORD
+                || WebAccessGuard.isDevelopmentRequest(request)) {
+            response.setHeader("Cache-Control", "no-store");
         }
         HttpStatus denied = WebAccessGuard.deniedStatus(request, properties, environment);
         if (denied == null) {

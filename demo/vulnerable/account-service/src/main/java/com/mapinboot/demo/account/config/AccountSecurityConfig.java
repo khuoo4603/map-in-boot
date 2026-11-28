@@ -132,9 +132,12 @@ public class AccountSecurityConfig {
             .cors(cors -> cors.configurationSource(corsConfigurationSource()))
             .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
             .authorizeHttpRequests(auth -> {
-                // SDK 정식 UI 정적 자원은 호스트 인증 없이 읽기 허용
+                // SDK UI와 인증 진입 경로를 호스트 필터까지 전달
                 auth.requestMatchers(HttpMethod.GET, WebAccessGuard.publicUiPaths()).permitAll();
-                if (WebAccessGuard.isAnonymousPreviewEnabled(mapInBootProperties, environment)) {
+                auth.requestMatchers(HttpMethod.GET, WebAccessGuard.authUiPaths()).permitAll();
+                auth.requestMatchers(HttpMethod.GET, WebAccessGuard.authStatusPaths()).permitAll();
+                auth.requestMatchers(HttpMethod.POST, WebAccessGuard.authPostPaths()).permitAll();
+                if (WebAccessGuard.isSdkReadApiFilterPassThroughEnabled(mapInBootProperties, environment)) {
                     auth.requestMatchers(HttpMethod.GET, WebAccessGuard.previewApiPaths()).permitAll();
                 }
                 auth.requestMatchers("/error").permitAll();

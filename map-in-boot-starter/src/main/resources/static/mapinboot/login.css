@@ -1,0 +1,37 @@
+:root {
+  color-scheme: dark;
+  --page: #090d0b;
+  --surface: #141b17;
+  --surface-raised: #1a241e;
+  --line: #2b3a30;
+  --accent: #4ade80;
+  --accent-strong: #86efac;
+  --text: #eaf3ee;
+  font-family: "Segoe UI", "Malgun Gothic", sans-serif;
+  color: var(--text);
+  background: var(--page);
+}
+* { box-sizing: border-box; }
+body { min-width: 320px; min-height: 100vh; margin: 0; }
+button, input { font: inherit; }
+button:focus-visible, input:focus-visible { outline: 2px solid var(--accent-strong); outline-offset: 2px; }
+.login-shell { display: grid; min-height: 100vh; place-items: center; padding: 24px; }
+.login-form { width: min(100%, 380px); display: grid; gap: 16px; }
+h1 { margin: 0 0 18px; text-align: center; font-size: 22px; font-weight: 650; }
+label { color: var(--text); font-size: 14px; }
+.password-field { display: flex; align-items: center; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-raised); }
+.password-field:focus-within { border-color: var(--accent); }
+input { width: 100%; min-width: 0; padding: 13px 14px; border: 0; color: var(--text); background: transparent; }
+input:focus-visible { outline: none; }
+#password-toggle { display: grid; width: 40px; height: 40px; flex: 0 0 auto; place-items: center; margin-right: 6px; padding: 0; border: 0; border-radius: 6px; color: var(--accent-strong); background: transparent; cursor: pointer; }
+#password-toggle:hover { color: var(--text); }
+.password-toggle-icon { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+.eye-slash { display: none; }
+#password-toggle[aria-pressed="true"] .eye-open,
+#password-toggle[aria-pressed="true"] .eye-pupil { display: none; }
+#password-toggle[aria-pressed="true"] .eye-slash { display: block; }
+.submit-button { min-height: 46px; border: 0; border-radius: 8px; color: #07120b; background: var(--accent); font-weight: 700; cursor: pointer; }
+.submit-button:hover { background: var(--accent-strong); }
+.submit-button:disabled { cursor: wait; opacity: .6; }
+.login-message { min-height: 22px; margin: 0; color: #ff9d9d; font-size: 14px; }
+@media (max-width: 480px) { .login-shell { padding: 20px; } }
