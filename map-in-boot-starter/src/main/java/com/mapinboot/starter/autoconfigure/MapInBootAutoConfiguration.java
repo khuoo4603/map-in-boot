@@ -201,8 +201,8 @@ public class MapInBootAutoConfiguration {
         @ConditionalOnMissingBean
         @ConditionalOnProperty(prefix = "mapinboot", name = "enabled", havingValue = "true", matchIfMissing = true)
         @ConditionalOnProperty(prefix = "mapinboot.web", name = "enabled", havingValue = "true")
-        MapInBootUiController mapInBootUiController() {
-            return new MapInBootUiController();
+        MapInBootUiController mapInBootUiController(MapInBootProperties properties) {
+            return new MapInBootUiController(properties);
         }
 
         @Bean

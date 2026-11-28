@@ -133,5 +133,9 @@ public final class LoginController {
     }
 
     public record LoginRequest(String password) {
+        @Override
+        public String toString() {
+            return "LoginRequest[password=<redacted>]";
+        }
     }
 }

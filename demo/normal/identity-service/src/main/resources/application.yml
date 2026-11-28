@@ -5,6 +5,12 @@ spring:
   application:
     name: identity-service
 
+mapinboot:
+  web:
+    auth-mode: ${MAPINBOOT_WEB_AUTHMODE:${MAPINBOOT_WEB_AUTH_MODE:NONE}}
+    login:
+      password: ${MAPINBOOT_WEB_LOGIN_PASSWORD:${MAPINBOOT_PASSWORD:}}
+
 demo:
   jwt:
     private-key-path: ${JWT_PRIVATE_KEY_PATH:}

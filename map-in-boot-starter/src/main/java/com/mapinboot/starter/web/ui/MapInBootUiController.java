@@ -1,5 +1,9 @@
 package com.mapinboot.starter.web.ui;
 
+import com.mapinboot.starter.autoconfigure.MapInBootProperties;
+import com.mapinboot.starter.autoconfigure.WebAuthMode;
+import com.mapinboot.starter.web.auth.SdkLoginService;
+import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.core.io.ClassPathResource;
 import org.springframework.core.io.Resource;
 import org.springframework.http.MediaType;
@@ -13,13 +17,37 @@ import org.springframework.web.bind.annotation.RestController;
 @RequestMapping("/mapinboot")
 public final class MapInBootUiController {
     private static final String INDEX_RESOURCE = "static/mapinboot/index.html";
+    private static final String LOGIN_RESOURCE = "static/mapinboot/login.html";
+    private static final String LOGIN_STYLE_RESOURCE = "static/mapinboot/login.css";
+    private static final String LOGIN_SCRIPT_RESOURCE = "static/mapinboot/login.js";
+    private final MapInBootProperties properties;
 
-    @GetMapping(value = {"", "/"}, produces = MediaType.TEXT_HTML_VALUE)
-    public ResponseEntity<Resource> index() {
-        Resource resource = new ClassPathResource(INDEX_RESOURCE);
+    public MapInBootUiController(MapInBootProperties properties) {
+        this.properties = properties;
+    }
+
+    @GetMapping(value = "/login.css", produces = "text/css")
+    public ResponseEntity<Resource> loginStyle() {
+        return resource(LOGIN_STYLE_RESOURCE, MediaType.valueOf("text/css"));
+    }
+
+    @GetMapping(value = "/login.js", produces = "text/javascript")
+    public ResponseEntity<Resource> loginScript() {
+        return resource(LOGIN_SCRIPT_RESOURCE, MediaType.valueOf("text/javascript"));
+    }
+
+    @GetMapping(value = {"", "/", "/index.html"}, produces = MediaType.TEXT_HTML_VALUE)
+    public ResponseEntity<Resource> index(HttpServletRequest request) {
+        boolean passwordLogin = properties.getWeb().getAuthMode() == WebAuthMode.PASSWORD
+                && !SdkLoginService.hasAuthenticatedSession(request);
+        return resource(passwordLogin ? LOGIN_RESOURCE : INDEX_RESOURCE, MediaType.TEXT_HTML);
+    }
+
+    private ResponseEntity<Resource> resource(String path, MediaType mediaType) {
+        Resource resource = new ClassPathResource(path);
         if (!resource.exists()) {
             return ResponseEntity.notFound().build();
         }
-        return ResponseEntity.ok().contentType(MediaType.TEXT_HTML).body(resource);
+        return ResponseEntity.ok().contentType(mediaType).body(resource);
     }
 }

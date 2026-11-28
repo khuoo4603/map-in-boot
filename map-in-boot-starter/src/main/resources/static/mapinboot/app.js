@@ -53,6 +53,7 @@
   const refreshButton = document.querySelector("#refresh-button");
   const helpButton = document.querySelector("#help-button");
   const settingsButton = document.querySelector("#settings-button");
+  const logoutButton = document.querySelector("#logout-button");
   const helpPanel = document.querySelector("#help-panel");
   const spotlight = window.MapInBootSpotlight;
   const settingsPanel = document.querySelector("#settings-panel");
@@ -103,6 +104,10 @@
   const requestFlowDot = document.querySelector("#request-flow-dot");
   let noticeTimer = null;
   let settingsPanelTimer = null;
+  let authMode = null;
+  let authCsrfToken = null;
+  let authResumeCheck = null;
+  let loadGeneration = 0;
   const state = {
     view: "all-flow",
     status: null,
@@ -2177,6 +2182,72 @@
     return response.json();
   }
 
+  async function refreshAuthStatus() {
+    const response = await fetch("/mapinboot/api/auth/status", {
+      credentials: "same-origin",
+      headers: { Accept: "application/json" },
+      cache: "no-store"
+    });
+    if (!response.ok) throw new Error("인증 상태 조회 실패");
+    const auth = await response.json();
+    authMode = auth.mode;
+    authCsrfToken = auth.csrfToken;
+    if (logoutButton) logoutButton.hidden = authMode !== "PASSWORD";
+    return auth;
+  }
+
+  function checkAuthAfterResume() {
+    if (authMode !== "PASSWORD" || authResumeCheck) return authResumeCheck;
+    authResumeCheck = refreshAuthStatus()
+      .then((auth) => {
+        if (auth.mode === "PASSWORD" && !auth.authenticated) redirectToLogin();
+      })
+      .catch(() => {})
+      .finally(() => { authResumeCheck = null; });
+    return authResumeCheck;
+  }
+
+  function clearSdkData() {
+    loadGeneration += 1;
+    state.loading = false;
+    refreshButton.disabled = false;
+    state.status = null;
+    state.snapshot = null;
+    state.error = null;
+    state.statusError = null;
+    state.snapshotError = null;
+    state.snapshotState = "not-requested";
+    state.layout = null;
+    state.layoutState = "not-requested";
+    state.layoutRequestId += 1;
+    authCsrfToken = null;
+    closeFindingModal(false);
+    closeSettingsPanel();
+    if (requestFlowController) requestFlowController.reset();
+    resetGraph();
+    updateHeader();
+    renderStatus();
+  }
+
+  function redirectToLogin() {
+    if (authMode !== "PASSWORD") return false;
+    clearSdkData();
+    window.location.replace("/mapinboot/");
+    return true;
+  }
+
+  async function redirectAfterUnauthorized(error) {
+    if (!error || error.status !== 401) return false;
+    if (authMode !== "PASSWORD") {
+      try {
+        await refreshAuthStatus();
+      } catch {
+        return false;
+      }
+    }
+    return redirectToLogin();
+  }
+
   async function loadStatus() {
     if (state.loading) return;
     const previousView = state.view;
@@ -2188,6 +2259,7 @@
     const previousFindingReturnId = state.findingReturnId;
     const previousModalId = state.findingModalId;
     const previousModalWasOpen = Boolean(findingModal && !findingModal.hidden);
+    const currentGeneration = ++loadGeneration;
     state.loading = true;
     refreshButton.disabled = true;
     state.error = null;
@@ -2213,12 +2285,28 @@
     renderStatus();
     showNotice("상태 조회 중", "loading");
     try {
-      state.status = await fetchJson("/mapinboot/api/status", "status");
+      let auth = null;
+      try {
+        auth = await refreshAuthStatus();
+      } catch {
+        // 일시적 상태 조회 실패 시 마지막 인증 모드 보존
+      }
+      if (auth && auth.mode === "PASSWORD" && !auth.authenticated) {
+        redirectToLogin();
+        return;
+      }
+      const loadedStatus = await fetchJson("/mapinboot/api/status", "status");
+      if (currentGeneration !== loadGeneration) return;
+      state.status = loadedStatus;
       if (state.status.persistedSnapshotPresent) {
         try {
-          state.snapshot = await fetchJson("/mapinboot/api/snapshot", "snapshot");
+          const loadedSnapshot = await fetchJson("/mapinboot/api/snapshot", "snapshot");
+          if (currentGeneration !== loadGeneration) return;
+          state.snapshot = loadedSnapshot;
           state.snapshotState = "loaded";
         } catch (error) {
+          if (currentGeneration !== loadGeneration) return;
+          if (await redirectAfterUnauthorized(error)) return;
           state.snapshotError = error;
           state.snapshotState = errorState(error, "snapshot");
         }
@@ -2284,6 +2372,8 @@
         );
       }
     } catch (error) {
+      if (currentGeneration !== loadGeneration) return;
+      if (await redirectAfterUnauthorized(error)) return;
       state.error = error;
       state.statusError = error;
       state.snapshotState = errorState(error, "status");
@@ -2292,8 +2382,10 @@
       renderStatus();
       showNotice(requestMessage(error.status, "status"), "error");
     } finally {
-      state.loading = false;
-      refreshButton.disabled = false;
+      if (currentGeneration === loadGeneration) {
+        state.loading = false;
+        refreshButton.disabled = false;
+      }
     }
   }
 
@@ -2789,6 +2881,46 @@
     }
   });
   refreshButton.addEventListener("click", loadStatus);
+  if (logoutButton) logoutButton.addEventListener("click", async () => {
+    if (authMode !== "PASSWORD" || logoutButton.disabled) return;
+    logoutButton.disabled = true;
+    try {
+      const auth = await refreshAuthStatus();
+      if (!auth.authenticated) {
+        redirectToLogin();
+        return;
+      }
+      const response = await fetch("/mapinboot/api/auth/logout", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "X-MapInBoot-CSRF": authCsrfToken || "" },
+        cache: "no-store"
+      });
+      if (response.status !== 204) {
+        if (response.status === 401) {
+          const latestAuth = await refreshAuthStatus();
+          if (!latestAuth.authenticated) {
+            redirectToLogin();
+            return;
+          }
+        } else if (response.status === 403) {
+          await refreshAuthStatus();
+        }
+        showNotice("로그아웃을 완료하지 못했습니다. 다시 시도해 주세요.", "error");
+        return;
+      }
+      clearSdkData();
+      window.location.replace("/mapinboot/");
+    } catch {
+      showNotice("서버에 연결할 수 없어 로그아웃하지 못했습니다.", "error");
+    } finally {
+      logoutButton.disabled = false;
+    }
+  });
+  if (window.addEventListener) window.addEventListener("pageshow", (event) => {
+    if (!event.persisted) return;
+    checkAuthAfterResume();
+  });
   if (filterToggle && filterPanel) filterToggle.addEventListener("click", () => {
     setFilterPanel(filterPanel.hidden);
   });
@@ -2917,8 +3049,9 @@
     const current = requestFlowController.state();
     requestFlowController.seekToStep(current.stepIndex + 1);
   });
-  if (document.addEventListener && requestFlowController) document.addEventListener("visibilitychange", () => {
-    if (document.visibilityState === "hidden") requestFlowController.pause();
+  if (document.addEventListener) document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "hidden" && requestFlowController) requestFlowController.pause();
+    if (document.visibilityState === "visible") checkAuthAfterResume();
   });
   if (window.addEventListener && layoutClient) window.addEventListener("pagehide", (event) => {
     if (event.persisted) return;

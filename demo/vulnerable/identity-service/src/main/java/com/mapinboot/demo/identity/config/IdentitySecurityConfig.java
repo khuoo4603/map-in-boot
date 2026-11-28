@@ -150,6 +150,9 @@ public class IdentitySecurityConfig {
                             || "TRACE".equals(method) || "OPTIONS".equals(method)) {
                         return false;
                     }
+                    if (WebAccessGuard.isAuthPostRequest(request)) {
+                        return false;
+                    }
                     String authorization = request.getHeader("Authorization");
                     if ("/api/identity/verify".equals(request.getRequestURI())
                             && authorization == null
@@ -165,9 +168,12 @@ public class IdentitySecurityConfig {
             .exceptionHandling(exception -> exception
                 .authenticationEntryPoint(diagnosticAuthenticationEntryPoint()))
             .authorizeHttpRequests(auth -> {
-                // SDK 정식 UI 정적 자원은 호스트 인증 없이 읽기 허용
+                // SDK UI와 인증 진입 경로를 호스트 필터까지 전달
                 auth.requestMatchers(HttpMethod.GET, WebAccessGuard.publicUiPaths()).permitAll();
-                if (WebAccessGuard.isAnonymousPreviewEnabled(mapInBootProperties, environment)) {
+                auth.requestMatchers(HttpMethod.GET, WebAccessGuard.authUiPaths()).permitAll();
+                auth.requestMatchers(HttpMethod.GET, WebAccessGuard.authStatusPaths()).permitAll();
+                auth.requestMatchers(HttpMethod.POST, WebAccessGuard.authPostPaths()).permitAll();
+                if (WebAccessGuard.isSdkReadApiFilterPassThroughEnabled(mapInBootProperties, environment)) {
                     auth.requestMatchers(HttpMethod.GET, WebAccessGuard.previewApiPaths()).permitAll();
                 }
                 auth.requestMatchers("/mapinboot-assets/**",

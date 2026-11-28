@@ -43,7 +43,11 @@ import org.springframework.boot.autoconfigure.EnableAutoConfiguration;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.context.ConfigurableApplicationContext;
 import org.springframework.context.annotation.Bean;
+import org.springframework.boot.context.properties.bind.Bindable;
+import org.springframework.boot.context.properties.bind.Binder;
 import org.springframework.core.env.Environment;
+import org.springframework.mock.env.MockEnvironment;
+import org.springframework.core.env.MapPropertySource;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
@@ -86,6 +90,14 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class WebAccessSmokeIntegrationTest {
     @TempDir
     Path tempDirectory;
+
+    @Test
+    void loginRequestToStringDoesNotExposePassword() {
+        String password = "sensitive-sdk-password";
+        var request = new com.mapinboot.starter.web.auth.LoginController.LoginRequest(password);
+
+        assertFalse(request.toString().contains(password));
+    }
 
     @Test
     void enabledWebRequiresPrincipalAndRoleAndDoesNotExposeMissingSnapshot() throws Exception {
@@ -241,6 +253,69 @@ class WebAccessSmokeIntegrationTest {
             mvc.perform(get("/mapinboot/test").with(principal(true))).andExpect(status().isOk());
             mvc.perform(get("/mapinboot/smoke.txt")).andExpect(status().isUnauthorized());
         }
+    }
+
+    @Test
+    void passwordUiUsesSdkEntryPathAndProtectsApiAndSdkResources() throws Exception {
+        try (ConfigurableApplicationContext context = start(
+                AccessHost.class,
+                Map.of(
+                        "mapinboot.web.enabled", "true",
+                        "mapinboot.web.auth-mode", "PASSWORD",
+                        "mapinboot.web.login.password", "test-secret",
+                        "mapinboot.snapshot.directory", tempDirectory.resolve("password-login-ui").toString()))) {
+            MockMvc mvc = MockMvcBuilders.webAppContextSetup((WebApplicationContext) context).build();
+
+            mvc.perform(get("/mapinboot/").header("Accept", "text/html"))
+                    .andExpect(status().isOk())
+                    .andExpect(content().string(org.hamcrest.Matchers.containsString("id=\"login-form\"")));
+            mvc.perform(get("/mapinboot/index.html").header("Accept", "text/html"))
+                    .andExpect(status().isOk())
+                    .andExpect(content().string(org.hamcrest.Matchers.containsString("id=\"login-form\"")));
+            mvc.perform(get("/mapinboot/app.js")).andExpect(status().isUnauthorized());
+            mvc.perform(get("/mapinboot/api/status")).andExpect(status().isUnauthorized());
+            mvc.perform(get("/mapinboot/login")).andExpect(status().isUnauthorized());
+            mvc.perform(get("/mapinboot/login.css")).andExpect(status().isOk());
+            mvc.perform(get("/mapinboot/login.js")).andExpect(status().isOk());
+
+            MvcResult statusResult = mvc.perform(get("/mapinboot/api/auth/status"))
+                    .andExpect(status().isOk())
+                    .andReturn();
+            MockHttpSession session = (MockHttpSession) statusResult.getRequest().getSession(false);
+            String csrfToken = JsonMapper.builder().build()
+                    .readTree(statusResult.getResponse().getContentAsString())
+                    .get("csrfToken").asText();
+            mvc.perform(post("/mapinboot/api/auth/login")
+                            .session(session)
+                            .header("X-MapInBoot-CSRF", csrfToken)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content("{\"password\":\"test-secret\"}"))
+                    .andExpect(status().isOk());
+            mvc.perform(get("/mapinboot/").session(session).header("Accept", "text/html"))
+                    .andExpect(status().isOk())
+                    .andExpect(content().string(org.hamcrest.Matchers.containsString("data-ui-shell")));
+        }
+    }
+
+    @Test
+    void passwordModeBindsSpringConfigurationProperties() {
+        MockEnvironment environment = new MockEnvironment();
+        environment.getPropertySources().addFirst(new MapPropertySource("test-configuration", Map.of(
+                "mapinboot.enabled", "true",
+                "mapinboot.web.enabled", "true",
+                "mapinboot.web.auth-mode", "PASSWORD",
+                "mapinboot.web.login.password", "environment-test-secret",
+                "mapinboot.web.login.session-timeout", "45m",
+                "mapinboot.snapshot.directory", tempDirectory.resolve("password-env-binding").toString())));
+        MapInBootProperties properties = Binder.get(environment)
+                .bind("mapinboot", Bindable.of(MapInBootProperties.class))
+                .orElseThrow(IllegalStateException::new);
+        properties.afterPropertiesSet();
+
+        assertEquals(com.mapinboot.starter.autoconfigure.WebAuthMode.PASSWORD,
+                properties.getWeb().getAuthMode());
+        assertEquals("environment-test-secret", properties.getWeb().getLogin().getPassword());
+        assertEquals(Duration.ofMinutes(45), properties.getWeb().getLogin().getSessionTimeout());
     }
 
     @Test
@@ -463,7 +538,9 @@ class WebAccessSmokeIntegrationTest {
             assertNotNull(JsonMapper.builder().build()
                     .readTree(expiredStatus.getResponse().getContentAsString())
                     .get("csrfToken").asText());
-            mvc.perform(get("/mapinboot/").session(session)).andExpect(status().isUnauthorized());
+            mvc.perform(get("/mapinboot/").session(session))
+                    .andExpect(status().isOk())
+                    .andExpect(content().string(org.hamcrest.Matchers.containsString("id=\"login-form\"")));
         }
     }
 
@@ -678,7 +755,9 @@ class WebAccessSmokeIntegrationTest {
             await(() -> bootstrap.persistedSnapshot() != null || bootstrap.failureCode() != null);
             MockMvc mvc = MockMvcBuilders.webAppContextSetup((WebApplicationContext) context).build();
 
-            mvc.perform(get("/mapinboot/")).andExpect(status().isUnauthorized());
+            mvc.perform(get("/mapinboot/"))
+                    .andExpect(status().isOk())
+                    .andExpect(content().string(org.hamcrest.Matchers.containsString("id=\"login-form\"")));
             mvc.perform(get("/mapinboot/app.js")).andExpect(status().isUnauthorized());
             mvc.perform(get("/mapinboot/api/status")).andExpect(status().isUnauthorized());
             mvc.perform(get("/mapinboot/api/snapshot").with(principal(true)))
@@ -745,7 +824,9 @@ class WebAccessSmokeIntegrationTest {
             await(() -> bootstrap.persistedSnapshot() != null || bootstrap.failureCode() != null);
             MockMvc mvc = MockMvcBuilders.webAppContextSetup((WebApplicationContext) context).build();
 
-            mvc.perform(get("/mapinboot/").with(principal(true))).andExpect(status().isServiceUnavailable());
+            mvc.perform(get("/mapinboot/").with(principal(true)))
+                    .andExpect(status().isOk())
+                    .andExpect(content().string(org.hamcrest.Matchers.containsString("id=\"login-form\"")));
             mvc.perform(get("/mapinboot/app.js").with(principal(true))).andExpect(status().isServiceUnavailable());
             mvc.perform(get("/mapinboot/api/status").with(principal(true)))
                     .andExpect(status().isServiceUnavailable());

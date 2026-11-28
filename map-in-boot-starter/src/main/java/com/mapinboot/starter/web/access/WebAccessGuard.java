@@ -35,6 +35,8 @@ public final class WebAccessGuard {
             "/mapinboot/api/status",
             "/mapinboot/api/snapshot");
     private static final List<String> AUTH_STATUS_PATHS = List.of("/mapinboot/api/auth/status");
+    private static final List<String> AUTH_UI_PATHS = List.of(
+            "/mapinboot/login.css", "/mapinboot/login.js");
     private static final List<String> AUTH_POST_PATHS = List.of(
             "/mapinboot/api/auth/login",
             "/mapinboot/api/auth/logout");
@@ -55,6 +57,10 @@ public final class WebAccessGuard {
     // 호스트 SecurityFilterChain 연동용 인증 상태 GET 경로
     public static String[] authStatusPaths() {
         return AUTH_STATUS_PATHS.toArray(String[]::new);
+    }
+
+    public static String[] authUiPaths() {
+        return AUTH_UI_PATHS.toArray(String[]::new);
     }
 
     // 호스트 SecurityFilterChain 연동용 인증 POST 경로
@@ -123,6 +129,15 @@ public final class WebAccessGuard {
 
         WebAuthMode mode = properties == null || properties.getWeb() == null
                 ? WebAuthMode.HOST : properties.getWeb().getAuthMode();
+        if (mode == WebAuthMode.PASSWORD && isPasswordUiEntryRequest(request)
+                && isCanonicalMappedPath(request)) {
+            return null;
+        }
+        if (isAuthUiRequest(request)
+                || (mode == WebAuthMode.PASSWORD && isGet(request)
+                        && "/mapinboot/assets/mapinboot_logo_transparent.png".equals(applicationPath(request)))) {
+            return mode == WebAuthMode.PASSWORD ? null : HttpStatus.NOT_FOUND;
+        }
         if (mode == WebAuthMode.PASSWORD
                 && properties != null
                 && properties.isEnabled()
@@ -207,10 +222,22 @@ public final class WebAccessGuard {
         return isGet(request) && AUTH_STATUS_PATHS.contains(applicationPath(request));
     }
 
-    private static boolean isAuthPostRequest(HttpServletRequest request) {
+    public static boolean isAuthPostRequest(HttpServletRequest request) {
         return request != null
                 && "POST".equalsIgnoreCase(request.getMethod())
                 && AUTH_POST_PATHS.contains(applicationPath(request));
+    }
+
+    private static boolean isAuthUiRequest(HttpServletRequest request) {
+        return isGet(request) && AUTH_UI_PATHS.contains(applicationPath(request));
+    }
+
+    private static boolean isPasswordUiEntryRequest(HttpServletRequest request) {
+        String path = applicationPath(request);
+        return isGet(request)
+                && ("/mapinboot".equals(path)
+                        || "/mapinboot/".equals(path)
+                        || "/mapinboot/index.html".equals(path));
     }
 
     private static String applicationPath(HttpServletRequest request) {

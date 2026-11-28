@@ -134,9 +134,12 @@ public class AccountSecurityConfig {
             .authorizeHttpRequests(auth -> {
                 // SDK 정식 UI 정적 자원은 호스트 인증 없이 읽기 허용
                 auth.requestMatchers(HttpMethod.GET, WebAccessGuard.publicUiPaths()).permitAll();
-                if (WebAccessGuard.isAnonymousPreviewEnabled(mapInBootProperties, environment)) {
+                if (WebAccessGuard.isSdkReadApiFilterPassThroughEnabled(mapInBootProperties, environment)) {
                     auth.requestMatchers(HttpMethod.GET, WebAccessGuard.previewApiPaths()).permitAll();
                 }
+                auth.requestMatchers(HttpMethod.GET, WebAccessGuard.authUiPaths()).permitAll();
+                auth.requestMatchers(HttpMethod.GET, WebAccessGuard.authStatusPaths()).permitAll();
+                auth.requestMatchers(HttpMethod.POST, WebAccessGuard.authPostPaths()).permitAll();
                 auth.requestMatchers("/error").permitAll();
                 auth.requestMatchers(
                     HttpMethod.GET,
