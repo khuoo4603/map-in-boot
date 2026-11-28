@@ -2,6 +2,13 @@ plugins {
     id 'base'
 }
 
+def sdkVersion = providers.gradleProperty('releaseVersion').getOrElse('0.1.0-SNAPSHOT')
+def semverPattern = ~/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*))*))?(?:\+([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$/
+
+if (!(sdkVersion ==~ semverPattern)) {
+    throw new GradleException("releaseVersion must be a valid SemVer value: ${sdkVersion}")
+}
+
 allprojects {
     group = 'com.mapinboot'
     version = '0.1.0-SNAPSHOT'
@@ -28,5 +35,87 @@ subprojects {
 
     tasks.withType(Test).configureEach {
         useJUnitPlatform()
+    }
+}
+
+def sdkModules = [
+    project(':map-in-boot-core'),
+    project(':map-in-boot-starter'),
+    project(':map-in-boot-security')
+]
+
+def publicationDetails = [
+    'map-in-boot-core': [
+        name: 'Map in Boot Core',
+        description: 'Map in Boot 공통 모델과 분석 계약'
+    ],
+    'map-in-boot-starter': [
+        name: 'Map in Boot Starter',
+        description: 'Spring Boot 애플리케이션용 Map in Boot SDK 자동 구성과 웹 UI'
+    ],
+    'map-in-boot-security': [
+        name: 'Map in Boot Security',
+        description: 'Spring Security 애플리케이션의 보안 구조 수집과 분석 확장'
+    ]
+]
+
+configure(sdkModules) {
+    group = 'io.github.khuoo4603'
+    version = sdkVersion
+    apply plugin: 'maven-publish'
+
+    java {
+        withSourcesJar()
+        withJavadocJar()
+    }
+
+    tasks.withType(Javadoc).configureEach {
+        options.encoding = 'UTF-8'
+        options.docEncoding = 'UTF-8'
+        options.charSet = 'UTF-8'
+    }
+
+    tasks.withType(Jar).configureEach {
+        from(rootProject.file('LICENSE')) {
+            into 'META-INF'
+        }
+    }
+
+    publishing {
+        publications {
+            mavenJava(MavenPublication) {
+                from components.java
+                pom {
+                    name = publicationDetails[project.name].name
+                    description = publicationDetails[project.name].description
+                    url = 'https://github.com/khuoo4603/map-in-boot'
+                    licenses {
+                        license {
+                            name = 'Apache License, Version 2.0'
+                            url = 'https://www.apache.org/licenses/LICENSE-2.0.txt'
+                            distribution = 'repo'
+                        }
+                    }
+                    developers {
+                        developer {
+                            id = 'khuoo4603'
+                            name = '김현우 (kim hyeon woo)'
+                            url = 'https://github.com/khuoo4603'
+                        }
+                    }
+                    scm {
+                        url = 'https://github.com/khuoo4603/map-in-boot'
+                        connection = 'scm:git:git://github.com/khuoo4603/map-in-boot.git'
+                        developerConnection = 'scm:git:ssh://git@github.com/khuoo4603/map-in-boot.git'
+                    }
+                }
+            }
+        }
+        repositories {
+            maven {
+                name = 'buildLocal'
+                url = rootProject.layout.buildDirectory.dir('repository')
+            }
+        }
     }
 }
