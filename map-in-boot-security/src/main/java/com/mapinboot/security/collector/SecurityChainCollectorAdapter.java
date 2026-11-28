@@ -30,6 +30,7 @@ import org.springframework.security.authorization.AuthenticatedAuthorizationMana
 import org.springframework.security.authorization.AuthorizationManager;
 import org.springframework.security.authorization.AuthorizationResult;
 import org.springframework.security.authorization.AuthorityAuthorizationManager;
+import org.springframework.security.authorization.ObservationAuthorizationManager;
 import org.springframework.security.authorization.SingleResultAuthorizationManager;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.server.PathContainer;
@@ -399,6 +400,17 @@ public class SecurityChainCollectorAdapter extends AbstractCollectorAdapter {
             return true;
         }
         AuthorizationManager<?> manager = authorizationFilters.get(0).getAuthorizationManager();
+        if (manager instanceof ObservationAuthorizationManager<?>) {
+            // 확인된 Observation 래퍼의 위임 정책 읽기
+            manager = readField(manager, "delegate", AuthorizationManager.class);
+            if (manager == null) {
+                addUnknownPolicyFact(serviceId, proxyBeanName, chainOrder, chainKey, 1,
+                        "Observation AuthorizationManager 위임 대상 확인 실패", facts, evidence);
+                diagnostics.add(new AdapterDiagnostic(id(), ErrorCode.INVALID_STATE,
+                        "Observation AuthorizationManager 위임 대상 확인 실패"));
+                return true;
+            }
+        }
         if (!(manager instanceof RequestMatcherDelegatingAuthorizationManager delegatingManager)) {
             addUnknownPolicyFact(serviceId, proxyBeanName, chainOrder, chainKey, 1,
                     "AuthorizationManager 유형 미지원", facts, evidence);
