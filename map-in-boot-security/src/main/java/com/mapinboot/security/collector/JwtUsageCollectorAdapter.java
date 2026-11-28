@@ -17,7 +17,6 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.Deque;
 import java.util.HashSet;
-import java.util.LinkedHashSet;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Objects;
@@ -29,11 +28,7 @@ import org.objectweb.asm.ClassVisitor;
 import org.objectweb.asm.MethodVisitor;
 import org.objectweb.asm.Opcodes;
 import org.objectweb.asm.Type;
-import org.springframework.aop.support.AopUtils;
-import org.springframework.beans.factory.config.ConfigurableListableBeanFactory;
-import org.springframework.context.ApplicationContext;
 import org.springframework.context.ConfigurableApplicationContext;
-import org.springframework.util.ClassUtils;
 
 // JWT Claim·서명·검증 코드 패턴의 Fact·Evidence 수집
 public class JwtUsageCollectorAdapter extends AbstractCollectorAdapter {
@@ -66,40 +61,20 @@ public class JwtUsageCollectorAdapter extends AbstractCollectorAdapter {
         if (context == null || context.applicationContext() == null || isBlank(context.serviceId())) {
             return unavailable("수집 실행 문맥 또는 서비스 식별 정보 부재");
         }
-        if (!(context.applicationContext() instanceof ConfigurableApplicationContext configurableContext)) {
+        if (!(context.applicationContext() instanceof ConfigurableApplicationContext)) {
             return unavailable("ConfigurableApplicationContext 미지원");
         }
 
-        ConfigurableListableBeanFactory beanFactory = configurableContext.getBeanFactory();
-        List<AdapterDiagnostic> diagnostics = new ArrayList<>();
-        Set<Class<?>> targetClasses = new LinkedHashSet<>();
-        boolean partial = false;
-        for (String beanName : new TreeSet<>(java.util.Arrays.asList(beanFactory.getBeanDefinitionNames()))) {
-            try {
-                Class<?> targetClass = targetClass(context.applicationContext(), beanFactory, beanName);
-                if (targetClass == null) {
-                    if (isApplicationBean(beanName, beanFactory)) {
-                        partial = true;
-                        diagnostics.add(new AdapterDiagnostic(id(), ErrorCode.INVALID_STATE,
-                                "Bean Target Class 조회 불완전: " + beanName));
-                    }
-                    continue;
-                }
-                if (targetClass.isSynthetic()) {
-                    continue;
-                }
-                collectTypes(targetClass, targetClasses);
-            } catch (RuntimeException exception) {
-                partial = true;
-                diagnostics.add(new AdapterDiagnostic(id(), ErrorCode.ADAPTER_FAILED,
-                        "JWT 사용 대상 Bean 조회 실패: " + beanName));
-            }
-        }
+        ApplicationClassDiscovery.Discovery discovery = ApplicationClassDiscovery.discover(
+                context.applicationContext(), id(), "JWT 사용");
+        List<AdapterDiagnostic> diagnostics = new ArrayList<>(discovery.diagnostics());
+        Set<Class<?>> targetClasses = discovery.targetClasses();
+        boolean partial = discovery.partial();
 
         List<Usage> usages = new ArrayList<>();
         for (Class<?> targetClass : targetClasses.stream()
                 .sorted(Comparator.comparing(Class::getName)).toList()) {
-            if (isFrameworkClass(targetClass)) {
+            if (ApplicationClassDiscovery.isFrameworkClass(targetClass)) {
                 continue;
             }
             try {
@@ -156,46 +131,6 @@ public class JwtUsageCollectorAdapter extends AbstractCollectorAdapter {
 
         AnalysisStatus status = partial ? AnalysisStatus.PARTIAL : AnalysisStatus.READY;
         return new CollectionResult(id(), facts, evidence, status, diagnostics);
-    }
-
-    private Class<?> targetClass(
-            ApplicationContext applicationContext,
-            ConfigurableListableBeanFactory beanFactory,
-            String beanName
-    ) {
-        Object singleton = beanFactory.getSingleton(beanName);
-        if (singleton != null) {
-            return ClassUtils.getUserClass(AopUtils.getTargetClass(singleton));
-        }
-        return applicationContext.getType(beanName, false);
-    }
-
-    private boolean isApplicationBean(String beanName, ConfigurableListableBeanFactory beanFactory) {
-        if (beanName.startsWith("org.springframework.")) {
-            return false;
-        }
-        try {
-            String beanClassName = beanFactory.getBeanDefinition(beanName).getBeanClassName();
-            return beanClassName == null || !beanClassName.startsWith("org.springframework.");
-        } catch (RuntimeException exception) {
-            return true;
-        }
-    }
-
-    private void collectTypes(Class<?> type, Set<Class<?>> targetClasses) {
-        if (type == null || type == Object.class || !targetClasses.add(type)) {
-            return;
-        }
-        for (Class<?> interfaceType : type.getInterfaces()) {
-            collectTypes(interfaceType, targetClasses);
-        }
-        collectTypes(type.getSuperclass(), targetClasses);
-    }
-
-    private boolean isFrameworkClass(Class<?> type) {
-        String name = type.getName();
-        return name.startsWith("org.springframework.") || name.startsWith("java.")
-                || name.startsWith("jakarta.");
     }
 
     // 대상 Class Bytecode 기반 JWT API 호출 패턴 판독

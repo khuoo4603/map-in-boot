@@ -31,6 +31,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.io.IOException;
+import io.micrometer.observation.ObservationRegistry;
 import org.junit.jupiter.api.Test;
 import org.springframework.context.annotation.AnnotationConfigApplicationContext;
 import org.springframework.context.annotation.Bean;
@@ -40,6 +41,7 @@ import org.springframework.http.HttpMethod;
 import org.springframework.security.authorization.AllAuthoritiesAuthorizationManager;
 import org.springframework.security.authorization.AuthorizationDecision;
 import org.springframework.security.authorization.AuthorizationManager;
+import org.springframework.security.authorization.ObservationAuthorizationManager;
 import org.springframework.security.web.DefaultSecurityFilterChain;
 import org.springframework.security.web.FilterChainProxy;
 import org.springframework.security.web.SecurityFilterChain;
@@ -197,6 +199,34 @@ class SecurityChainCollectorAdapterTest {
                     .toList());
             assertTrue(policies.stream().allMatch(fact -> "URL".equals(fact.attributes().get("policySource"))));
             assertEquals(6, result.evidence().size());
+            assertTrue(result.diagnostics().isEmpty());
+        }
+    }
+
+    @Test
+    void collectsUrlAuthorizationPoliciesThroughObservationAuthorizationManager() {
+        try (AnnotationConfigApplicationContext context = context(ObservedUrlAuthorizationSecurityConfiguration.class)) {
+            CollectionResult result = new SecurityChainCollectorAdapter().collect(
+                    new CollectionContext(context, "main", "instance"));
+
+            List<Fact> policies = result.facts().stream()
+                    .filter(fact -> "URL_AUTHORIZATION".equals(fact.type()))
+                    .toList();
+
+            assertEquals(AnalysisStatus.READY, result.status());
+            assertEquals(List.of("PERMIT_ALL", "AUTHORITY_REQUIRED", "DENY_ALL"), policies.stream()
+                    .map(fact -> fact.attributes().get("policyKind"))
+                    .toList());
+            assertEquals(List.of("1", "2", "3"), policies.stream()
+                    .map(fact -> fact.attributes().get("policyOrder"))
+                    .toList());
+            assertEquals(List.of("METHOD_PATH", "METHOD_PATH", "ANY"), policies.stream()
+                    .map(fact -> fact.attributes().get("policyMatcherType"))
+                    .toList());
+            assertEquals(List.of("GET /api/public/**", "GET /api/admin/**", "ANY"), policies.stream()
+                    .map(fact -> fact.attributes().get("policyMatcherCondition"))
+                    .toList());
+            assertEquals("ROLE_ADMIN", policies.get(1).attributes().get("requiredAuthority"));
             assertTrue(result.diagnostics().isEmpty());
         }
     }
@@ -497,6 +527,28 @@ class SecurityChainCollectorAdapterTest {
             return new FilterChainProxy(List.of(new DefaultSecurityFilterChain(
                     PathPatternRequestMatcher.pathPattern("/api/**"),
                     List.of(new AuthorizationFilter(manager)))));
+        }
+    }
+
+    @Configuration(proxyBeanMethods = false)
+    static class ObservedUrlAuthorizationSecurityConfiguration {
+
+        @Bean
+        FilterChainProxy springSecurityFilterChain() {
+            RequestMatcherDelegatingAuthorizationManager delegate =
+                    RequestMatcherDelegatingAuthorizationManager.builder()
+                            .requestMatchers(PathPatternRequestMatcher.pathPattern(HttpMethod.GET, "/api/public/**"))
+                            .permitAll()
+                            .requestMatchers(PathPatternRequestMatcher.pathPattern(HttpMethod.GET, "/api/admin/**"))
+                            .hasRole("ADMIN")
+                            .anyRequest()
+                            .denyAll()
+                            .build();
+            ObservationAuthorizationManager<jakarta.servlet.http.HttpServletRequest> observed =
+                    new ObservationAuthorizationManager<>(ObservationRegistry.NOOP, delegate);
+            return new FilterChainProxy(List.of(new DefaultSecurityFilterChain(
+                    PathPatternRequestMatcher.pathPattern("/api/**"),
+                    List.of(new AuthorizationFilter(observed)))));
         }
     }
 

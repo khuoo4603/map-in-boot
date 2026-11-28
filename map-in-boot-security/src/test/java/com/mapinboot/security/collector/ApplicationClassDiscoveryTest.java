@@ -1,12 +1,18 @@
 package com.mapinboot.security.collector;
 
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import com.mapinboot.core.collection.model.CollectionContext;
 import java.lang.reflect.Method;
+import java.lang.reflect.Proxy;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Set;
 import java.util.stream.Collectors;
 import org.junit.jupiter.api.Test;
+import org.springframework.aop.framework.ProxyFactory;
 import org.springframework.context.annotation.AnnotationConfigApplicationContext;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -18,6 +24,19 @@ import org.springframework.web.servlet.mvc.method.RequestMappingInfo;
 import org.springframework.web.servlet.mvc.method.annotation.RequestMappingHandlerMapping;
 
 class ApplicationClassDiscoveryTest {
+
+    @Test
+    void distinguishesSdkAndExternalClassOriginsWithoutPackageRules() throws Exception {
+        Class<?> starterHandler = Class.forName(
+                "com.mapinboot.starter.web.ui.MapInBootUiController", false,
+                Thread.currentThread().getContextClassLoader());
+
+        assertTrue(ApplicationClassDiscovery.isSdkOwnedClass(ApplicationClassDiscovery.class));
+        assertTrue(ApplicationClassDiscovery.isSdkOwnedClass(starterHandler));
+        assertFalse(ApplicationClassDiscovery.isSdkOwnedClass(HandlerFixture.class));
+        assertTrue(ApplicationClassDiscovery.isExternalHandlerClass(RequestMappingHandlerMapping.class));
+        assertFalse(ApplicationClassDiscovery.isExternalHandlerClass(HandlerFixture.class));
+    }
 
     @Test
     void discoversRegisteredBeansAndHandlersWithinDerivedPackages() {
@@ -58,6 +77,53 @@ class ApplicationClassDiscoveryTest {
         }
     }
 
+    @Test
+    void excludesGeneratedJdkProxyBytecodeWhileRetainingItsInterface() {
+        try (AnnotationConfigApplicationContext context = context(JdkProxyConfiguration.class)) {
+            Class<?> proxyClass = context.getBean(ProxyContract.class).getClass();
+            assertTrue(Proxy.isProxyClass(proxyClass));
+            assertNotNull(BytecodeUsageScanner.scan(proxyClass).diagnostic());
+
+            ApplicationClassDiscovery.Discovery discovery = ApplicationClassDiscovery.discover(
+                    context, "security-class-discovery-test", "후보");
+
+            assertFalse(discovery.targetClasses().contains(proxyClass));
+            assertFalse(discovery.candidateClassNames().contains(proxyClass.getName()),
+                    discovery.candidateClassNames().stream().filter(name -> name.contains("$Proxy")).toList().toString());
+            List<String> affectedAdapters = new ArrayList<>();
+            for (var adapter : List.of(
+                    new JwtUsageCollectorAdapter(),
+                    new SessionUsageCollectorAdapter(),
+                    new HeaderUsageCollectorAdapter(),
+                    new PrincipalUsageCollectorAdapter())) {
+                var result = adapter.collect(new CollectionContext(context, "main", "instance"));
+                result.diagnostics().stream()
+                        .filter(diagnostic -> diagnostic.summary().contains(proxyClass.getName()))
+                        .forEach(diagnostic -> affectedAdapters.add(
+                                adapter.getClass().getSimpleName() + ": " + diagnostic.summary()));
+            }
+            assertTrue(affectedAdapters.isEmpty(), affectedAdapters.toString());
+            assertTrue(discovery.targetClasses().contains(ProxyContract.class));
+        }
+    }
+
+    @Test
+    void resolvesSpringAopJdkAndCglibTargets() {
+        try (AnnotationConfigApplicationContext context = context(AopProxyConfiguration.class)) {
+            ApplicationClassDiscovery.Discovery discovery = ApplicationClassDiscovery.discover(
+                    context, "security-class-discovery-test", "후보");
+            Set<String> classNames = discovery.targetClasses().stream()
+                    .map(Class::getName)
+                    .collect(Collectors.toSet());
+
+            assertTrue(classNames.contains(JdkAopTarget.class.getName()));
+            assertTrue(classNames.contains(CglibAopTarget.class.getName()));
+            assertFalse(discovery.targetClasses().stream().anyMatch(Proxy::isProxyClass));
+            assertFalse(classNames.stream().anyMatch(name -> name.contains("$$SpringCGLIB$$")));
+            assertTrue(discovery.diagnostics().isEmpty());
+        }
+    }
+
     private AnnotationConfigApplicationContext context(Class<?> configuration) {
         AnnotationConfigApplicationContext context = new AnnotationConfigApplicationContext();
         context.register(configuration);
@@ -66,6 +132,27 @@ class ApplicationClassDiscoveryTest {
     }
 
     interface RegisteredContract {
+    }
+
+    interface ProxyContract {
+        String principalName();
+    }
+
+    interface AopContract {
+        String value();
+    }
+
+    static class JdkAopTarget implements AopContract {
+        @Override
+        public String value() {
+            return "value";
+        }
+    }
+
+    static class CglibAopTarget {
+        public String value() {
+            return "value";
+        }
     }
 
     @Service
@@ -91,6 +178,35 @@ class ApplicationClassDiscoveryTest {
 
         LazyFixture() {
             created = true;
+        }
+    }
+
+    @Configuration(proxyBeanMethods = false)
+    static class JdkProxyConfiguration {
+
+        @Bean
+        ProxyContract jdkProxy() {
+            return (ProxyContract) Proxy.newProxyInstance(
+                    ProxyContract.class.getClassLoader(), new Class<?>[]{ProxyContract.class},
+                    (proxy, method, arguments) -> null);
+        }
+    }
+
+    @Configuration(proxyBeanMethods = false)
+    static class AopProxyConfiguration {
+
+        @Bean
+        AopContract jdkAopBean() {
+            ProxyFactory factory = new ProxyFactory(new JdkAopTarget());
+            factory.setInterfaces(AopContract.class);
+            return (AopContract) factory.getProxy();
+        }
+
+        @Bean
+        CglibAopTarget cglibAopBean() {
+            ProxyFactory factory = new ProxyFactory(new CglibAopTarget());
+            factory.setProxyTargetClass(true);
+            return (CglibAopTarget) factory.getProxy();
         }
     }
 
